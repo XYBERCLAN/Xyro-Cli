@@ -1,0 +1,5 @@
+node_modules/
+dist/
+.env
+*.jsonc
+.agent_history.json
