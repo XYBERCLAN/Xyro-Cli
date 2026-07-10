@@ -6,15 +6,15 @@ import OpenAI from "openai";
 import { Agent } from "./agent/loop.js";
 import { renderConfigBanner, renderInfo, renderError } from "./ui/render.js";
 import { interactiveSetup, askForInput, CANCEL, FREE_PROVIDERS } from "./ui/prompts.js";
-import { printXyberHead } from "./cli/banner-icon.js";
+import { printXyroHead } from "./cli/banner-icon.js";
 import { printBanner } from "./cli/banner.js";
 import { loadPersistedConfig, savePersistedConfig } from "./config/persist.js";
 
 let bannerPrinted = false;
 
 program
-  .name("xyberclan")
-  .description("XYBERCLAN — AI coding agent")
+  .name("xyro")
+  .description("XYRO — AI coding agent")
   .option("--api-key <key>", "API key")
   .option("-m, --model <model>", "LLM model")
   .option("--base-url <url>", "OpenAI-compatible base URL")
@@ -95,10 +95,10 @@ async function main(): Promise<void> {
   if (
     !bannerPrinted &&
     !opts.noBanner &&
-    !process.env["XYBERCLAN_NO_BANNER"] &&
+    !process.env["XYRO_NO_BANNER"] &&
     process.stdout.isTTY
   ) {
-    printXyberHead();
+    printXyroHead();
     printBanner();
     bannerPrinted = true;
   }

@@ -12,7 +12,7 @@ export interface PersistedConfig {
 function configDir(): string {
   const xdg = process.env["XDG_CONFIG_HOME"];
   const base = xdg || path.join(os.homedir(), ".config");
-  return path.join(base, "xyberclan");
+  return path.join(base, "xyro");
 }
 
 function configPath(): string {

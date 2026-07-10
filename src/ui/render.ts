@@ -2,7 +2,7 @@ import pc from "picocolors";
 
 export function renderConfigBanner(model: string, provider: string): void {
   console.log(`  ${pc.dim("─").repeat(55)}`);
-  console.log(`  ${pc.dim("┃")} ${pc.bold(pc.yellow("XYBERCLAN"))} ${pc.dim("·")} ${model} ${pc.dim("·")} ${provider}`);
+  console.log(`  ${pc.dim("┃")} ${pc.bold(pc.yellow("XYRO"))} ${pc.dim("·")} ${model} ${pc.dim("·")} ${provider}`);
   console.log(`  ${pc.dim("┃")} ${pc.dim(process.cwd())}`);
   console.log(`  ${pc.dim("┃")} ${pc.italic("commands:")} ${pc.dim("exit · clear · resume")}`);
   console.log(`  ${pc.dim("─").repeat(55)}`);
