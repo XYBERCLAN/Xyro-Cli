@@ -50,10 +50,10 @@ Unlike most AI coding tools that require a VS Code extension, a web dashboard, o
 
 ```bash
 # Install globally
-npm install -g xyro
+npm install -g xyro-cli
 
 # Or run directly
-npx xyro
+npx xyro-cli
 
 # First run walks you through setup
 xyro
