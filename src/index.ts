@@ -32,7 +32,7 @@ program
   .option("--provider <id>", "Provider ID (e.g. groq, openrouter, deepseek)")
   .option("--max-tool-calls <n>", "Max tool calls per turn", "25")
   .option("--resume", "Resume previous conversation", false)
-  .option("--no-banner", "Skip interactive setup and banner", false)
+  .option("--no-banner", "Skip interactive setup and banner")
   .option("--json", "JSON output mode (skips banner)", false)
   .parse(process.argv);
 
