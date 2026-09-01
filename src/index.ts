@@ -171,6 +171,12 @@ async function main(): Promise<void> {
       continue;
     }
 
+    if (trimmed === "resume") {
+      const loaded = agent.load();
+      renderInfo(loaded ? "Resumed previous conversation" : "No saved session found");
+      continue;
+    }
+
     if (!trimmed) continue;
 
     try {
