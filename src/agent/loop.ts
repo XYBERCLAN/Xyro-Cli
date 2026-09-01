@@ -22,7 +22,7 @@ export class Agent {
 
   async run(input: string): Promise<void> {
     this.history.add({ role: "user", content: input });
-    renderUserMessage(input);
+    if (!process.stdin.isTTY) renderUserMessage(input);
 
     let toolCallCount = 0;
 

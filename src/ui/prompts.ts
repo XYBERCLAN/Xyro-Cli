@@ -552,7 +552,7 @@ export async function askForInput(): Promise<string | typeof CANCEL> {
       rl.close();
       resolve(CANCEL);
     });
-    rl.question(`  ${pc.dim("┃")} `, (answer) => {
+    rl.question(`  ${pc.cyan(">")} `, (answer) => {
       rl.close();
       resolve(answer || "");
     });
