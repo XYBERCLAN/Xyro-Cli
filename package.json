@@ -4,7 +4,7 @@
   "description": "XYRO — a terminal-native AI coding agent built from scratch",
   "type": "module",
   "bin": {
-    "agent": "./dist/index.js"
+    "xyro": "./dist/index.js"
   },
   "scripts": {
     "dev": "tsx src/index.ts",
