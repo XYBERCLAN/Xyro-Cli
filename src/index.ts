@@ -3,6 +3,9 @@
 import { program } from "commander";
 import pc from "picocolors";
 import OpenAI from "openai";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { Agent } from "./agent/loop.js";
 import { renderConfigBanner, renderInfo, renderError } from "./ui/render.js";
 import { interactiveSetup, askForInput, CANCEL, FREE_PROVIDERS } from "./ui/prompts.js";
@@ -12,9 +15,16 @@ import { loadPersistedConfig, savePersistedConfig } from "./config/persist.js";
 
 let bannerPrinted = false;
 
+function packageVersion(): string {
+  const pkgPath = join(dirname(fileURLToPath(import.meta.url)), "..", "package.json");
+  const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+  return pkg.version;
+}
+
 program
   .name("xyro")
   .description("XYRO — AI coding agent")
+  .version(packageVersion(), "-V, --version", "output the version number")
   .option("--api-key <key>", "API key")
   .option("-m, --model <model>", "LLM model")
   .option("--base-url <url>", "OpenAI-compatible base URL")
