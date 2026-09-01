@@ -25,6 +25,7 @@ program
   .name("xyro")
   .description("XYRO — AI coding agent")
   .version(packageVersion(), "-V, --version", "output the version number")
+  .option("-v", "output the version number (shorthand for --version)")
   .option("--api-key <key>", "API key")
   .option("-m, --model <model>", "LLM model")
   .option("--base-url <url>", "OpenAI-compatible base URL")
@@ -36,6 +37,11 @@ program
   .parse(process.argv);
 
 const opts = program.opts();
+
+if (opts.v) {
+  console.log(packageVersion());
+  process.exit(0);
+}
 
 if (opts.json) {
   setJsonMode(true);
