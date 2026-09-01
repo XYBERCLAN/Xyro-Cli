@@ -5,7 +5,7 @@ import { HistoryManager } from "./history.js";
 import { createClient, callLLM, LLMResponse } from "../providers/llm.js";
 import { executeTool } from "../tools/registry.js";
 import { DEFAULT_MODEL, DEFAULT_MAX_TOOL_CALLS } from "../config/constants.js";
-import { renderAssistant, renderUserMessage, renderToolCall, renderToolResult } from "../ui/render.js";
+import { renderAssistant, renderUserMessage, renderToolCall, renderToolResult, isJsonMode } from "../ui/render.js";
 
 export class Agent {
   private client: OpenAI;
@@ -27,7 +27,7 @@ export class Agent {
     let toolCallCount = 0;
 
     while (true) {
-      const useSpinner = Boolean(process.stdout.isTTY);
+      const useSpinner = !isJsonMode() && Boolean(process.stdout.isTTY);
       const spin = useSpinner ? p.spinner() : null;
       if (spin) spin.start("thinking...");
 

@@ -6,8 +6,27 @@ export function setJsonMode(enabled: boolean): void {
   jsonMode = enabled;
 }
 
+export function isJsonMode(): boolean {
+  return jsonMode;
+}
+
+const ANSI_RE = /\u001b\[[0-9;]*m/g;
+
+function clean(value: unknown): unknown {
+  if (typeof value === "string") return value.replace(ANSI_RE, "");
+  if (Array.isArray(value)) return value.map(clean);
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(value)) {
+      out[key] = clean(val);
+    }
+    return out;
+  }
+  return value;
+}
+
 function json(obj: Record<string, unknown>): void {
-  console.log(JSON.stringify(obj));
+  console.log(JSON.stringify(clean(obj)));
 }
 
 export function renderConfigBanner(model: string, provider: string): void {
