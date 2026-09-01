@@ -103,7 +103,15 @@ async function main(): Promise<void> {
   } else if (saved.provider) {
     provider = saved.provider;
     baseURL = saved.baseURL || "";
-    model = opts.model || process.env["WOLF_MODEL"] || saved.model || "gpt-4o";
+    const requestedModel = opts.model || process.env["WOLF_MODEL"] || "";
+    const preset = FREE_PROVIDERS.find((p) => p.name === saved.provider);
+    if (requestedModel) {
+      model = requestedModel;
+    } else if (preset && !preset.models.includes(saved.model || "")) {
+      model = preset.defaultModel;
+    } else {
+      model = saved.model || "gpt-4o";
+    }
   } else {
     provider = "OpenAI";
     baseURL = "";
