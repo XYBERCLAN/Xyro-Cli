@@ -44,8 +44,8 @@ export const FREE_PROVIDERS: Provider[] = [
   {
     id: "groq",
     name: "Groq (USA)",
-    models: ["llama-3.3-70b-versatile", "llama-4-scout-17b-16e-instruct", "mixtral-8x7b-32768"],
-    defaultModel: "llama-3.3-70b-versatile",
+    models: ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b"],
+    defaultModel: "openai/gpt-oss-120b",
     baseURL: "https://api.groq.com/openai/v1",
     keyURL: "https://console.groq.com/keys",
     steps: [
