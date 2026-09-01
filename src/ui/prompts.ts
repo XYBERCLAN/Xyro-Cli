@@ -28,8 +28,8 @@ export const FREE_PROVIDERS: Provider[] = [
   {
     id: "google",
     name: "Google AI Studio (USA)",
-    models: ["gemini-2.5-flash", "gemini-2.5-pro"],
-    defaultModel: "gemini-2.5-flash",
+    models: ["gemini-3.6-flash", "gemini-3.1-pro-preview"],
+    defaultModel: "gemini-3.6-flash",
     baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/",
     keyURL: "https://aistudio.google.com/apikey",
     steps: [
