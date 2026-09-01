@@ -44,7 +44,7 @@ export const FREE_PROVIDERS: Provider[] = [
   {
     id: "groq",
     name: "Groq (USA)",
-    models: ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.8-27b"],
+    models: ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.6-27b"],
     defaultModel: "openai/gpt-oss-120b",
     baseURL: "https://api.groq.com/openai/v1",
     keyURL: "https://console.groq.com/keys",
@@ -60,7 +60,7 @@ export const FREE_PROVIDERS: Provider[] = [
   {
     id: "openrouter",
     name: "OpenRouter (USA)",
-    models: ["openrouter/free", "deepseek/deepseek-v4-flash", "meta-llama/llama-3.3-70b-instruct:free"],
+    models: ["openrouter/free", "z-ai/glm-5.2:free", "nvidia/nemotron-3.5-lightning:free", "google/gemma-4-31b-it:free"],
     defaultModel: "openrouter/free",
     baseURL: "https://openrouter.ai/api/v1",
     keyURL: "https://openrouter.ai/keys",
