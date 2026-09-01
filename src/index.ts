@@ -104,7 +104,7 @@ async function main(): Promise<void> {
 
   if (
     !bannerPrinted &&
-    !opts.noBanner &&
+    opts.banner !== false &&
     !process.env["XYRO_NO_BANNER"] &&
     process.stdout.isTTY
   ) {
@@ -113,7 +113,7 @@ async function main(): Promise<void> {
     bannerPrinted = true;
   }
 
-  if (!apiKey && !opts.noBanner) {
+  if (!apiKey && opts.banner !== false) {
     const config = await interactiveSetup();
     apiKey = config.apiKey;
     model = config.model;
