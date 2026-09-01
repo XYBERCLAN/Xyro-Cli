@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { Agent } from "./agent/loop.js";
-import { renderConfigBanner, renderInfo, renderError } from "./ui/render.js";
+import { renderConfigBanner, renderInfo, renderError, setJsonMode } from "./ui/render.js";
 import { interactiveSetup, askForInput, CANCEL, FREE_PROVIDERS } from "./ui/prompts.js";
 import { printXyroHead } from "./cli/banner-icon.js";
 import { printBanner } from "./cli/banner.js";
@@ -36,6 +36,10 @@ program
   .parse(process.argv);
 
 const opts = program.opts();
+
+if (opts.json) {
+  setJsonMode(true);
+}
 
 function formatApiError(err: unknown, provider: string, model: string): string {
   if (!(err instanceof OpenAI.APIError)) return "";
@@ -106,14 +110,15 @@ async function main(): Promise<void> {
     !bannerPrinted &&
     opts.banner !== false &&
     !process.env["XYRO_NO_BANNER"] &&
-    process.stdout.isTTY
+    process.stdout.isTTY &&
+    !opts.json
   ) {
     printXyroHead();
     printBanner();
     bannerPrinted = true;
   }
 
-  if (!apiKey && opts.banner !== false) {
+  if (!apiKey && opts.banner !== false && !opts.json) {
     const config = await interactiveSetup();
     apiKey = config.apiKey;
     model = config.model;
