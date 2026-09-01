@@ -2,7 +2,7 @@ import OpenAI from "openai";
 import * as p from "@clack/prompts";
 import { Message, AgentOptions } from "./types.js";
 import { HistoryManager } from "./history.js";
-import { createClient, callLLM } from "../providers/llm.js";
+import { createClient, callLLM, LLMResponse } from "../providers/llm.js";
 import { executeTool } from "../tools/registry.js";
 import { DEFAULT_MODEL, DEFAULT_MAX_TOOL_CALLS } from "../config/constants.js";
 import { renderAssistant, renderUserMessage, renderToolCall, renderToolResult } from "../ui/render.js";
@@ -27,12 +27,16 @@ export class Agent {
     let toolCallCount = 0;
 
     while (true) {
-      const spin = p.spinner();
-      spin.start("thinking...");
+      const useSpinner = Boolean(process.stdout.isTTY);
+      const spin = useSpinner ? p.spinner() : null;
+      if (spin) spin.start("thinking...");
 
-      const response = await callLLM(this.client, this.model, this.history.getAll());
-
-      spin.stop("ready");
+      let response: LLMResponse;
+      try {
+        response = await callLLM(this.client, this.model, this.history.getAll());
+      } finally {
+        if (spin) spin.stop("ready");
+      }
 
       const msg: Message = { role: "assistant", content: response.content || "" };
       if (response.tool_calls.length > 0) {
