@@ -519,8 +519,27 @@ export async function interactiveSetup(): Promise<Config> {
 
 export const CANCEL = Symbol("cancel");
 
+function readAllStdin(): Promise<string> {
+  return new Promise((resolve) => {
+    let data = "";
+    process.stdin.resume();
+    process.stdin.setEncoding("utf-8");
+    process.stdin.on("data", (chunk) => {
+      data += chunk;
+    });
+    process.stdin.on("end", () => resolve(data));
+    process.stdin.on("error", () => resolve(data));
+  });
+}
+
+let stdinHandleClosed = false;
+
 export async function askForInput(): Promise<string | typeof CANCEL> {
-  if (!process.stdin.isTTY) return "";
+  if (!process.stdin.isTTY) {
+    if (stdinHandleClosed) return CANCEL;
+    stdinHandleClosed = true;
+    return (await readAllStdin()).trim();
+  }
   process.stdin.resume();
 
   return new Promise((resolve) => {
