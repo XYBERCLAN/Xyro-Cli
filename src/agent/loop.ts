@@ -2,10 +2,12 @@ import OpenAI from "openai";
 import * as p from "@clack/prompts";
 import { Message, AgentOptions } from "./types.js";
 import { HistoryManager } from "./history.js";
-import { createClient, callLLM, LLMResponse } from "../providers/llm.js";
+import { createClient, callLLM, summarizeHistory, LLMResponse } from "../providers/llm.js";
 import { executeTool } from "../tools/registry.js";
 import { DEFAULT_MODEL, DEFAULT_MAX_TOOL_CALLS } from "../config/constants.js";
 import { renderAssistant, renderUserMessage, renderToolCall, renderToolResult, isJsonMode } from "../ui/render.js";
+
+export type ResponseHandler = (usage: unknown) => void;
 
 export class Agent {
   private client: OpenAI;
@@ -18,6 +20,39 @@ export class Agent {
     this.model = opts.model || DEFAULT_MODEL;
     this.maxToolCalls = opts.maxToolCalls || DEFAULT_MAX_TOOL_CALLS;
     this.history = new HistoryManager();
+  }
+
+  setModel(model: string): void {
+    this.model = model;
+  }
+
+  getModel(): string {
+    return this.model;
+  }
+
+  getMaxToolCalls(): number {
+    return this.maxToolCalls;
+  }
+
+  getHistory(): Message[] {
+    return this.history.getAll();
+  }
+
+  exportMarkdown(): string {
+    return this.history.toMarkdown();
+  }
+
+  onLLMResponse(handler: ResponseHandler): void {
+    this.history.onResponse(handler);
+  }
+
+  async compact(): Promise<string | null> {
+    const msgs = this.history.getAll();
+    if (msgs.length <= 1) return null;
+    const summary = await summarizeHistory(this.client, this.model, msgs);
+    if (!summary) return null;
+    this.history.resetWithSummary(summary);
+    return summary;
   }
 
   async run(input: string): Promise<void> {
@@ -37,6 +72,8 @@ export class Agent {
       } finally {
         if (spin) spin.stop("ready");
       }
+
+      this.history.emitResponse(response);
 
       const msg: Message = { role: "assistant", content: response.content || "" };
       if (response.tool_calls.length > 0) {

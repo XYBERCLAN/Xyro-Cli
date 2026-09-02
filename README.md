@@ -210,6 +210,21 @@ npm run build
 npm start
 ```
 
+### ▸ Releasing to npm
+
+Releases are automated via GitHub Actions (`.github/workflows/publish.yml`). Pushing a `v*` tag triggers `npm publish`:
+
+```bash
+# 1. Bump version in package.json first, commit
+npm version patch   # or minor / major — this commits and tags for you
+
+# 2. Push the tag
+git push --follow-tags
+# GitHub Actions now: installs → builds → verifies tag == package.json version → publishes
+```
+
+The workflow requires an `NPM_TOKEN` secret in the repo (Settings → Secrets → Actions). Use a **granular access token** with "Read and write" packages permission, and 2FA bypass enabled for automation.
+
 ---
 
 ## ▸ License

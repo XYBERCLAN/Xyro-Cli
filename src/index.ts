@@ -7,6 +7,8 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { Agent } from "./agent/loop.js";
+import { handleCommand } from "./agent/commands.js";
+import { UsageTracker } from "./agent/usage.js";
 import { renderConfigBanner, renderInfo, renderError, setJsonMode } from "./ui/render.js";
 import { interactiveSetup, askForInput, CANCEL, FREE_PROVIDERS } from "./ui/prompts.js";
 import { printXyroHead } from "./cli/banner-icon.js";
@@ -154,6 +156,11 @@ async function main(): Promise<void> {
     maxToolCalls: parseInt(opts.maxToolCalls, 10),
   });
 
+  const usage = new UsageTracker();
+  agent.onLLMResponse((usageData) => usage.track(usageData as { prompt_tokens?: number; completion_tokens?: number } | null));
+
+  let currentModel = model;
+
   if (opts.resume) {
     const loaded = agent.load();
     renderInfo(loaded ? "Resumed previous conversation" : "No saved session found");
@@ -173,30 +180,32 @@ async function main(): Promise<void> {
     const text = input as string;
     const trimmed = text.trim();
 
-    if (trimmed === "exit" || trimmed === "quit") {
-      agent.save();
-      renderInfo("Goodbye");
-      break;
-    }
-
-    if (trimmed === "clear") {
-      agent.reset();
-      renderInfo("Conversation cleared");
-      continue;
-    }
-
-    if (trimmed === "resume") {
-      const loaded = agent.load();
-      renderInfo(loaded ? "Resumed previous conversation" : "No saved session found");
-      continue;
-    }
-
     if (!trimmed) continue;
+
+    // Slash commands (and bare-word aliases) take priority
+    const cmdResult = await handleCommand(trimmed, {
+      agent,
+      model: currentModel,
+      setModel: (m) => {
+        currentModel = m;
+        agent.setModel(m);
+      },
+      provider,
+      baseURL,
+      apiKey,
+      usage,
+      persistConfig: (c) => savePersistedConfig({ provider: c.provider, model: c.model, baseURL: c.baseURL, apiKey: c.apiKey }),
+    });
+
+    if (cmdResult) {
+      if (cmdResult.action === "exit") break;
+      continue;
+    }
 
     try {
       await agent.run(trimmed);
     } catch (err: unknown) {
-      const formatted = formatApiError(err, provider, model);
+      const formatted = formatApiError(err, provider, agent.getModel());
       if (formatted) {
         renderError(formatted);
       } else if (err instanceof Error) {

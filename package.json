@@ -1,10 +1,18 @@
 {
-  "name": "xyro",
-  "version": "0.1.0",
+  "name": "xyro-cli",
+  "version": "0.2.0",
   "description": "XYRO — a terminal-native AI coding agent built from scratch",
   "type": "module",
   "bin": {
     "xyro": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CYBERCLAN237/Xyro-Cli.git"
   },
   "scripts": {
     "dev": "tsx src/index.ts",

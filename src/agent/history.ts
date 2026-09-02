@@ -2,21 +2,46 @@ import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { Message } from "./types.js";
 import { SYSTEM_PROMPT, HISTORY_FILE } from "../config/constants.js";
 import { loadProjectContext } from "../config/loader.js";
+import { historyToMarkdown } from "./usage.js";
 
-export class HistoryManager {
+type ResponseListener = (usage: unknown) => void;export class HistoryManager {
   private messages: Message[] = [];
+  private listeners: ResponseListener[] = [];
 
   constructor() {
     this.reset();
   }
 
-  reset(): void {
+  onResponse(listener: ResponseListener): void {
+    this.listeners.push(listener);
+  }
+
+  emitResponse(response: { usage?: unknown }): void {
+    for (const l of this.listeners) l(response.usage);
+  }
+
+  systemMessage(): Message {
     let systemContent = SYSTEM_PROMPT;
     const projectContext = loadProjectContext();
     if (projectContext) {
       systemContent += `\n\n## Project Context\n${projectContext}`;
     }
-    this.messages = [{ role: "system", content: systemContent }];
+    return { role: "system", content: systemContent };
+  }
+
+  reset(): void {
+    this.messages = [this.systemMessage()];
+  }
+
+  resetWithSummary(summary: string): void {
+    const sys = this.systemMessage();
+    this.messages = [
+      sys,
+      {
+        role: "system",
+        content: `## Previous Conversation (compacted summary)\n${summary}`,
+      },
+    ];
   }
 
   add(msg: Message): void {
@@ -25,6 +50,10 @@ export class HistoryManager {
 
   getAll(): Message[] {
     return this.messages;
+  }
+
+  toMarkdown(): string {
+    return historyToMarkdown(this.messages);
   }
 
   save(): void {

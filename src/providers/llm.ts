@@ -5,6 +5,7 @@ import { getToolDefinitions } from "../tools/registry.js";
 export interface LLMResponse {
   content: string | null;
   tool_calls: OpenAI.Chat.Completions.ChatCompletionMessageToolCall[];
+  usage?: unknown;
 }
 
 function isOpenRouter(baseURL?: string): boolean {
@@ -42,5 +43,32 @@ export async function callLLM(
   return {
     content: msg.content,
     tool_calls: msg.tool_calls || [],
+    usage: response.usage || null,
   };
+}
+
+export async function summarizeHistory(
+  client: OpenAI,
+  model: string,
+  messages: Message[]
+): Promise<string | null> {
+  const response = await client.chat.completions.create({
+    model,
+    messages: [
+      {
+        role: "system",
+        content: `Summarize the following conversation between a user and a coding assistant.
+Preserve: tasks completed, files modified, key decisions, and open follow-ups.
+Be concise — under 500 words.`,
+      },
+      {
+        role: "user",
+        content: JSON.stringify(
+          messages.map((m) => ({ role: m.role, content: m.content }))
+        ),
+      },
+    ],
+  });
+
+  return response.choices[0].message.content;
 }
