@@ -3,8 +3,11 @@
 import { program } from "commander";
 import pc from "picocolors";
 import OpenAI from "openai";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { Agent } from "./agent/loop.js";
-import { renderConfigBanner, renderInfo, renderError } from "./ui/render.js";
+import { renderConfigBanner, renderInfo, renderError, setJsonMode } from "./ui/render.js";
 import { interactiveSetup, askForInput, CANCEL, FREE_PROVIDERS } from "./ui/prompts.js";
 import { printXyroHead } from "./cli/banner-icon.js";
 import { printBanner } from "./cli/banner.js";
@@ -12,20 +15,37 @@ import { loadPersistedConfig, savePersistedConfig } from "./config/persist.js";
 
 let bannerPrinted = false;
 
+function packageVersion(): string {
+  const pkgPath = join(dirname(fileURLToPath(import.meta.url)), "..", "package.json");
+  const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
+  return pkg.version;
+}
+
 program
   .name("xyro")
   .description("XYRO — AI coding agent")
+  .version(packageVersion(), "-V, --version", "output the version number")
+  .option("-v", "output the version number (shorthand for --version)")
   .option("--api-key <key>", "API key")
   .option("-m, --model <model>", "LLM model")
   .option("--base-url <url>", "OpenAI-compatible base URL")
   .option("--provider <id>", "Provider ID (e.g. groq, openrouter, deepseek)")
   .option("--max-tool-calls <n>", "Max tool calls per turn", "25")
   .option("--resume", "Resume previous conversation", false)
-  .option("--no-banner", "Skip interactive setup and banner", false)
+  .option("--no-banner", "Skip interactive setup and banner")
   .option("--json", "JSON output mode (skips banner)", false)
   .parse(process.argv);
 
 const opts = program.opts();
+
+if (opts.v) {
+  console.log(packageVersion());
+  process.exit(0);
+}
+
+if (opts.json) {
+  setJsonMode(true);
+}
 
 function formatApiError(err: unknown, provider: string, model: string): string {
   if (!(err instanceof OpenAI.APIError)) return "";
@@ -83,7 +103,15 @@ async function main(): Promise<void> {
   } else if (saved.provider) {
     provider = saved.provider;
     baseURL = saved.baseURL || "";
-    model = opts.model || process.env["WOLF_MODEL"] || saved.model || "gpt-4o";
+    const requestedModel = opts.model || process.env["WOLF_MODEL"] || "";
+    const preset = FREE_PROVIDERS.find((p) => p.name === saved.provider);
+    if (requestedModel) {
+      model = requestedModel;
+    } else if (preset && !preset.models.includes(saved.model || "")) {
+      model = preset.defaultModel;
+    } else {
+      model = saved.model || "gpt-4o";
+    }
   } else {
     provider = "OpenAI";
     baseURL = "";
@@ -94,16 +122,17 @@ async function main(): Promise<void> {
 
   if (
     !bannerPrinted &&
-    !opts.noBanner &&
+    opts.banner !== false &&
     !process.env["XYRO_NO_BANNER"] &&
-    process.stdout.isTTY
+    process.stdout.isTTY &&
+    !opts.json
   ) {
     printXyroHead();
     printBanner();
     bannerPrinted = true;
   }
 
-  if (!apiKey && !opts.noBanner) {
+  if (!apiKey && opts.banner !== false && !opts.json) {
     const config = await interactiveSetup();
     apiKey = config.apiKey;
     model = config.model;
@@ -153,6 +182,12 @@ async function main(): Promise<void> {
     if (trimmed === "clear") {
       agent.reset();
       renderInfo("Conversation cleared");
+      continue;
+    }
+
+    if (trimmed === "resume") {
+      const loaded = agent.load();
+      renderInfo(loaded ? "Resumed previous conversation" : "No saved session found");
       continue;
     }
 

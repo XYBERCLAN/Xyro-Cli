@@ -28,8 +28,8 @@ export const FREE_PROVIDERS: Provider[] = [
   {
     id: "google",
     name: "Google AI Studio (USA)",
-    models: ["gemini-2.5-flash", "gemini-2.5-pro"],
-    defaultModel: "gemini-2.5-flash",
+    models: ["gemini-3.6-flash", "gemini-3.1-pro-preview"],
+    defaultModel: "gemini-3.6-flash",
     baseURL: "https://generativelanguage.googleapis.com/v1beta/openai/",
     keyURL: "https://aistudio.google.com/apikey",
     steps: [
@@ -44,8 +44,8 @@ export const FREE_PROVIDERS: Provider[] = [
   {
     id: "groq",
     name: "Groq (USA)",
-    models: ["llama-3.3-70b-versatile", "llama-4-scout-17b-16e-instruct", "mixtral-8x7b-32768"],
-    defaultModel: "llama-3.3-70b-versatile",
+    models: ["openai/gpt-oss-120b", "openai/gpt-oss-20b", "qwen/qwen3.6-27b"],
+    defaultModel: "openai/gpt-oss-120b",
     baseURL: "https://api.groq.com/openai/v1",
     keyURL: "https://console.groq.com/keys",
     steps: [
@@ -60,7 +60,7 @@ export const FREE_PROVIDERS: Provider[] = [
   {
     id: "openrouter",
     name: "OpenRouter (USA)",
-    models: ["openrouter/free", "deepseek/deepseek-v4-flash", "meta-llama/llama-3.3-70b-instruct:free"],
+    models: ["openrouter/free", "z-ai/glm-5.2:free", "nvidia/nemotron-3.5-lightning:free", "google/gemma-4-31b-it:free"],
     defaultModel: "openrouter/free",
     baseURL: "https://openrouter.ai/api/v1",
     keyURL: "https://openrouter.ai/keys",
@@ -519,8 +519,27 @@ export async function interactiveSetup(): Promise<Config> {
 
 export const CANCEL = Symbol("cancel");
 
+function readAllStdin(): Promise<string> {
+  return new Promise((resolve) => {
+    let data = "";
+    process.stdin.resume();
+    process.stdin.setEncoding("utf-8");
+    process.stdin.on("data", (chunk) => {
+      data += chunk;
+    });
+    process.stdin.on("end", () => resolve(data));
+    process.stdin.on("error", () => resolve(data));
+  });
+}
+
+let stdinHandleClosed = false;
+
 export async function askForInput(): Promise<string | typeof CANCEL> {
-  if (!process.stdin.isTTY) return "";
+  if (!process.stdin.isTTY) {
+    if (stdinHandleClosed) return CANCEL;
+    stdinHandleClosed = true;
+    return (await readAllStdin()).trim();
+  }
   process.stdin.resume();
 
   return new Promise((resolve) => {
@@ -533,7 +552,7 @@ export async function askForInput(): Promise<string | typeof CANCEL> {
       rl.close();
       resolve(CANCEL);
     });
-    rl.question(`  ${pc.dim("┃")} `, (answer) => {
+    rl.question(`  ${pc.cyan(">")} `, (answer) => {
       rl.close();
       resolve(answer || "");
     });
