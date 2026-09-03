@@ -44,7 +44,8 @@ export function renderAssistant(content: string): void {
     json({ type: "assistant", content });
     return;
   }
-  const lines = content.split("\n");
+  const stripped = stripMarkdown(content);
+  const lines = stripped.split("\n");
   for (const line of lines) {
     console.log(`  ${pc.dim("┃")} ${line}`);
   }
@@ -108,20 +109,35 @@ export function renderStreamStart(): void {
   streamStarted = true;
 }
 
+/** Strip markdown formatting for terminal display */
+function stripMarkdown(text: string): string {
+  return text
+    .replace(/\*\*(.+?)\*\*/g, "$1")        // **bold** → bold
+    .replace(/\*(.+?)\*/g, "$1")             // *italic* → italic
+    .replace(/__(.+?)__/g, "$1")              // __bold__ → bold
+    .replace(/_(.+?)_/g, "$1")               // _italic_ → italic
+    .replace(/~~(.+?)~~/g, "$1")              // ~~strike~~ → strike
+    .replace(/`(.+?)`/g, "$1")               // `code` → code
+    .replace(/^#{1,6}\s+/gm, "")             // ### headings
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1"); // [text](url) → text
+}
+
 /** Append a streamed chunk to the current response */
 export function renderStreamChunk(chunk: string): void {
   if (!streamStarted) {
     renderStreamStart();
+    // Print a clean prefix before the first chunk
+    process.stdout.write(`  ${pc.dim("┃")} `);
   }
   streamBuffer += chunk;
-  // Print each chunk immediately for real-time feel
-  process.stdout.write(chunk);
+  // Strip markdown for clean terminal display
+  process.stdout.write(stripMarkdown(chunk));
 }
 
 /** Finalize the streaming response (add newline) */
 export function renderStreamEnd(): void {
   if (streamStarted && streamBuffer) {
-    process.stdout.write("\n\n");
+    process.stdout.write("\n");
   }
   streamBuffer = "";
   streamStarted = false;

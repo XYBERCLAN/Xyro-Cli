@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import * as p from "@clack/prompts";
+import pc from "picocolors";
 import { Message, AgentOptions } from "./types.js";
 import { HistoryManager } from "./history.js";
 import { createClient, callLLMStream, summarizeHistory, LLMResponse } from "../providers/llm.js";
@@ -112,10 +113,12 @@ export class Agent {
       if (spin) spin.start("thinking...");
 
       let response: LLMResponse;
+      const llmStart = performance.now();
       try {
         // Use streaming for real-time output
         if (process.stdout.isTTY && !isJsonMode()) {
-          if (spin) spin.stop("ready");
+          // Stop spinner silently (no message) to avoid artifacts before streaming
+          if (spin) spin.stop("");
           response = await callLLMStream(
             this.client,
             this.model,
@@ -135,6 +138,7 @@ export class Agent {
         if (spin) spin.stop("error");
         throw err;
       }
+      const llmElapsed = ((performance.now() - llmStart) / 1000).toFixed(1);
 
       this.history.emitResponse(response);
 
@@ -146,15 +150,21 @@ export class Agent {
 
       if (response.content) {
         if (process.stdout.isTTY && !isJsonMode()) {
-          renderStreamEnd();
+          renderStreamEnd(llmElapsed);
         } else {
           // Non-TTY: streaming was a no-op, render the full response now
-          renderAssistant(response.content);
+          renderAssistant(response.content, llmElapsed);
         }
       }
 
       if (!response.tool_calls || response.tool_calls.length === 0) {
         break;
+      }
+
+      // Show progress indicator for multiple tool calls
+      const totalTools = response.tool_calls.length;
+      if (totalTools > 1 && !isJsonMode() && process.stdout.isTTY) {
+        console.log(`  ${pc.dim("┃")} ${pc.dim(`executing ${totalTools} tool calls...`)}`);
       }
 
       for (const tc of response.tool_calls) {
@@ -165,8 +175,14 @@ export class Agent {
         const start = performance.now();
         renderToolCall(name, args, toolCallCount);
 
+        // Show spinner while tool is executing
+        const toolSpin = useSpinner ? p.spinner() : null;
+        if (toolSpin) toolSpin.start(`running ${name}...`);
+
         const result = await executeTool(name, args);
         const elapsed = ((performance.now() - start) / 1000).toFixed(1);
+        if (toolSpin) toolSpin.stop(`${name} done`);
+
         renderToolResult(result, elapsed);
 
         this.history.add({

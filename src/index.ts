@@ -18,6 +18,13 @@ import { initializeTools, getToolCount } from "./tools/registry.js";
 
 let bannerPrinted = false;
 
+// Suppress punycode deprecation warning (from internal Node.js usage)
+process.removeAllListeners("warning");
+process.on("warning", (warn) => {
+  if (warn.name === "DeprecationWarning" && warn.message.includes("punycode")) return;
+  console.warn(warn.message);
+});
+
 function packageVersion(): string {
   const pkgPath = join(dirname(fileURLToPath(import.meta.url)), "..", "package.json");
   const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
