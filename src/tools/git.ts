@@ -52,7 +52,7 @@ export async function gitLog(args?: { count?: number }): Promise<string> {
  */
 const FREEBUFF_FOOTER = [
   "",
-  "Assisted by Freebuff",
+  "Assisted by XYRO",
   "",
   "🤖 Generated with Codebuff",
   "Co-Authored-By: Codebuff <noreply@codebuff.com>",
