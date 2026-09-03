@@ -14,6 +14,7 @@ import { interactiveSetup, askForInput, CANCEL, FREE_PROVIDERS } from "./ui/prom
 import { printXyroHead } from "./cli/banner-icon.js";
 import { printBanner } from "./cli/banner.js";
 import { loadPersistedConfig, savePersistedConfig } from "./config/persist.js";
+import { initializeTools, getToolCount } from "./tools/registry.js";
 
 let bannerPrinted = false;
 
@@ -80,6 +81,9 @@ function formatApiError(err: unknown, provider: string, model: string): string {
 }
 
 async function main(): Promise<void> {
+  // Initialize built-in + plugin tools
+  await initializeTools();
+
   // Priority: CLI arg > env var > saved config > default
   const saved = loadPersistedConfig();
 

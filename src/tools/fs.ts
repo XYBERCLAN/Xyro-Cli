@@ -1,6 +1,7 @@
 import { readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { IGNORED_DIRS } from "../config/constants.js";
+import { isIgnoredDir } from "../config/platform.js";
 
 function walk(dir: string, depth = 0, maxDepth = 3): string[] {
   if (depth > maxDepth) return [];
@@ -8,7 +9,7 @@ function walk(dir: string, depth = 0, maxDepth = 3): string[] {
   try {
     const entries = readdirSync(dir);
     for (const entry of entries) {
-      if (IGNORED_DIRS.has(entry) || entry.startsWith(".")) continue;
+      if (isIgnoredDir(entry, IGNORED_DIRS) || entry.startsWith(".")) continue;
       const full = join(dir, entry);
       const isDir = statSync(full).isDirectory();
       const indent = "  ".repeat(depth);

@@ -2,12 +2,35 @@ import OpenAI from "openai";
 import * as p from "@clack/prompts";
 import { Message, AgentOptions } from "./types.js";
 import { HistoryManager } from "./history.js";
-import { createClient, callLLM, summarizeHistory, LLMResponse } from "../providers/llm.js";
+import { createClient, callLLMStream, summarizeHistory, LLMResponse } from "../providers/llm.js";
 import { executeTool } from "../tools/registry.js";
-import { DEFAULT_MODEL, DEFAULT_MAX_TOOL_CALLS } from "../config/constants.js";
-import { renderAssistant, renderUserMessage, renderToolCall, renderToolResult, isJsonMode } from "../ui/render.js";
+import { DEFAULT_MODEL, DEFAULT_MAX_TOOL_CALLS, CONTEXT_WINDOW_WARN_TOKENS } from "../config/constants.js";
+import {
+  renderAssistant,
+  renderUserMessage,
+  renderToolCall,
+  renderToolResult,
+  renderStreamStart,
+  renderStreamChunk,
+  renderStreamEnd,
+  isJsonMode,
+} from "../ui/render.js";
 
 export type ResponseHandler = (usage: unknown) => void;
+
+/** Estimate token count from character count (rough: 1 token ≈ 4 chars) */
+function estimateTokens(msgs: Message[]): number {
+  let chars = 0;
+  for (const m of msgs) {
+    chars += (m.content || "").length;
+    if (m.tool_calls) {
+      for (const tc of m.tool_calls) {
+        chars += (tc.function?.arguments || "").length;
+      }
+    }
+  }
+  return Math.ceil(chars / 4);
+}
 
 export class Agent {
   private client: OpenAI;
@@ -62,15 +85,55 @@ export class Agent {
     let toolCallCount = 0;
 
     while (true) {
+      // Auto-compact: check if context is getting too large
+      const msgs = this.history.getAll();
+      const estimatedTokens = estimateTokens(msgs);
+      if (estimatedTokens > CONTEXT_WINDOW_WARN_TOKENS) {
+        if (!isJsonMode()) {
+          const spin = p.spinner();
+          spin.start("context window getting large, summarizing...");
+          try {
+            await this.compact();
+            spin.stop("compacted");
+          } catch {
+            spin.stop("compact failed, continuing");
+          }
+        } else {
+          try {
+            await this.compact();
+          } catch {
+            // continue anyway
+          }
+        }
+      }
+
       const useSpinner = !isJsonMode() && Boolean(process.stdout.isTTY);
       const spin = useSpinner ? p.spinner() : null;
       if (spin) spin.start("thinking...");
 
       let response: LLMResponse;
       try {
-        response = await callLLM(this.client, this.model, this.history.getAll());
-      } finally {
-        if (spin) spin.stop("ready");
+        // Use streaming for real-time output
+        if (process.stdout.isTTY && !isJsonMode()) {
+          if (spin) spin.stop("ready");
+          response = await callLLMStream(
+            this.client,
+            this.model,
+            this.history.getAll(),
+            (chunk) => renderStreamChunk(chunk)
+          );
+        } else {
+          response = await callLLMStream(
+            this.client,
+            this.model,
+            this.history.getAll(),
+            () => {} // no-op for non-TTY / JSON mode
+          );
+          if (spin) spin.stop("ready");
+        }
+      } catch (err) {
+        if (spin) spin.stop("error");
+        throw err;
       }
 
       this.history.emitResponse(response);
@@ -82,7 +145,12 @@ export class Agent {
       this.history.add(msg);
 
       if (response.content) {
-        renderAssistant(response.content);
+        if (process.stdout.isTTY && !isJsonMode()) {
+          renderStreamEnd();
+        } else {
+          // Non-TTY: streaming was a no-op, render the full response now
+          renderAssistant(response.content);
+        }
       }
 
       if (!response.tool_calls || response.tool_calls.length === 0) {

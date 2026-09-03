@@ -8,6 +8,9 @@ export interface LLMResponse {
   usage?: unknown;
 }
 
+export type StreamChunkHandler = (chunk: string) => void;
+export type StreamToolCallHandler = (toolCalls: OpenAI.Chat.Completions.ChatCompletionMessageToolCall[]) => void;
+
 function isOpenRouter(baseURL?: string): boolean {
   return !!baseURL?.includes("openrouter");
 }
@@ -44,6 +47,75 @@ export async function callLLM(
     content: msg.content,
     tool_calls: msg.tool_calls || [],
     usage: response.usage || null,
+  };
+}
+
+/**
+ * Streaming LLM call — yields content chunks in real time.
+ * Returns the full assembled response when the stream completes.
+ */
+export async function callLLMStream(
+  client: OpenAI,
+  model: string,
+  messages: Message[],
+  onChunk: StreamChunkHandler
+): Promise<LLMResponse> {
+  const stream = await client.chat.completions.create({
+    model,
+    messages: messages as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+    tools: getToolDefinitions(),
+    stream: true,
+  });
+
+  let content = "";
+  const toolCallsMap = new Map<number, OpenAI.Chat.Completions.ChatCompletionMessageToolCall>();
+  let usage: unknown = null;
+
+  for await (const chunk of stream) {
+    const choice = chunk.choices[0];
+    if (!choice) continue;
+
+    const delta = choice.delta;
+
+    // Content streaming
+    if (delta.content) {
+      content += delta.content;
+      onChunk(delta.content);
+    }
+
+    // Tool call streaming (arguments come in fragments)
+    if (delta.tool_calls) {
+      for (const tc of delta.tool_calls) {
+        const idx = tc.index ?? 0;
+        if (!toolCallsMap.has(idx)) {
+          toolCallsMap.set(idx, {
+            id: tc.id || "",
+            type: "function" as const,
+            function: {
+              name: tc.function?.name || "",
+              arguments: "",
+            },
+          });
+        }
+        const existing = toolCallsMap.get(idx)!;
+        if (tc.id) existing.id = tc.id;
+        if (tc.function?.name) existing.function.name = tc.function.name;
+        if (tc.function?.arguments) existing.function.arguments += tc.function.arguments;
+      }
+    }
+
+    // Usage (only on last chunk)
+    if (chunk.usage) {
+      usage = chunk.usage;
+    }
+  }
+
+  const toolCalls = Array.from(toolCallsMap.values());
+
+  return {
+    content: content || null,
+    tool_calls: toolCalls,
+    usage,
   };
 }
 

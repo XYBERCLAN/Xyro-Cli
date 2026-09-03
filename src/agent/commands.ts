@@ -5,6 +5,7 @@ import { UsageTracker, formatUsage } from "../agent/usage.js";
 import { summarizeHistory } from "../providers/llm.js";
 import { FREE_PROVIDERS, interactiveSetup, Provider } from "../ui/prompts.js";
 import { renderInfo, renderError, renderAssistant, isJsonMode } from "../ui/render.js";
+import { getToolCount } from "../tools/registry.js";
 
 export interface CommandContext {
   agent: Agent;
@@ -93,11 +94,13 @@ export async function handleCommand(
     case "status": {
       const msgs = agent.getHistory();
       const toolCalls = msgs.filter((m) => m.role === "tool").length;
+      const toolInfo = getToolCount();
       const lines = [
         `model: ${ctx.model}`,
         `provider: ${ctx.provider}`,
         `cwd: ${process.cwd()}`,
         `messages: ${msgs.length} (incl. ${toolCalls} tool results)`,
+        `tools: ${toolInfo.total} (${toolInfo.builtin} built-in + ${toolInfo.plugins} plugin)` ,
         `max tool calls: ${agent.getMaxToolCalls()}`,
       ];
       renderAssistant(lines.join("\n"));

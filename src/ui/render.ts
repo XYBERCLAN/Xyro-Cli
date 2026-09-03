@@ -96,3 +96,33 @@ export function renderInfo(msg: string): void {
   }
   console.log(`  ${pc.dim("┃")} ${msg}`);
 }
+
+// ─── Streaming support ───────────────────────────────────────────
+
+let streamBuffer = "";
+let streamStarted = false;
+
+/** Begin a new streaming assistant response */
+export function renderStreamStart(): void {
+  streamBuffer = "";
+  streamStarted = true;
+}
+
+/** Append a streamed chunk to the current response */
+export function renderStreamChunk(chunk: string): void {
+  if (!streamStarted) {
+    renderStreamStart();
+  }
+  streamBuffer += chunk;
+  // Print each chunk immediately for real-time feel
+  process.stdout.write(chunk);
+}
+
+/** Finalize the streaming response (add newline) */
+export function renderStreamEnd(): void {
+  if (streamStarted && streamBuffer) {
+    process.stdout.write("\n\n");
+  }
+  streamBuffer = "";
+  streamStarted = false;
+}
