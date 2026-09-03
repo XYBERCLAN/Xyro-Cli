@@ -37,27 +37,118 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** Retry wrapper for rate-limited API calls */
-async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
-  for (let i = 0; i <= maxRetries; i++) {
+/** Check if an error represents a rate limit or transient quota exhaustion */
+export function isRateLimitError(err: unknown): boolean {
+  if (!err) return false;
+  if (err instanceof OpenAI.APIError) {
+    if (err.status === 429) return true;
+    if (err.code === "rate_limit_exceeded" || err.code === "insufficient_quota") return true;
+  }
+  if (typeof err === "object" && "status" in err && (err as any).status === 429) {
+    return true;
+  }
+
+  const msg = err instanceof Error ? err.message : String(err);
+  const lower = msg.toLowerCase();
+  return (
+    lower.includes("429") ||
+    lower.includes("rate limit") ||
+    lower.includes("rate_limit") ||
+    lower.includes("resource has been exhausted") ||
+    lower.includes("resource_exhausted") ||
+    lower.includes("too many requests") ||
+    lower.includes("quota exceeded") ||
+    lower.includes("tpm") ||
+    lower.includes("rpm")
+  );
+}
+
+/** Check if an error represents a transient network issue that warrants a retry */
+export function isTransientNetworkError(err: unknown): boolean {
+  if (!err) return false;
+  const msg = err instanceof Error ? err.message : String(err);
+  const cause = (err as any)?.cause?.message || (err as any)?.cause?.code || "";
+  const combined = `${msg} ${cause}`.toLowerCase();
+  return (
+    combined.includes("etimedout") ||
+    combined.includes("econnreset") ||
+    combined.includes("connection error") ||
+    combined.includes("fetch failed") ||
+    combined.includes("network error")
+  );
+}
+
+/** Extract retry-after duration in milliseconds from error headers or message */
+export function extractRetryDelay(err: unknown, attempt: number): number {
+  // Check headers if available
+  const headers = (err as any)?.headers || (err as any)?.response?.headers;
+  if (headers) {
+    const retryAfter = headers["retry-after"] || headers["Retry-After"];
+    if (retryAfter) {
+      const parsedSeconds = parseFloat(retryAfter);
+      if (!isNaN(parsedSeconds) && parsedSeconds > 0) {
+        return Math.min(30000, Math.max(1000, Math.ceil(parsedSeconds * 1000)));
+      }
+    }
+    const retryAfterMs = headers["retry-after-ms"] || headers["Retry-After-Ms"];
+    if (retryAfterMs) {
+      const parsedMs = parseFloat(retryAfterMs);
+      if (!isNaN(parsedMs) && parsedMs > 0) {
+        return Math.min(30000, Math.max(1000, Math.ceil(parsedMs)));
+      }
+    }
+  }
+
+  // Check error message for duration patterns like "try again in 12.5s" or "wait 3000ms"
+  const msg = err instanceof Error ? err.message : String(err);
+  const secMatch = msg.match(/(?:try again in|wait|after)\s*([0-9]+(?:\.[0-9]+)?)\s*(?:s|seconds)/i);
+  if (secMatch && secMatch[1]) {
+    const sec = parseFloat(secMatch[1]);
+    if (!isNaN(sec) && sec > 0) {
+      return Math.min(30000, Math.max(1000, Math.ceil(sec * 1000)));
+    }
+  }
+
+  const msMatch = msg.match(/(?:try again in|wait|after)\s*([0-9]+)\s*ms/i);
+  if (msMatch && msMatch[1]) {
+    const ms = parseInt(msMatch[1], 10);
+    if (!isNaN(ms) && ms > 0) {
+      return Math.min(30000, Math.max(1000, ms));
+    }
+  }
+
+  // Exponential backoff with jitter: 2s, 4s, 8s, 16s + jitter
+  const baseMs = 2000 * Math.pow(2, attempt);
+  const jitter = Math.floor(Math.random() * 1000);
+  return Math.min(25000, baseMs + jitter);
+}
+
+/** Retry wrapper for rate-limited and transient API calls */
+export async function withRetry<T>(fn: () => Promise<T>, maxRetries = 4): Promise<T> {
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
       return await fn();
     } catch (err: unknown) {
-      const isRateLimit = 
-        (err instanceof Error && (err.message.includes("429") || err.message.includes("rate") || err.message.includes("Rate"))) ||
-        (err && typeof err === "object" && "status" in err && (err as any).status === 429);
-      
-      if (isRateLimit && i < maxRetries) {
-        const waitMs = (i + 1) * 5000; // 5s, 10s, 15s
-        console.log(`  ${pc.yellow("...")} rate limited, waiting ${waitMs / 1000}s...`);
+      lastError = err;
+      const isRateLimit = isRateLimitError(err);
+      const isNetwork = isTransientNetworkError(err);
+
+      if ((isRateLimit || isNetwork) && attempt < maxRetries) {
+        const waitMs = extractRetryDelay(err, attempt);
+        const reason = isRateLimit ? "rate limited" : "connection issue";
+        console.log(
+          `  ${pc.yellow("...")} ${reason}, waiting ${(waitMs / 1000).toFixed(1)}s (retry ${attempt + 1}/${maxRetries})...`
+        );
         await sleep(waitMs);
         continue;
       }
       throw err;
     }
   }
-  console.log(`  ${pc.red("ERROR")} Rate limit exceeded. Try /provider to switch to Google AI Studio (1,500 req/day)`);
-  throw new Error("Max retries exceeded");
+
+  throw lastError;
 }
 
 export async function callLLM(
@@ -124,18 +215,26 @@ export async function callLLMStream(
         const idx = tc.index ?? 0;
         if (!toolCallsMap.has(idx)) {
           toolCallsMap.set(idx, {
+            ...tc,
             id: tc.id || "",
             type: "function" as const,
             function: {
               name: tc.function?.name || "",
               arguments: "",
             },
-          });
+          } as any);
         }
         const existing = toolCallsMap.get(idx)!;
         if (tc.id) existing.id = tc.id;
         if (tc.function?.name) existing.function.name = tc.function.name;
         if (tc.function?.arguments) existing.function.arguments += tc.function.arguments;
+
+        // Preserve extra metadata fields (e.g. extra_content with thought_signature for Google AI Studio)
+        for (const [key, val] of Object.entries(tc)) {
+          if (key !== "index" && key !== "function" && key !== "id" && key !== "type") {
+            (existing as any)[key] = val;
+          }
+        }
       }
     }
 

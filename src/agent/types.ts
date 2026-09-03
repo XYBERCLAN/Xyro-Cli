@@ -11,9 +11,10 @@ export type Role = "user" | "assistant" | "system" | "tool";
 
 export interface Message {
   role: Role;
-  content: string;
-  tool_calls?: OpenAI.Chat.Completions.ChatCompletionMessageToolCall[];
+  content: string | null;
+  tool_calls?: OpenAI.Chat.Completions.ChatCompletionMessageToolCall[] | any[];
   tool_call_id?: string;
+  name?: string;
 }
 
 export interface AgentOptions {

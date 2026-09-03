@@ -12,8 +12,11 @@ export interface CommandContext {
   model: string;
   setModel: (m: string) => void;
   provider: string;
+  setProvider: (p: string) => void;
   baseURL: string;
+  setBaseURL: (u: string) => void;
   apiKey: string;
+  setApiKey: (k: string) => void;
   usage: UsageTracker;
   persistConfig: (c: { provider?: string; model?: string; baseURL?: string; apiKey?: string }) => void;
 }
@@ -179,6 +182,11 @@ export async function handleCommand(
       // Update agent client immediately
       ctx.agent.updateClient(config.baseURL, config.apiKey);
       ctx.agent.setModel(config.model);
+      // Update context variables
+      ctx.setProvider(config.provider);
+      ctx.setBaseURL(config.baseURL);
+      ctx.setApiKey(config.apiKey);
+      ctx.setModel(config.model);
       renderInfo(`Provider configured: ${config.provider} (${config.model})`);
       return { action: "continue" };
     }

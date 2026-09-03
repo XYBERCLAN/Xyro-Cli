@@ -130,3 +130,16 @@ export async function gitStash(): Promise<string> {
 export async function gitStashPop(): Promise<string> {
   return runGit("stash pop");
 }
+
+/**
+ * git push — push committed changes to the remote repository
+ */
+export async function gitPush(args?: { remote?: string; branch?: string; force?: boolean }): Promise<string> {
+  const remote = args?.remote || "origin";
+  const branch = args?.branch || "";
+  const force = args?.force ? " --force-with-lease" : "";
+  const target = branch ? `${remote} ${branch}` : remote;
+  const result = runGit(`push${force} ${target}`);
+  if (result.startsWith("❌")) return result;
+  return `✅ Pushed to ${remote}${branch ? ` (${branch})` : ""}\n${result}`;
+}

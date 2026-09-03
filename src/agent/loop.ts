@@ -23,53 +23,109 @@ import {
 export type ResponseHandler = (usage: unknown) => void;
 
 /** Max characters for tool results before truncation */
-const MAX_TOOL_RESULT_CHARS = 1500;
+export const MAX_TOOL_RESULT_CHARS = 4000;
 
-/** Max estimated tokens for conversation history before trimming (25K = safe for most providers) */
-const MAX_HISTORY_TOKENS = 25000;
+/** Max estimated tokens for conversation history before trimming */
+export const MAX_HISTORY_TOKENS = 20000;
+
+/** Sleep utility */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /** Truncate large tool results to avoid exceeding token limits */
-function truncateToolResult(result: string): string {
+export function truncateToolResult(result: string): string {
   if (result.length <= MAX_TOOL_RESULT_CHARS) return result;
   return result.slice(0, MAX_TOOL_RESULT_CHARS) + `\n\n... (truncated, ${result.length} chars total)`;
 }
 
 /** Estimate token count from character count (rough: 1 token ≈ 4 chars) */
-function estimateTokens(msgs: Message[]): number {
+export function estimateTokens(msgs: Message[]): number {
   let chars = 0;
   for (const m of msgs) {
     chars += (m.content || "").length;
     if (m.tool_calls) {
       for (const tc of m.tool_calls) {
         chars += (tc.function?.arguments || "").length;
+        chars += (tc.function?.name || "").length;
       }
     }
   }
   return Math.ceil(chars / 4);
 }
 
-/** Trim history to fit within token limits, keeping the most recent messages */
-function trimHistory(msgs: Message[]): Message[] {
-  // Always keep the first message (system context)
-  if (msgs.length <= 2) return msgs;
-  
-  let tokens = estimateTokens(msgs);
-  if (tokens <= MAX_HISTORY_TOKENS) return msgs;
-  
-  // Keep first message + trim from the middle
-  const first = msgs[0];
-  const rest = msgs.slice(1);
-  
-  // Remove oldest messages until under limit
-  while (rest.length > 2 && estimateTokens([first, ...rest]) > MAX_HISTORY_TOKENS) {
-    rest.shift();
-    // Also remove orphaned tool results after removed assistant messages
-    while (rest.length > 0 && rest[0].role === "tool") {
-      rest.shift();
+/** Group messages into atomic turns to prevent splitting assistant tool_calls from tool results */
+function groupIntoTurns(msgs: Message[]): Message[][] {
+  const turns: Message[][] = [];
+  let currentTurn: Message[] = [];
+
+  for (let i = 0; i < msgs.length; i++) {
+    const msg = msgs[i];
+    if (msg.role === "user") {
+      if (currentTurn.length > 0) {
+        turns.push(currentTurn);
+      }
+      currentTurn = [msg];
+    } else if (msg.role === "assistant" && msg.tool_calls && msg.tool_calls.length > 0) {
+      if (currentTurn.length > 0 && currentTurn[0].role === "user") {
+        currentTurn.push(msg);
+      } else {
+        if (currentTurn.length > 0) turns.push(currentTurn);
+        currentTurn = [msg];
+      }
+    } else if (msg.role === "tool") {
+      currentTurn.push(msg);
+    } else {
+      // Normal assistant message or system summary
+      if (currentTurn.length > 0 && currentTurn[0].role === "user") {
+        currentTurn.push(msg);
+        turns.push(currentTurn);
+        currentTurn = [];
+      } else {
+        if (currentTurn.length > 0) turns.push(currentTurn);
+        currentTurn = [msg];
+      }
     }
   }
-  
-  return [first, ...rest];
+
+  if (currentTurn.length > 0) {
+    turns.push(currentTurn);
+  }
+
+  return turns;
+}
+
+/** Trim history to fit within token limits while preserving schema validity */
+export function trimHistory(msgs: Message[]): Message[] {
+  if (msgs.length <= 2) return msgs;
+
+  let totalTokens = estimateTokens(msgs);
+  if (totalTokens <= MAX_HISTORY_TOKENS) return msgs;
+
+  // Always keep the first message (system context)
+  const systemMsg = msgs[0];
+  const rest = msgs.slice(1);
+
+  const turns = groupIntoTurns(rest);
+
+  // Keep dropping oldest turns until under token limit, leaving at least the last turn
+  while (turns.length > 1) {
+    const flattened = [systemMsg, ...turns.flat()];
+    if (estimateTokens(flattened) <= MAX_HISTORY_TOKENS) {
+      break;
+    }
+    turns.shift();
+  }
+
+  const result = [systemMsg, ...turns.flat()];
+
+  // Final sanity check: ensure no orphaned tool results at the beginning of non-system messages
+  let firstNonSystemIdx = 1;
+  while (firstNonSystemIdx < result.length && result[firstNonSystemIdx].role === "tool") {
+    result.splice(firstNonSystemIdx, 1);
+  }
+
+  return result;
 }
 
 export class Agent {
@@ -237,6 +293,9 @@ export class Agent {
         });
         break;
       }
+
+      // Small pacing delay between multi-step tool iterations to avoid RPM burst rate limits
+      await sleep(600);
     }
   }
 

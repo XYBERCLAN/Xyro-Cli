@@ -58,33 +58,49 @@ if (opts.json) {
 }
 
 function formatApiError(err: unknown, provider: string, model: string): string {
-  if (!(err instanceof OpenAI.APIError)) return "";
-  const status = err.status;
-  if (status === 401) {
+  const msg = err instanceof Error ? err.message : String(err);
+  const status = (err as any)?.status;
+
+  if (status === 401 || msg.includes("401") || msg.toLowerCase().includes("invalid api key") || msg.toLowerCase().includes("unauthorized")) {
     return (
       `Invalid API key for ${provider}.` +
-      `\n  ${pc.dim("Generate a new key with --api-key or set OPENAI_API_KEY")}`
+      `\n  ${pc.dim("Use /provider to reconfigure your key, or pass --api-key / set OPENAI_API_KEY")}`
     );
   }
-  if (status === 403) {
-    return `Access denied by ${provider}. The model may be restricted or your key lacks access.`;
+  if (status === 403 || msg.includes("403") || msg.toLowerCase().includes("forbidden") || msg.toLowerCase().includes("access denied")) {
+    return `Access denied by ${provider}. The model "${model}" may be restricted or your key lacks permissions.`;
   }
-  if (status === 429) {
+  if (
+    status === 429 ||
+    msg.includes("429") ||
+    msg.toLowerCase().includes("rate limit") ||
+    msg.toLowerCase().includes("quota") ||
+    msg.toLowerCase().includes("resource has been exhausted") ||
+    msg.toLowerCase().includes("resource_exhausted") ||
+    msg.toLowerCase().includes("too many requests")
+  ) {
     return (
-      `Rate limited by ${provider}. Wait a moment and try again.` +
-      `\n  ${pc.dim("Free tiers often have daily limits — check your provider dashboard")}`
+      `Rate limit reached on ${provider} (${model}).` +
+      `\n  ${pc.yellow("Tip:")} Use ${pc.cyan("/model")} to switch to a different model (e.g. gemini-2.0-flash, llama-3.3-70b)` +
+      `\n  ${pc.dim("Or use /provider to switch provider (Google AI Studio, Groq, OpenRouter, GitHub Models)")}`
     );
   }
-  if (status === 404) {
+  if (status === 404 || msg.includes("404") || msg.toLowerCase().includes("not found")) {
     return (
       `Model "${model}" not found on ${provider}.` +
-      `\n  ${pc.dim("Check available models or use a different provider")}`
+      `\n  ${pc.dim("Use /model to pick an available model for this provider")}`
     );
   }
-  if (status && status >= 500) {
-    return `${provider} server error (${status}). Try again in a moment.`;
+  if ((status && status >= 500) || msg.includes("500") || msg.includes("502") || msg.includes("503")) {
+    return `${provider} server error (${status || 500}). Try again in a moment.`;
   }
-  return `${provider} API error${status ? ` (${status})` : ""}: ${err.message}`;
+  if (msg.toLowerCase().includes("etimedout") || msg.toLowerCase().includes("connection error") || msg.toLowerCase().includes("fetch failed")) {
+    return (
+      `Network connection to ${provider} timed out or failed.` +
+      `\n  ${pc.dim("Check your internet connection / VPN / proxy, or switch provider with /provider")}`
+    );
+  }
+  return `${provider} error${status ? ` (${status})` : ""}: ${msg}`;
 }
 
 async function main(): Promise<void> {
@@ -202,8 +218,11 @@ async function main(): Promise<void> {
         agent.setModel(m);
       },
       provider,
+      setProvider: (p) => { provider = p; },
       baseURL,
+      setBaseURL: (u) => { baseURL = u; },
       apiKey,
+      setApiKey: (k) => { apiKey = k; },
       usage,
       persistConfig: (c) => savePersistedConfig({ provider: c.provider, model: c.model, baseURL: c.baseURL, apiKey: c.apiKey }),
     });

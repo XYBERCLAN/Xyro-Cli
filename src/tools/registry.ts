@@ -15,6 +15,7 @@ import {
   gitInit,
   gitStash,
   gitStashPop,
+  gitPush,
 } from "./git.js";
 import { loadPlugins } from "../config/plugins.js";
 
@@ -124,6 +125,14 @@ const builtinTools: Tool[] = [
   {
     definition: def("git_stash_pop", "Apply the most recent stash and remove it from the stash list", {}, []),
     execute: () => gitStashPop(),
+  },
+  {
+    definition: def("git_push", "Push committed changes to the remote repository", {
+      remote: { type: "string", description: "Remote name (default: origin)" },
+      branch: { type: "string", description: "Branch to push (default: current branch)" },
+      force: { type: "boolean", description: "Force push with lease (safer than --force)" },
+    }, []),
+    execute: (args) => gitPush(args as { remote?: string; branch?: string; force?: boolean }),
   },
 ];
 

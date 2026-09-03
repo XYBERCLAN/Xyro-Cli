@@ -29,7 +29,15 @@ export function savePersistedConfig(config: PersistedConfig): void {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
-  fs.writeFileSync(configPath(), JSON.stringify(config, null, 2), "utf-8");
+  const existing = loadPersistedConfig();
+  const merged: PersistedConfig = {
+    ...existing,
+    ...(config.provider !== undefined ? { provider: config.provider } : {}),
+    ...(config.model !== undefined ? { model: config.model } : {}),
+    ...(config.baseURL !== undefined ? { baseURL: config.baseURL } : {}),
+    ...(config.apiKey !== undefined ? { apiKey: config.apiKey } : {}),
+  };
+  fs.writeFileSync(configPath(), JSON.stringify(merged, null, 2), "utf-8");
 }
 
 export function clearPersistedConfig(): void {
