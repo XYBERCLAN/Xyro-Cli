@@ -39,7 +39,7 @@ export function renderConfigBanner(model: string, provider: string): void {
   console.log();
 }
 
-export function renderAssistant(content: string): void {
+export function renderAssistant(content: string, elapsed?: string): void {
   if (jsonMode) {
     json({ type: "assistant", content });
     return;
@@ -49,6 +49,8 @@ export function renderAssistant(content: string): void {
   for (const line of lines) {
     console.log(`  ${pc.dim("┃")} ${line}`);
   }
+  const timer = elapsed ? ` ${pc.dim(`(${elapsed}s)`)}` : "";
+  console.log(`  ${pc.dim("┃")}${timer}`);
   console.log();
 }
 
@@ -134,10 +136,11 @@ export function renderStreamChunk(chunk: string): void {
   process.stdout.write(stripMarkdown(chunk));
 }
 
-/** Finalize the streaming response (add newline) */
-export function renderStreamEnd(): void {
+/** Finalize the streaming response (add newline and elapsed time) */
+export function renderStreamEnd(elapsed?: string): void {
   if (streamStarted && streamBuffer) {
-    process.stdout.write("\n");
+    const timer = elapsed ? ` ${pc.dim(`(${elapsed}s)`)}` : "";
+    process.stdout.write(`\n  ${pc.dim("┃")}${timer}\n`);
   }
   streamBuffer = "";
   streamStarted = false;
