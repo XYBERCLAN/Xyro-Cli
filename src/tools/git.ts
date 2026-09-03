@@ -55,7 +55,7 @@ const XYRO_FOOTER = [
   "Assisted by XYRO",
   "",
   "🤖 Generated with XYRO",
-  "Co-Authored-By: XYRO <antigr4vity237@gmail.com>",
+  "Co-Authored-By: XYRO <324544606+xyro-agent@users.noreply.github.com>",
 ].join("\n");
 
 /**
