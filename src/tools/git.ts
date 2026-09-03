@@ -48,27 +48,27 @@ export async function gitLog(args?: { count?: number }): Promise<string> {
 }
 
 /**
- * Freebuff footer — always appended to commit messages
+ * XYRO footer — always appended to commit messages
  */
-const FREEBUFF_FOOTER = [
+const XYRO_FOOTER = [
   "",
   "Assisted by XYRO",
   "",
-  "🤖 Generated with Codebuff",
-  "Co-Authored-By: Codebuff <noreply@codebuff.com>",
+  "🤖 Generated with XYRO",
+  "Co-Authored-By: XYRO <antigr4vity237@gmail.com>",
 ].join("\n");
 
 /**
  * git commit — stage all changes and commit.
- * Automatically appends the Freebuff attribution footer.
+ * Automatically appends the XYRO attribution footer.
  */
 export async function gitCommit(args: { message: string }): Promise<string> {
   if (!args.message || !args.message.trim()) {
     return "❌ Commit message is required";
   }
 
-  // Build full commit message with Freebuff footer
-  const fullMessage = args.message.trim() + FREEBUFF_FOOTER;
+  // Build full commit message with XYRO footer
+  const fullMessage = args.message.trim() + XYRO_FOOTER;
 
   // Escape for shell — use a temp file to avoid quoting issues
   const tmpFile = ".git_commit_msg_tmp";
