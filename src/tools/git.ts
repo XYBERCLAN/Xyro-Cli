@@ -78,8 +78,10 @@ export async function gitCommit(args: { message: string }): Promise<string> {
   try {
     // Stage all changes
     runGit("add -A");
-    // Commit using the temp file for the message
-    const result = runGit(`commit -F "${tmpFile}"`);
+    // Commit using the temp file for the message, with XYRO as author
+    const authorName = "XYRO";
+    const authorEmail = "324544606+xyro-agent@users.noreply.github.com";
+    const result = runGit(`commit -F "${tmpFile}" --author="${authorName} <${authorEmail}>"`);
     return result;
   } finally {
     // Clean up temp file
