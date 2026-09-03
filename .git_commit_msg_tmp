@@ -1,14 +1,4 @@
-feat: improve agent resilience, config management, and tool registry
-
-- Add agent loop turn grouping to prevent splitting tool_calls from results
-- Add context window auto-compaction when tokens exceed 35K threshold
-- Increase tool result truncation to 4000 chars, reduce history to 20K tokens
-- Add provider/baseURL/apiKey setters to CommandContext for hot config updates
-- Export truncateToolResult and estimateTokens for testability
-- Add agent resilience test suite
-- Add git_push, git_stash, git_stash_pop, git_init tools to registry
-- Clean up UI prompts and config persistence
-- Remove stale .git_commit_msg_tmp file
+Delete .git_commit_msg_tmp
 Assisted by XYRO
 
 🤖 Generated with XYRO
