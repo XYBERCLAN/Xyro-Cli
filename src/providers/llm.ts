@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import { Message } from "../agent/types.js";
 import { getToolDefinitions } from "../tools/registry.js";
+import pc from "picocolors";
 
 export interface LLMResponse {
   content: string | null;
@@ -24,11 +25,39 @@ export function createClient(baseURL?: string, apiKey?: string): OpenAI {
   if (isOpenRouter(baseURL)) {
     config.defaultHeaders = {
       "HTTP-Referer": "https://wolf-ai.dev",
-      "X-Title": "Wolf AI Coding Agent",
+      "X-Title": "XYRO Coding Agent",
     };
   }
 
   return new OpenAI(config as any);
+}
+
+/** Sleep for ms milliseconds */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Retry wrapper for rate-limited API calls */
+async function withRetry<T>(fn: () => Promise<T>, maxRetries = 3): Promise<T> {
+  for (let i = 0; i <= maxRetries; i++) {
+    try {
+      return await fn();
+    } catch (err: unknown) {
+      const isRateLimit = 
+        (err instanceof Error && (err.message.includes("429") || err.message.includes("rate") || err.message.includes("Rate"))) ||
+        (err && typeof err === "object" && "status" in err && (err as any).status === 429);
+      
+      if (isRateLimit && i < maxRetries) {
+        const waitMs = (i + 1) * 5000; // 5s, 10s, 15s
+        console.log(`  ${pc.yellow("...")} rate limited, waiting ${waitMs / 1000}s...`);
+        await sleep(waitMs);
+        continue;
+      }
+      throw err;
+    }
+  }
+  console.log(`  ${pc.red("ERROR")} Rate limit exceeded. Try /provider to switch to Google AI Studio (1,500 req/day)`);
+  throw new Error("Max retries exceeded");
 }
 
 export async function callLLM(
@@ -36,11 +65,14 @@ export async function callLLM(
   model: string,
   messages: Message[]
 ): Promise<LLMResponse> {
-  const response = await client.chat.completions.create({
-    model,
-    messages: messages as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
-    tools: getToolDefinitions(),
-  });
+  const response = await withRetry(() =>
+    client.chat.completions.create({
+      model,
+      messages: messages as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+      tools: getToolDefinitions(),
+      max_tokens: 4096,
+    })
+  );
 
   const msg = response.choices[0].message;
   return {
@@ -60,12 +92,15 @@ export async function callLLMStream(
   messages: Message[],
   onChunk: StreamChunkHandler
 ): Promise<LLMResponse> {
-  const stream = await client.chat.completions.create({
-    model,
-    messages: messages as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
-    tools: getToolDefinitions(),
-    stream: true,
-  });
+  const stream = await withRetry(() =>
+    client.chat.completions.create({
+      model,
+      messages: messages as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+      tools: getToolDefinitions(),
+      stream: true,
+      max_tokens: 4096,
+    })
+  );
 
   let content = "";
   const toolCallsMap = new Map<number, OpenAI.Chat.Completions.ChatCompletionMessageToolCall>();
@@ -124,23 +159,23 @@ export async function summarizeHistory(
   model: string,
   messages: Message[]
 ): Promise<string | null> {
-  const response = await client.chat.completions.create({
-    model,
-    messages: [
-      {
-        role: "system",
-        content: `Summarize the following conversation between a user and a coding assistant.
-Preserve: tasks completed, files modified, key decisions, and open follow-ups.
-Be concise — under 500 words.`,
-      },
-      {
-        role: "user",
-        content: JSON.stringify(
-          messages.map((m) => ({ role: m.role, content: m.content }))
-        ),
-      },
-    ],
-  });
+  const response = await withRetry(() =>
+    client.chat.completions.create({
+      model,
+      messages: [
+        {
+          role: "system",
+          content: `Summarize the following conversation between a user and a coding assistant. Preserve: tasks completed, files modified, key decisions, and open follow-ups. Be concise - under 500 words.`,
+        },
+        {
+          role: "user",
+          content: JSON.stringify(
+            messages.map((m) => ({ role: m.role, content: m.content }))
+          ),
+        },
+      ],
+    })
+  );
 
   return response.choices[0].message.content;
 }

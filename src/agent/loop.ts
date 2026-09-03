@@ -1,5 +1,4 @@
 import OpenAI from "openai";
-import * as p from "@clack/prompts";
 import pc from "picocolors";
 import { Message, AgentOptions } from "./types.js";
 import { HistoryManager } from "./history.js";
@@ -13,11 +12,27 @@ import {
   renderToolResult,
   renderStreamStart,
   renderStreamChunk,
+  renderThinking,
+  renderThinkingDone,
+  renderToolRunning,
+  renderToolRunningDone,
   renderStreamEnd,
   isJsonMode,
 } from "../ui/render.js";
 
 export type ResponseHandler = (usage: unknown) => void;
+
+/** Max characters for tool results before truncation */
+const MAX_TOOL_RESULT_CHARS = 1500;
+
+/** Max estimated tokens for conversation history before trimming (25K = safe for most providers) */
+const MAX_HISTORY_TOKENS = 25000;
+
+/** Truncate large tool results to avoid exceeding token limits */
+function truncateToolResult(result: string): string {
+  if (result.length <= MAX_TOOL_RESULT_CHARS) return result;
+  return result.slice(0, MAX_TOOL_RESULT_CHARS) + `\n\n... (truncated, ${result.length} chars total)`;
+}
 
 /** Estimate token count from character count (rough: 1 token ≈ 4 chars) */
 function estimateTokens(msgs: Message[]): number {
@@ -31,6 +46,30 @@ function estimateTokens(msgs: Message[]): number {
     }
   }
   return Math.ceil(chars / 4);
+}
+
+/** Trim history to fit within token limits, keeping the most recent messages */
+function trimHistory(msgs: Message[]): Message[] {
+  // Always keep the first message (system context)
+  if (msgs.length <= 2) return msgs;
+  
+  let tokens = estimateTokens(msgs);
+  if (tokens <= MAX_HISTORY_TOKENS) return msgs;
+  
+  // Keep first message + trim from the middle
+  const first = msgs[0];
+  const rest = msgs.slice(1);
+  
+  // Remove oldest messages until under limit
+  while (rest.length > 2 && estimateTokens([first, ...rest]) > MAX_HISTORY_TOKENS) {
+    rest.shift();
+    // Also remove orphaned tool results after removed assistant messages
+    while (rest.length > 0 && rest[0].role === "tool") {
+      rest.shift();
+    }
+  }
+  
+  return [first, ...rest];
 }
 
 export class Agent {
@@ -52,6 +91,10 @@ export class Agent {
 
   getModel(): string {
     return this.model;
+  }
+
+  updateClient(baseURL: string, apiKey: string): void {
+    this.client = createClient(baseURL, apiKey);
   }
 
   getMaxToolCalls(): number {
@@ -91,13 +134,12 @@ export class Agent {
       const estimatedTokens = estimateTokens(msgs);
       if (estimatedTokens > CONTEXT_WINDOW_WARN_TOKENS) {
         if (!isJsonMode()) {
-          const spin = p.spinner();
-          spin.start("context window getting large, summarizing...");
+          console.log(`  ${pc.yellow("...")} context window large, summarizing...`);
           try {
             await this.compact();
-            spin.stop("compacted");
+            console.log(`  ${pc.green("OK")} compacted`);
           } catch {
-            spin.stop("compact failed, continuing");
+            console.log(`  ${pc.red("FAIL")} compact failed, continuing`);
           }
         } else {
           try {
@@ -108,34 +150,31 @@ export class Agent {
         }
       }
 
-      const useSpinner = !isJsonMode() && Boolean(process.stdout.isTTY);
-      const spin = useSpinner ? p.spinner() : null;
-      if (spin) spin.start("thinking...");
+      const useTTY = !isJsonMode() && Boolean(process.stdout.isTTY);
+      if (useTTY) renderThinking();
 
       let response: LLMResponse;
       const llmStart = performance.now();
       try {
         // Use streaming for real-time output
+        const msgs = trimHistory(this.history.getAll());
         if (process.stdout.isTTY && !isJsonMode()) {
-          // Stop spinner silently (no message) to avoid artifacts before streaming
-          if (spin) spin.stop("");
+          renderThinkingDone();
           response = await callLLMStream(
             this.client,
             this.model,
-            this.history.getAll(),
+            msgs,
             (chunk) => renderStreamChunk(chunk)
           );
         } else {
           response = await callLLMStream(
             this.client,
             this.model,
-            this.history.getAll(),
+            msgs,
             () => {} // no-op for non-TTY / JSON mode
           );
-          if (spin) spin.stop("ready");
         }
       } catch (err) {
-        if (spin) spin.stop("error");
         throw err;
       }
       const llmElapsed = ((performance.now() - llmStart) / 1000).toFixed(1);
@@ -175,20 +214,19 @@ export class Agent {
         const start = performance.now();
         renderToolCall(name, args, toolCallCount);
 
-        // Show spinner while tool is executing
-        const toolSpin = useSpinner ? p.spinner() : null;
-        if (toolSpin) toolSpin.start(`running ${name}...`);
+        // Show running indicator
+        if (useTTY) renderToolRunning(name);
 
         const result = await executeTool(name, args);
         const elapsed = ((performance.now() - start) / 1000).toFixed(1);
-        if (toolSpin) toolSpin.stop(`${name} done`);
+        if (useTTY) renderToolRunningDone();
 
         renderToolResult(result, elapsed);
 
         this.history.add({
           role: "tool",
           tool_call_id: tc.id,
-          content: result,
+          content: truncateToolResult(result),
         });
       }
 

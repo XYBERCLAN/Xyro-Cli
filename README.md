@@ -1,12 +1,17 @@
 <div align="center">
 
 ```
-██╗  ██╗██╗   ██╗██████╗  ██████╗
-╚██╗██╔╝╚██╗ ██╔╝██╔══██╗██╔═══██╗
- ╚███╔╝  ╚████╔╝ ██║  ██║██║   ██║
- ██╔██╗   ╚██╔╝  ██║  ██║██║   ██║
-██╔╝ ██╗   ██║   ██████╔╝╚██████╔╝
-╚═╝  ╚═╝   ╚═╝   ╚═════╝  ╚═════╝
+      ___           ___           ___           ___     
+     |\__\         |\__\         /\  \         /\  \    
+     |:|  |        |:|  |       /::\  \       /::\  \   
+     |:|  |        |:|  |      /:/\:\  \     /:/\:\  \  
+     |:|__|__      |:|__|__   /::\~\:\  \   /:/  \:\  \ 
+ ____/::::\__\     /::::\__\ /:/\:\ \:\__\ /:/__/ \:\__\
+ \::::/~~/~       /:/~~/~    \/_|::\/:/  / \:\  \ /:/  /
+  ~~|:|~~|       /:/  /         |:|::/  /   \:\  /:/  / 
+    |:|  |       \/__/          |:|\/__/     \:\/:/  /  
+    |:|  |                      |:|  |        \::/  /   
+     \|__|                       \|__|         \/__/
 ```
 
 <br>
@@ -20,9 +25,15 @@
 <br>
 
 <p>Automated commit by XYRO.</p>
+<p>XYRO — the terminal-native AI coding assistant that built this project.</p>
+<p>Built with XYRO — terminal-native AI coding agent (xyberclan.dev)</p>
 </div>
 
 ---
+
+## ◆ Built with XYRO
+
+Built with XYRO — terminal-native AI coding agent (xyberclan.dev)
 
 ## ◆ What is XYRO?
 
@@ -243,5 +254,3 @@ MIT — see [LICENSE](LICENSE)
 </p>
 <br>
 </div>
- 
- 

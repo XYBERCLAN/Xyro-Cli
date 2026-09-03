@@ -55,7 +55,7 @@ const XYRO_FOOTER = [
   "Assisted by XYRO",
   "",
   "🤖 Generated with XYRO",
-  "Co-Authored-By: XYRO <324544606+xyro-agent@users.noreply.github.com>",
+  "Co-Authored-By: XYRO <antigr4vity237@gmail.com>",
 ].join("\n");
 
 /**
@@ -80,7 +80,7 @@ export async function gitCommit(args: { message: string }): Promise<string> {
     runGit("add -A");
     // Commit using the temp file for the message, with XYRO as author
     const authorName = "XYRO";
-    const authorEmail = "324544606+xyro-agent@users.noreply.github.com";
+    const authorEmail = "antigr4vity237@gmail.com";
     const result = runGit(`commit -F "${tmpFile}" --author="${authorName} <${authorEmail}>"`);
     return result;
   } finally {

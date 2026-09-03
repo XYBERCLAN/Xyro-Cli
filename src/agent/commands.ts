@@ -176,8 +176,10 @@ export async function handleCommand(
     case "provider": {
       const config = await interactiveSetup();
       ctx.persistConfig(config);
+      // Update agent client immediately
+      ctx.agent.updateClient(config.baseURL, config.apiKey);
+      ctx.agent.setModel(config.model);
       renderInfo(`Provider configured: ${config.provider} (${config.model})`);
-      renderInfo(`Restart XYRO to use the new provider`);
       return { action: "continue" };
     }
 

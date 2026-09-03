@@ -31,11 +31,11 @@ function json(obj: Record<string, unknown>): void {
 
 export function renderConfigBanner(model: string, provider: string): void {
   if (jsonMode) return;
-  console.log(`  ${pc.dim("─").repeat(55)}`);
-  console.log(`  ${pc.dim("┃")} ${pc.bold(pc.yellow("XYRO"))} ${pc.dim("·")} ${model} ${pc.dim("·")} ${provider}`);
-  console.log(`  ${pc.dim("┃")} ${pc.dim(process.cwd())}`);
-  console.log(`  ${pc.dim("┃")} ${pc.italic("commands:")} ${pc.dim("/help · /status · /model · /cost · /compact · /exit")}`);
-  console.log(`  ${pc.dim("─").repeat(55)}`);
+  console.log(`  ${pc.dim("-".repeat(55))}`);
+  console.log(`  ${pc.dim("|")} ${pc.bold(pc.yellow("XYRO"))} ${pc.dim(".")} ${model} ${pc.dim(".")} ${provider}`);
+  console.log(`  ${pc.dim("|")} ${pc.dim(process.cwd())}`);
+  console.log(`  ${pc.dim("|")} ${pc.italic("commands:")} ${pc.dim("/help . /status . /model . /cost . /compact . /exit")}`);
+  console.log(`  ${pc.dim("-".repeat(55))}`);
   console.log();
 }
 
@@ -47,10 +47,10 @@ export function renderAssistant(content: string, elapsed?: string): void {
   const stripped = stripMarkdown(content);
   const lines = stripped.split("\n");
   for (const line of lines) {
-    console.log(`  ${pc.dim("┃")} ${line}`);
+    console.log(`  ${pc.dim("|")} ${line}`);
   }
   const timer = elapsed ? ` ${pc.dim(`(${elapsed}s)`)}` : "";
-  console.log(`  ${pc.dim("┃")}${timer}`);
+  console.log(`  ${pc.dim("|")}${timer}`);
   console.log();
 }
 
@@ -69,8 +69,32 @@ export function renderToolCall(name: string, args: Record<string, unknown>, coun
     return;
   }
   const info = JSON.stringify(args);
-  const preview = info.length > 80 ? info.slice(0, 80) + "…" : info;
-  console.log(`  ${pc.yellow("●")} ${pc.bold(name)} ${pc.dim(preview)}`);
+  const preview = info.length > 80 ? info.slice(0, 80) + "..." : info;
+  console.log(`  ${pc.yellow(">")} ${pc.bold(name)} ${pc.dim(preview)}`);
+}
+
+/** Show thinking indicator */
+export function renderThinking(): void {
+  if (jsonMode) return;
+  process.stdout.write(`  ${pc.cyan("...")} thinking`);
+}
+
+/** Clear thinking indicator */
+export function renderThinkingDone(): void {
+  if (jsonMode) return;
+  process.stdout.write(`\r${" ".repeat(30)}\r`);
+}
+
+/** Show tool running indicator */
+export function renderToolRunning(name: string): void {
+  if (jsonMode) return;
+  process.stdout.write(`  ${pc.yellow("...")} ${name}`);
+}
+
+/** Clear tool running indicator */
+export function renderToolRunningDone(): void {
+  if (jsonMode) return;
+  process.stdout.write(`\r${" ".repeat(40)}\r`);
 }
 
 export function renderToolResult(result: string, elapsed?: string): void {
@@ -79,9 +103,9 @@ export function renderToolResult(result: string, elapsed?: string): void {
     return;
   }
   const first = result.split("\n")[0];
-  const truncated = first.length > 100 ? first.slice(0, 100) + "…" : first;
+  const truncated = first.length > 100 ? first.slice(0, 100) + "..." : first;
   const timer = elapsed ? ` ${pc.dim(`(${elapsed}s)`)}` : "";
-  console.log(`  ${pc.green("┃")} ${pc.dim(truncated)}${timer}`);
+  console.log(`  ${pc.green("|")} ${pc.dim(truncated)}${timer}`);
 }
 
 export function renderError(msg: string): void {
@@ -89,7 +113,7 @@ export function renderError(msg: string): void {
     json({ type: "error", message: msg });
     return;
   }
-  console.log(`  ${pc.red("┃")} ${msg}`);
+  console.log(`  ${pc.red("|")} ${msg}`);
 }
 
 export function renderInfo(msg: string): void {
@@ -97,7 +121,7 @@ export function renderInfo(msg: string): void {
     json({ type: "info", message: msg });
     return;
   }
-  console.log(`  ${pc.dim("┃")} ${msg}`);
+  console.log(`  ${pc.dim("|")} ${msg}`);
 }
 
 // ─── Streaming support ───────────────────────────────────────────
@@ -129,7 +153,7 @@ export function renderStreamChunk(chunk: string): void {
   if (!streamStarted) {
     renderStreamStart();
     // Print a clean prefix before the first chunk
-    process.stdout.write(`  ${pc.dim("┃")} `);
+    process.stdout.write(`  ${pc.dim("|")} `);
   }
   streamBuffer += chunk;
   // Strip markdown for clean terminal display
@@ -140,7 +164,7 @@ export function renderStreamChunk(chunk: string): void {
 export function renderStreamEnd(elapsed?: string): void {
   if (streamStarted && streamBuffer) {
     const timer = elapsed ? ` ${pc.dim(`(${elapsed}s)`)}` : "";
-    process.stdout.write(`\n  ${pc.dim("┃")}${timer}\n`);
+    process.stdout.write(`\n  ${pc.dim("|")}${timer}\n`);
   }
   streamBuffer = "";
   streamStarted = false;
