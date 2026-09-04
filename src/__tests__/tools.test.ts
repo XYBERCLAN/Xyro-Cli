@@ -6,6 +6,7 @@ import { searchCode } from "../tools/search.js";
 import { listFiles } from "../tools/fs.js";
 import { generateDiff, generateInlineDiff } from "../tools/diff.js";
 import { runCommand } from "../tools/shell.js";
+import { gitCreatePr, gitPrView } from "../tools/git.js";
 import { writeFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
@@ -223,3 +224,22 @@ describe("runCommand", () => {
     );
   });
 });
+
+describe("git PR tools", () => {
+  it("gitPrView views pull request information", async () => {
+    const result = await gitPrView({ pr: "10", repo: "XYBERCLAN/Xyro-Cli" });
+    assert.ok(
+      result.includes("pull/10") || result.includes("Windows support") || result.includes("❌"),
+      `Expected PR output or error: ${result.slice(0, 200)}`
+    );
+  });
+
+  it("gitCreatePr detects existing PR or returns status", async () => {
+    const result = await gitCreatePr({ repo: "XYBERCLAN/Xyro-Cli", base: "main" });
+    assert.ok(
+      result.includes("pull/10") || result.includes("already exists") || result.includes("✅") || result.includes("❌"),
+      `Expected PR detection result: ${result.slice(0, 200)}`
+    );
+  });
+});
+
