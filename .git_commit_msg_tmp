@@ -1,4 +1,4 @@
-feat: add git PR tools (git_create_pr, git_pr_view)
+feat: add spawn_agent, propose_write_file, glob, and write_todos tools with failover support
 Assisted by XYRO
 
 🤖 Generated with XYRO

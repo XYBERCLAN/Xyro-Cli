@@ -5,6 +5,7 @@ import { HistoryManager } from "./history.js";
 import { createClient, callLLMStream, summarizeHistory, LLMResponse } from "../providers/llm.js";
 import { executeTool } from "../tools/registry.js";
 import { DEFAULT_MODEL, DEFAULT_MAX_TOOL_CALLS, CONTEXT_WINDOW_WARN_TOKENS, POST_TURN_COMPACT_TOKENS } from "../config/constants.js";
+import { savePersistedConfig } from "../config/persist.js";
 import {
   renderAssistant,
   renderUserMessage,
@@ -334,6 +335,15 @@ export class Agent {
         throw err;
       }
       const llmElapsed = ((performance.now() - llmStart) / 1000).toFixed(1);
+
+      if (response.actualModel && response.actualModel !== this.model) {
+        this.model = response.actualModel;
+        try {
+          savePersistedConfig({ model: this.model });
+        } catch {
+          // ignore
+        }
+      }
 
       this.history.emitResponse(response);
 
