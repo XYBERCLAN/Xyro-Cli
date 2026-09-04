@@ -94,7 +94,13 @@ function formatApiError(err: unknown, provider: string, model: string): string {
   if ((status && status >= 500) || msg.includes("500") || msg.includes("502") || msg.includes("503")) {
     return `${provider} server error (${status || 500}). Try again in a moment.`;
   }
-  if (msg.toLowerCase().includes("etimedout") || msg.toLowerCase().includes("connection error") || msg.toLowerCase().includes("fetch failed")) {
+  if (
+    msg.toLowerCase().includes("timed out") ||
+    msg.toLowerCase().includes("timeout") ||
+    msg.toLowerCase().includes("etimedout") ||
+    msg.toLowerCase().includes("connection error") ||
+    msg.toLowerCase().includes("fetch failed")
+  ) {
     return (
       `Network connection to ${provider} timed out or failed.` +
       `\n  ${pc.dim("Check your internet connection / VPN / proxy, or switch provider with /provider")}`

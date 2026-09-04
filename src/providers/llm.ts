@@ -20,7 +20,7 @@ export function createClient(baseURL?: string, apiKey?: string): OpenAI {
   const config: Record<string, unknown> = {
     baseURL: baseURL || undefined,
     apiKey: apiKey || process.env["OPENAI_API_KEY"],
-    timeout: 45_000,
+    timeout: 120_000,
     maxRetries: 0,
   };
 
@@ -79,10 +79,13 @@ export function isRateLimitError(err: unknown): boolean {
 /** Check if an error represents a transient network issue that warrants a retry */
 export function isTransientNetworkError(err: unknown): boolean {
   if (!err) return false;
+  if ((err as any)?.name === "APIConnectionTimeoutError") return true;
   const msg = err instanceof Error ? err.message : String(err);
   const cause = (err as any)?.cause?.message || (err as any)?.cause?.code || "";
   const combined = `${msg} ${cause}`.toLowerCase();
   return (
+    combined.includes("timed out") ||
+    combined.includes("timeout") ||
     combined.includes("etimedout") ||
     combined.includes("econnreset") ||
     combined.includes("connection error") ||

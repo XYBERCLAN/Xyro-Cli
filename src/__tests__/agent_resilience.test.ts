@@ -26,6 +26,8 @@ describe("Rate Limit & Network Detection", () => {
     assert.strictEqual(isTransientNetworkError(new Error("ETIMEDOUT connection")), true);
     assert.strictEqual(isTransientNetworkError(new Error("ECONNRESET")), true);
     assert.strictEqual(isTransientNetworkError(new Error("fetch failed")), true);
+    assert.strictEqual(isTransientNetworkError(new Error("Request timed out.")), true);
+    assert.strictEqual(isTransientNetworkError({ name: "APIConnectionTimeoutError", message: "timeout" }), true);
     assert.strictEqual(isTransientNetworkError(new Error("Syntax error")), false);
   });
 
