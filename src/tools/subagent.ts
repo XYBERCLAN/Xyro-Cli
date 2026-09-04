@@ -20,6 +20,7 @@
  */
 
 import OpenAI from "openai";
+import pc from "picocolors";
 import { createClient, callLLMStream } from "../providers/llm.js";
 import { executeTool, getToolDefinitions } from "./registry.js";
 import { truncateToolResult } from "../agent/loop.js";
@@ -167,7 +168,7 @@ export async function spawnAgent(args: {
     prompt += `\n\nContext files to consider:\n${args.context_files.map((f) => `- ${f}`).join("\n")}`;
   }
 
-  process.stdout.write(`  ⚡ Spawning ${type} sub-agent...\n`);
+  process.stdout.write(`  ${pc.cyan("◆")} Spawning ${type} sub-agent...\n`);
 
   const result = await runSubAgent(
     client,

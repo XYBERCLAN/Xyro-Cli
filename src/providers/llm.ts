@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import { Message } from "../agent/types.js";
 import { getToolDefinitions } from "../tools/registry.js";
+import { renderThinking, renderThinkingDone, renderCapacityWait } from "../ui/render.js";
 import pc from "picocolors";
 
 export interface LLMResponse {
@@ -247,10 +248,18 @@ export async function withRetry<T>(fn: () => Promise<T>, maxRetries = 4): Promis
             reason = "request timed out";
           }
         }
-        console.log(
-          `  ${pc.yellow("...")} ${reason}, waiting ${(waitMs / 1000).toFixed(1)}s (retry ${attempt + 1}/${maxRetries})...`
-        );
+        const waitSec = Math.ceil(waitMs / 1000);
+        if (process.stdout.isTTY) {
+          renderCapacityWait(waitSec);
+        } else {
+          console.log(
+            `  ${pc.yellow("...")} ${reason}, waiting ${waitSec}s (retry ${attempt + 1}/${maxRetries})...`
+          );
+        }
         await sleep(waitMs);
+        if (process.stdout.isTTY) {
+          renderThinking("thinking...");
+        }
         continue;
       }
       throw err;
@@ -302,7 +311,9 @@ export async function callLLM(
         const nextModel = candidates[i + 1];
         const is503 = (err as any)?.status === 503 || String(err).includes("503") || String(err).toLowerCase().includes("overloaded");
         const reason = is503 ? "overloaded (503)" : "unavailable";
-        console.log(`  ${pc.cyan("⚡")} ${candidateModel} is ${reason}, switching to fallback: ${pc.bold(nextModel)}...`);
+        renderThinkingDone();
+        console.log(`  ${pc.cyan("◆")} ${candidateModel} is ${reason}, switching to fallback: ${pc.bold(nextModel)}...`);
+        renderThinking("thinking...");
         continue;
       }
       throw err;
@@ -421,9 +432,11 @@ export async function callLLMStream(
           String(err).toLowerCase().includes("overloaded") ||
           String(err).toLowerCase().includes("high demand");
         const reason = is503 ? "overloaded (503)" : "unavailable";
+        renderThinkingDone();
         console.log(
-          `  ${pc.cyan("⚡")} ${candidateModel} is ${reason}, switching to fallback: ${pc.bold(nextModel)}...`
+          `  ${pc.cyan("◆")} ${candidateModel} is ${reason}, switching to fallback: ${pc.bold(nextModel)}...`
         );
+        renderThinking("thinking...");
         continue;
       }
       throw err;

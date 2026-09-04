@@ -33,9 +33,9 @@ function saveTodos(todos: TodoItem[]): void {
 }
 
 function renderTodos(todos: TodoItem[]): string {
-  if (todos.length === 0) return "📋 No todos.";
+  if (todos.length === 0) return "No todos.";
   const lines = todos.map((t) => `${t.done ? "[x]" : "[ ]"} ${t.id}. ${t.text}`);
-  return `📋 Todos:\n${lines.join("\n")}`;
+  return `Todos:\n${lines.join("\n")}`;
 }
 
 export async function writeTodos(args: {
@@ -48,7 +48,7 @@ export async function writeTodos(args: {
   if (args.clear) {
     todos = [];
     saveTodos(todos);
-    return "📋 Todos cleared.";
+    return "Todos cleared.";
   }
 
   // Add new todos

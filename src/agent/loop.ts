@@ -316,7 +316,6 @@ export class Agent {
         const maxHistory = getMaxHistoryTokens((this.client as any)?.baseURL, this.model);
         const msgs = trimHistory(this.history.getAll(), maxHistory);
         if (process.stdout.isTTY && !isJsonMode()) {
-          renderThinkingDone();
           response = await callLLMStream(
             this.client,
             this.model,
@@ -331,8 +330,8 @@ export class Agent {
             () => {} // no-op for non-TTY / JSON mode
           );
         }
-      } catch (err) {
-        throw err;
+      } finally {
+        renderThinkingDone();
       }
       const llmElapsed = ((performance.now() - llmStart) / 1000).toFixed(1);
 
@@ -385,7 +384,7 @@ export class Agent {
       // Show progress indicator for multiple tool calls
       const totalTools = response.tool_calls.length;
       if (totalTools > 1 && !isJsonMode() && process.stdout.isTTY) {
-        console.log(`  ${pc.dim("┃")} ${pc.dim(`executing ${totalTools} tool calls...`)}`);
+        console.log(`  ${pc.dim("│")} ${pc.dim(`executing ${totalTools} tool calls...`)}`);
       }
 
       for (const tc of response.tool_calls) {
@@ -415,7 +414,7 @@ export class Agent {
       if (toolCallCount >= this.maxToolCalls) {
         this.history.add({
           role: "assistant",
-          content: `⚠️ Reached max tool calls (${this.maxToolCalls}). Stopping.`,
+          content: `[limit] Reached max tool calls (${this.maxToolCalls}). Stopping.`,
         });
         break;
       }
