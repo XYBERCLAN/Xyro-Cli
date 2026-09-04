@@ -20,6 +20,8 @@ export function createClient(baseURL?: string, apiKey?: string): OpenAI {
   const config: Record<string, unknown> = {
     baseURL: baseURL || undefined,
     apiKey: apiKey || process.env["OPENAI_API_KEY"],
+    timeout: 45_000,
+    maxRetries: 0,
   };
 
   if (isOpenRouter(baseURL)) {
@@ -30,6 +32,17 @@ export function createClient(baseURL?: string, apiKey?: string): OpenAI {
   }
 
   return new OpenAI(config as any);
+}
+
+/** Get safe max_tokens for a given model and provider to respect provider-specific limits */
+export function getMaxTokensForModel(client: OpenAI, model: string): number {
+  const baseURL = (client as any).baseURL || "";
+  // Groq on-demand free-tier models (e.g. qwen/qwen3.8-27b) enforce a strict OTPM (output tokens/min) cap of 1,000.
+  // Requesting max_tokens > 1000 causes Groq to fail immediately with 429 "Request too large ... on output tokens per minute (OTPM)".
+  if (baseURL.includes("groq.com") || model.toLowerCase().startsWith("qwen/")) {
+    return 800;
+  }
+  return 4096;
 }
 
 /** Sleep for ms milliseconds */
@@ -137,7 +150,15 @@ export async function withRetry<T>(fn: () => Promise<T>, maxRetries = 4): Promis
 
       if ((isRateLimit || isNetwork) && attempt < maxRetries) {
         const waitMs = extractRetryDelay(err, attempt);
-        const reason = isRateLimit ? "rate limited" : "connection issue";
+        let reason = "provider API latency / network delay";
+        if (isRateLimit) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (msg.toLowerCase().includes("otpm") || msg.toLowerCase().includes("output token")) {
+            reason = "Groq output token limit (OTPM)";
+          } else {
+            reason = "rate limited";
+          }
+        }
         console.log(
           `  ${pc.yellow("...")} ${reason}, waiting ${(waitMs / 1000).toFixed(1)}s (retry ${attempt + 1}/${maxRetries})...`
         );
@@ -156,12 +177,13 @@ export async function callLLM(
   model: string,
   messages: Message[]
 ): Promise<LLMResponse> {
+  const max_tokens = getMaxTokensForModel(client, model);
   const response = await withRetry(() =>
     client.chat.completions.create({
       model,
       messages: messages as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
       tools: getToolDefinitions(),
-      max_tokens: 4096,
+      max_tokens,
     })
   );
 
@@ -183,13 +205,14 @@ export async function callLLMStream(
   messages: Message[],
   onChunk: StreamChunkHandler
 ): Promise<LLMResponse> {
+  const max_tokens = getMaxTokensForModel(client, model);
   const stream = await withRetry(() =>
     client.chat.completions.create({
       model,
       messages: messages as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
       tools: getToolDefinitions(),
       stream: true,
-      max_tokens: 4096,
+      max_tokens,
     })
   );
 
@@ -258,6 +281,7 @@ export async function summarizeHistory(
   model: string,
   messages: Message[]
 ): Promise<string | null> {
+  const max_tokens = Math.min(800, getMaxTokensForModel(client, model));
   const response = await withRetry(() =>
     client.chat.completions.create({
       model,
@@ -273,6 +297,7 @@ export async function summarizeHistory(
           ),
         },
       ],
+      max_tokens,
     })
   );
 
