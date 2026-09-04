@@ -1,11 +1,14 @@
-import { readFileSync } from "node:fs";
-import { readdirSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { IGNORED_DIRS } from "../config/constants.js";
+import { isIgnoredDir, isWindows } from "../config/platform.js";
 
 function shouldIgnore(fp: string): boolean {
+  // Normalize path separators for consistent matching
+  const normalized = fp.replace(/\\/g, "/");
   for (const d of IGNORED_DIRS) {
-    if (fp.includes(`/${d}/`) || fp.includes(`\\${d}\\`)) return true;
+    const dirLower = d.toLowerCase();
+    if (normalized.toLowerCase().includes(`/${dirLower}/`)) return true;
   }
   return false;
 }
@@ -18,7 +21,7 @@ function getAllFiles(dir: string): string[] {
       const full = join(dir, entry.name);
       if (entry.name.startsWith(".")) continue;
       if (entry.isDirectory()) {
-        if (!IGNORED_DIRS.has(entry.name)) {
+        if (!isIgnoredDir(entry.name, IGNORED_DIRS)) {
           results.push(...getAllFiles(full));
         }
       } else {
@@ -42,10 +45,13 @@ export async function searchCode(args: { pattern: string; path?: string }): Prom
     if (matches.length >= 50) break;
     try {
       const content = readFileSync(fp, "utf-8");
-      const lines = content.split("\n");
+      // Handle both \n and \r\n line endings
+      const lines = content.split(/\r?\n/);
       for (let i = 0; i < lines.length; i++) {
         if (lines[i].toLowerCase().includes(pattern)) {
-          matches.push(`${fp}:${i + 1}: ${lines[i].trim()}`);
+          // Normalize path for display (use forward slashes for consistency)
+          const displayPath = isWindows ? fp.replace(/\\/g, "/") : fp;
+          matches.push(`${displayPath}:${i + 1}: ${lines[i].trim()}`);
           if (matches.length >= 50) break;
         }
       }

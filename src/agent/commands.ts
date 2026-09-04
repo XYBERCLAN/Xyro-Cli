@@ -5,14 +5,18 @@ import { UsageTracker, formatUsage } from "../agent/usage.js";
 import { summarizeHistory } from "../providers/llm.js";
 import { FREE_PROVIDERS, interactiveSetup, Provider } from "../ui/prompts.js";
 import { renderInfo, renderError, renderAssistant, isJsonMode } from "../ui/render.js";
+import { getToolCount } from "../tools/registry.js";
 
 export interface CommandContext {
   agent: Agent;
   model: string;
   setModel: (m: string) => void;
   provider: string;
+  setProvider: (p: string) => void;
   baseURL: string;
+  setBaseURL: (u: string) => void;
   apiKey: string;
+  setApiKey: (k: string) => void;
   usage: UsageTracker;
   persistConfig: (c: { provider?: string; model?: string; baseURL?: string; apiKey?: string }) => void;
 }
@@ -93,11 +97,13 @@ export async function handleCommand(
     case "status": {
       const msgs = agent.getHistory();
       const toolCalls = msgs.filter((m) => m.role === "tool").length;
+      const toolInfo = getToolCount();
       const lines = [
         `model: ${ctx.model}`,
         `provider: ${ctx.provider}`,
         `cwd: ${process.cwd()}`,
         `messages: ${msgs.length} (incl. ${toolCalls} tool results)`,
+        `tools: ${toolInfo.total} (${toolInfo.builtin} built-in + ${toolInfo.plugins} plugin)` ,
         `max tool calls: ${agent.getMaxToolCalls()}`,
       ];
       renderAssistant(lines.join("\n"));
@@ -173,8 +179,15 @@ export async function handleCommand(
     case "provider": {
       const config = await interactiveSetup();
       ctx.persistConfig(config);
+      // Update agent client immediately
+      ctx.agent.updateClient(config.baseURL, config.apiKey);
+      ctx.agent.setModel(config.model);
+      // Update context variables
+      ctx.setProvider(config.provider);
+      ctx.setBaseURL(config.baseURL);
+      ctx.setApiKey(config.apiKey);
+      ctx.setModel(config.model);
       renderInfo(`Provider configured: ${config.provider} (${config.model})`);
-      renderInfo(`Restart XYRO to use the new provider`);
       return { action: "continue" };
     }
 

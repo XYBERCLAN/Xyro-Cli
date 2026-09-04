@@ -1,12 +1,16 @@
 import OpenAI from "openai";
 import { Message } from "../agent/types.js";
 import { getToolDefinitions } from "../tools/registry.js";
+import pc from "picocolors";
 
 export interface LLMResponse {
   content: string | null;
   tool_calls: OpenAI.Chat.Completions.ChatCompletionMessageToolCall[];
   usage?: unknown;
 }
+
+export type StreamChunkHandler = (chunk: string) => void;
+export type StreamToolCallHandler = (toolCalls: OpenAI.Chat.Completions.ChatCompletionMessageToolCall[]) => void;
 
 function isOpenRouter(baseURL?: string): boolean {
   return !!baseURL?.includes("openrouter");
@@ -21,11 +25,130 @@ export function createClient(baseURL?: string, apiKey?: string): OpenAI {
   if (isOpenRouter(baseURL)) {
     config.defaultHeaders = {
       "HTTP-Referer": "https://wolf-ai.dev",
-      "X-Title": "Wolf AI Coding Agent",
+      "X-Title": "XYRO Coding Agent",
     };
   }
 
   return new OpenAI(config as any);
+}
+
+/** Sleep for ms milliseconds */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Check if an error represents a rate limit or transient quota exhaustion */
+export function isRateLimitError(err: unknown): boolean {
+  if (!err) return false;
+  if (err instanceof OpenAI.APIError) {
+    if (err.status === 429) return true;
+    if (err.code === "rate_limit_exceeded" || err.code === "insufficient_quota") return true;
+  }
+  if (typeof err === "object" && "status" in err && (err as any).status === 429) {
+    return true;
+  }
+
+  const msg = err instanceof Error ? err.message : String(err);
+  const lower = msg.toLowerCase();
+  return (
+    lower.includes("429") ||
+    lower.includes("rate limit") ||
+    lower.includes("rate_limit") ||
+    lower.includes("resource has been exhausted") ||
+    lower.includes("resource_exhausted") ||
+    lower.includes("too many requests") ||
+    lower.includes("quota exceeded") ||
+    lower.includes("tpm") ||
+    lower.includes("rpm")
+  );
+}
+
+/** Check if an error represents a transient network issue that warrants a retry */
+export function isTransientNetworkError(err: unknown): boolean {
+  if (!err) return false;
+  const msg = err instanceof Error ? err.message : String(err);
+  const cause = (err as any)?.cause?.message || (err as any)?.cause?.code || "";
+  const combined = `${msg} ${cause}`.toLowerCase();
+  return (
+    combined.includes("etimedout") ||
+    combined.includes("econnreset") ||
+    combined.includes("connection error") ||
+    combined.includes("fetch failed") ||
+    combined.includes("network error")
+  );
+}
+
+/** Extract retry-after duration in milliseconds from error headers or message */
+export function extractRetryDelay(err: unknown, attempt: number): number {
+  // Check headers if available
+  const headers = (err as any)?.headers || (err as any)?.response?.headers;
+  if (headers) {
+    const retryAfter = headers["retry-after"] || headers["Retry-After"];
+    if (retryAfter) {
+      const parsedSeconds = parseFloat(retryAfter);
+      if (!isNaN(parsedSeconds) && parsedSeconds > 0) {
+        return Math.min(30000, Math.max(1000, Math.ceil(parsedSeconds * 1000)));
+      }
+    }
+    const retryAfterMs = headers["retry-after-ms"] || headers["Retry-After-Ms"];
+    if (retryAfterMs) {
+      const parsedMs = parseFloat(retryAfterMs);
+      if (!isNaN(parsedMs) && parsedMs > 0) {
+        return Math.min(30000, Math.max(1000, Math.ceil(parsedMs)));
+      }
+    }
+  }
+
+  // Check error message for duration patterns like "try again in 12.5s" or "wait 3000ms"
+  const msg = err instanceof Error ? err.message : String(err);
+  const secMatch = msg.match(/(?:try again in|wait|after)\s*([0-9]+(?:\.[0-9]+)?)\s*(?:s|seconds)/i);
+  if (secMatch && secMatch[1]) {
+    const sec = parseFloat(secMatch[1]);
+    if (!isNaN(sec) && sec > 0) {
+      return Math.min(30000, Math.max(1000, Math.ceil(sec * 1000)));
+    }
+  }
+
+  const msMatch = msg.match(/(?:try again in|wait|after)\s*([0-9]+)\s*ms/i);
+  if (msMatch && msMatch[1]) {
+    const ms = parseInt(msMatch[1], 10);
+    if (!isNaN(ms) && ms > 0) {
+      return Math.min(30000, Math.max(1000, ms));
+    }
+  }
+
+  // Exponential backoff with jitter: 2s, 4s, 8s, 16s + jitter
+  const baseMs = 2000 * Math.pow(2, attempt);
+  const jitter = Math.floor(Math.random() * 1000);
+  return Math.min(25000, baseMs + jitter);
+}
+
+/** Retry wrapper for rate-limited and transient API calls */
+export async function withRetry<T>(fn: () => Promise<T>, maxRetries = 4): Promise<T> {
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err: unknown) {
+      lastError = err;
+      const isRateLimit = isRateLimitError(err);
+      const isNetwork = isTransientNetworkError(err);
+
+      if ((isRateLimit || isNetwork) && attempt < maxRetries) {
+        const waitMs = extractRetryDelay(err, attempt);
+        const reason = isRateLimit ? "rate limited" : "connection issue";
+        console.log(
+          `  ${pc.yellow("...")} ${reason}, waiting ${(waitMs / 1000).toFixed(1)}s (retry ${attempt + 1}/${maxRetries})...`
+        );
+        await sleep(waitMs);
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  throw lastError;
 }
 
 export async function callLLM(
@@ -33,11 +156,14 @@ export async function callLLM(
   model: string,
   messages: Message[]
 ): Promise<LLMResponse> {
-  const response = await client.chat.completions.create({
-    model,
-    messages: messages as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
-    tools: getToolDefinitions(),
-  });
+  const response = await withRetry(() =>
+    client.chat.completions.create({
+      model,
+      messages: messages as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+      tools: getToolDefinitions(),
+      max_tokens: 4096,
+    })
+  );
 
   const msg = response.choices[0].message;
   return {
@@ -47,28 +173,108 @@ export async function callLLM(
   };
 }
 
+/**
+ * Streaming LLM call — yields content chunks in real time.
+ * Returns the full assembled response when the stream completes.
+ */
+export async function callLLMStream(
+  client: OpenAI,
+  model: string,
+  messages: Message[],
+  onChunk: StreamChunkHandler
+): Promise<LLMResponse> {
+  const stream = await withRetry(() =>
+    client.chat.completions.create({
+      model,
+      messages: messages as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+      tools: getToolDefinitions(),
+      stream: true,
+      max_tokens: 4096,
+    })
+  );
+
+  let content = "";
+  const toolCallsMap = new Map<number, OpenAI.Chat.Completions.ChatCompletionMessageToolCall>();
+  let usage: unknown = null;
+
+  for await (const chunk of stream) {
+    const choice = chunk.choices[0];
+    if (!choice) continue;
+
+    const delta = choice.delta;
+
+    // Content streaming
+    if (delta.content) {
+      content += delta.content;
+      onChunk(delta.content);
+    }
+
+    // Tool call streaming (arguments come in fragments)
+    if (delta.tool_calls) {
+      for (const tc of delta.tool_calls) {
+        const idx = tc.index ?? 0;
+        if (!toolCallsMap.has(idx)) {
+          toolCallsMap.set(idx, {
+            ...tc,
+            id: tc.id || "",
+            type: "function" as const,
+            function: {
+              name: tc.function?.name || "",
+              arguments: "",
+            },
+          } as any);
+        }
+        const existing = toolCallsMap.get(idx)!;
+        if (tc.id) existing.id = tc.id;
+        if (tc.function?.name) existing.function.name = tc.function.name;
+        if (tc.function?.arguments) existing.function.arguments += tc.function.arguments;
+
+        // Preserve extra metadata fields (e.g. extra_content with thought_signature for Google AI Studio)
+        for (const [key, val] of Object.entries(tc)) {
+          if (key !== "index" && key !== "function" && key !== "id" && key !== "type") {
+            (existing as any)[key] = val;
+          }
+        }
+      }
+    }
+
+    // Usage (only on last chunk)
+    if (chunk.usage) {
+      usage = chunk.usage;
+    }
+  }
+
+  const toolCalls = Array.from(toolCallsMap.values());
+
+  return {
+    content: content || null,
+    tool_calls: toolCalls,
+    usage,
+  };
+}
+
 export async function summarizeHistory(
   client: OpenAI,
   model: string,
   messages: Message[]
 ): Promise<string | null> {
-  const response = await client.chat.completions.create({
-    model,
-    messages: [
-      {
-        role: "system",
-        content: `Summarize the following conversation between a user and a coding assistant.
-Preserve: tasks completed, files modified, key decisions, and open follow-ups.
-Be concise — under 500 words.`,
-      },
-      {
-        role: "user",
-        content: JSON.stringify(
-          messages.map((m) => ({ role: m.role, content: m.content }))
-        ),
-      },
-    ],
-  });
+  const response = await withRetry(() =>
+    client.chat.completions.create({
+      model,
+      messages: [
+        {
+          role: "system",
+          content: `Summarize the following conversation between a user and a coding assistant. Preserve: tasks completed, files modified, key decisions, and open follow-ups. Be concise - under 500 words.`,
+        },
+        {
+          role: "user",
+          content: JSON.stringify(
+            messages.map((m) => ({ role: m.role, content: m.content }))
+          ),
+        },
+      ],
+    })
+  );
 
   return response.choices[0].message.content;
 }

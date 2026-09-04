@@ -1,20 +1,35 @@
 import { execSync } from "node:child_process";
-import { DANGEROUS_COMMANDS, SHELL_TIMEOUT_MS } from "../config/constants.js";
+import { SHELL_TIMEOUT_MS } from "../config/constants.js";
+import { getDangerousPatterns, isWindows } from "../config/platform.js";
+
+/**
+ * Check if a command is dangerous and should be blocked.
+ * Checks both Unix and Windows patterns regardless of platform
+ * for defense in depth (e.g., WSL on Windows, or cross-platform scripts).
+ */
+function isDangerousCommand(cmd: string): boolean {
+  const { unix, windows } = getDangerousPatterns();
+  const allPatterns = [...unix, ...windows];
+  const lowerCmd = cmd.toLowerCase();
+  for (const pattern of allPatterns) {
+    if (lowerCmd.includes(pattern.toLowerCase())) {
+      return true;
+    }
+  }
+  return false;
+}
 
 export async function runCommand(args: { command: string }): Promise<string> {
   const cmd = args.command;
 
-  for (const pattern of DANGEROUS_COMMANDS) {
-    if (cmd.includes(pattern)) {
-      return "❌ Refused to execute dangerous command";
-    }
+  if (isDangerousCommand(cmd)) {
+    return "❌ Refused to execute dangerous command";
   }
 
   try {
     const output = execSync(cmd, {
       encoding: "utf-8",
       timeout: SHELL_TIMEOUT_MS,
-      shell: "/bin/sh",
       maxBuffer: 10 * 1024 * 1024,
     });
     return output.trim() || "(Command completed with no output)";

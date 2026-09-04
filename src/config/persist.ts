@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
-import * as path from "node:path";
-import * as os from "node:os";
+import { join } from "node:path";
+import { getConfigDir } from "./platform.js";
 
 export interface PersistedConfig {
   provider?: string;
@@ -9,14 +9,8 @@ export interface PersistedConfig {
   apiKey?: string;
 }
 
-function configDir(): string {
-  const xdg = process.env["XDG_CONFIG_HOME"];
-  const base = xdg || path.join(os.homedir(), ".config");
-  return path.join(base, "xyro");
-}
-
 function configPath(): string {
-  return path.join(configDir(), "config.json");
+  return join(getConfigDir(), "config.json");
 }
 
 export function loadPersistedConfig(): PersistedConfig {
@@ -31,11 +25,19 @@ export function loadPersistedConfig(): PersistedConfig {
 }
 
 export function savePersistedConfig(config: PersistedConfig): void {
-  const dir = configDir();
+  const dir = getConfigDir();
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
-  fs.writeFileSync(configPath(), JSON.stringify(config, null, 2), "utf-8");
+  const existing = loadPersistedConfig();
+  const merged: PersistedConfig = {
+    ...existing,
+    ...(config.provider !== undefined ? { provider: config.provider } : {}),
+    ...(config.model !== undefined ? { model: config.model } : {}),
+    ...(config.baseURL !== undefined ? { baseURL: config.baseURL } : {}),
+    ...(config.apiKey !== undefined ? { apiKey: config.apiKey } : {}),
+  };
+  fs.writeFileSync(configPath(), JSON.stringify(merged, null, 2), "utf-8");
 }
 
 export function clearPersistedConfig(): void {

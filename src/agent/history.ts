@@ -1,10 +1,18 @@
-import { readFileSync, writeFileSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { Message } from "./types.js";
-import { SYSTEM_PROMPT, HISTORY_FILE } from "../config/constants.js";
+import { SYSTEM_PROMPT } from "../config/constants.js";
+import { getHistoryDir } from "../config/platform.js";
 import { loadProjectContext } from "../config/loader.js";
 import { historyToMarkdown } from "./usage.js";
 
-type ResponseListener = (usage: unknown) => void;export class HistoryManager {
+type ResponseListener = (usage: unknown) => void;
+
+function historyFilePath(): string {
+  return join(getHistoryDir(), "session.json");
+}
+
+export class HistoryManager {
   private messages: Message[] = [];
   private listeners: ResponseListener[] = [];
 
@@ -58,7 +66,12 @@ type ResponseListener = (usage: unknown) => void;export class HistoryManager {
 
   save(): void {
     try {
-      writeFileSync(HISTORY_FILE, JSON.stringify(this.messages, null, 2), "utf-8");
+      const filePath = historyFilePath();
+      const dir = getHistoryDir();
+      if (!existsSync(dir)) {
+        mkdirSync(dir, { recursive: true });
+      }
+      writeFileSync(filePath, JSON.stringify(this.messages, null, 2), "utf-8");
     } catch {
       // silent fail
     }
@@ -66,8 +79,9 @@ type ResponseListener = (usage: unknown) => void;export class HistoryManager {
 
   load(): boolean {
     try {
-      if (existsSync(HISTORY_FILE)) {
-        const data = readFileSync(HISTORY_FILE, "utf-8");
+      const filePath = historyFilePath();
+      if (existsSync(filePath)) {
+        const data = readFileSync(filePath, "utf-8");
         this.messages = JSON.parse(data);
         return true;
       }

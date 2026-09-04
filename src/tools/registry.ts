@@ -5,6 +5,21 @@ import { writeFile, editFile } from "./write.js";
 import { runCommand } from "./shell.js";
 import { listFiles } from "./fs.js";
 import { searchCode } from "./search.js";
+import {
+  gitStatus,
+  gitDiff,
+  gitLog,
+  gitCommit,
+  gitBranch,
+  gitCheckout,
+  gitInit,
+  gitStash,
+  gitStashPop,
+  gitPush,
+  gitCreatePr,
+  gitPrView,
+} from "./git.js";
+import { loadPlugins } from "../config/plugins.js";
 
 function def(
   name: string,
@@ -26,7 +41,8 @@ function def(
   };
 }
 
-export const tools: Tool[] = [
+// Built-in tools
+const builtinTools: Tool[] = [
   {
     definition: def("read_file", "Read file contents with line numbers", {
       path: { type: "string", description: "File path to read" },
@@ -67,14 +83,103 @@ export const tools: Tool[] = [
     }, ["pattern"]),
     execute: (args) => searchCode(args as { pattern: string; path?: string }),
   },
+  // ─── Git tools ───────────────────────────────────────────────
+  {
+    definition: def("git_status", "Show git working tree status and current branch", {}, []),
+    execute: () => gitStatus(),
+  },
+  {
+    definition: def("git_diff", "Show unstaged changes in the working tree", {}, []),
+    execute: () => gitDiff(),
+  },
+  {
+    definition: def("git_log", "Show recent git commits", {
+      count: { type: "number", description: "Number of commits to show (default: 10)" },
+    }, []),
+    execute: (args) => gitLog(args as { count?: number }),
+  },
+  {
+    definition: def("git_commit", "Stage all changes and create a commit", {
+      message: { type: "string", description: "Commit message" },
+    }, ["message"]),
+    execute: (args) => gitCommit(args as { message: string }),
+  },
+  {
+    definition: def("git_branch", "List branches or create a new branch", {
+      name: { type: "string", description: "Branch name to create (omit to list)" },
+    }, []),
+    execute: (args) => gitBranch(args as { name?: string }),
+  },
+  {
+    definition: def("git_checkout", "Switch to a different branch", {
+      branch: { type: "string", description: "Branch name to switch to" },
+    }, ["branch"]),
+    execute: (args) => gitCheckout(args as { branch: string }),
+  },
+  {
+    definition: def("git_init", "Initialize a new git repository in the current directory", {}, []),
+    execute: () => gitInit(),
+  },
+  {
+    definition: def("git_stash", "Stash working tree changes", {}, []),
+    execute: () => gitStash(),
+  },
+  {
+    definition: def("git_stash_pop", "Apply the most recent stash and remove it from the stash list", {}, []),
+    execute: () => gitStashPop(),
+  },
+  {
+    definition: def("git_push", "Push committed changes to the remote repository", {
+      remote: { type: "string", description: "Remote name (default: origin)" },
+      branch: { type: "string", description: "Branch to push (default: current branch)" },
+      force: { type: "boolean", description: "Force push with lease (safer than --force)" },
+    }, []),
+    execute: (args) => gitPush(args as { remote?: string; branch?: string; force?: boolean }),
+  },
+  {
+    definition: def("git_create_pr", "Open a pull request on GitHub or view existing PR for current branch", {
+      title: { type: "string", description: "Pull request title (defaults to latest commit message)" },
+      body: { type: "string", description: "Pull request description in markdown" },
+      repo: { type: "string", description: "Target repository (e.g. owner/repo, defaults to upstream or origin)" },
+      base: { type: "string", description: "Base branch to merge into (default: main)" },
+      head: { type: "string", description: "Head branch containing changes (default: current branch or fork:branch)" },
+      draft: { type: "boolean", description: "Create as draft pull request" },
+    }, []),
+    execute: (args) => gitCreatePr(args as { title?: string; body?: string; repo?: string; base?: string; head?: string; draft?: boolean }),
+  },
+  {
+    definition: def("git_pr_view", "View pull request details and status on GitHub", {
+      pr: { type: "string", description: "Pull request number, branch, or URL (defaults to current branch)" },
+      repo: { type: "string", description: "Repository (defaults to upstream or origin)" },
+    }, []),
+    execute: (args) => gitPrView(args as { pr?: string; repo?: string }),
+  },
 ];
 
+// All tools (built-in + plugins)
+let allTools: Tool[] = [...builtinTools];
+let pluginsLoaded = false;
+
+/** Initialize plugin tools (call once at startup) */
+export async function initializeTools(): Promise<void> {
+  if (pluginsLoaded) return;
+  try {
+    const pluginTools = await loadPlugins();
+    if (pluginTools.length > 0) {
+      allTools = [...builtinTools, ...pluginTools];
+    }
+  } catch {
+    // Plugin loading failed — use built-in tools only
+  }
+  pluginsLoaded = true;
+}
+
 export function getToolDefinitions(): OpenAI.ChatCompletionTool[] {
-  return tools.map((t) => t.definition);
+  return allTools.map((t) => t.definition);
 }
 
 export async function executeTool(name: string, args: Record<string, unknown>): Promise<string> {
-  const tool = tools.find((t) => t.definition.function.name === name);
+  const tool = allTools.find((t) => t.definition.function.name === name);
   if (!tool) return `❌ Unknown tool: ${name}`;
   try {
     return await tool.execute(args);
@@ -82,4 +187,13 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
     const msg = err instanceof Error ? err.message : String(err);
     return `❌ ${name} error: ${msg}`;
   }
+}
+
+/** Get count of loaded tools (for status display) */
+export function getToolCount(): { builtin: number; plugins: number; total: number } {
+  return {
+    builtin: builtinTools.length,
+    plugins: allTools.length - builtinTools.length,
+    total: allTools.length,
+  };
 }
