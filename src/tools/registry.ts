@@ -5,6 +5,7 @@ import { writeFile, editFile } from "./write.js";
 import { runCommand } from "./shell.js";
 import { listFiles } from "./fs.js";
 import { searchCode } from "./search.js";
+import { fetchUrl } from "./fetch.js";
 import {
   gitStatus,
   gitDiff,
@@ -82,6 +83,12 @@ const builtinTools: Tool[] = [
       path: { type: "string", description: "Search directory" },
     }, ["pattern"]),
     execute: (args) => searchCode(args as { pattern: string; path?: string }),
+  },
+  {
+    definition: def("fetch_url", "Fetch and extract text content from a web URL or GitHub repository", {
+      url: { type: "string", description: "The web URL to fetch (http or https)" },
+    }, ["url"]),
+    execute: (args) => fetchUrl(args as { url: string }),
   },
   // ─── Git tools ───────────────────────────────────────────────
   {

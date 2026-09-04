@@ -95,23 +95,102 @@ function groupIntoTurns(msgs: Message[]): Message[][] {
   return turns;
 }
 
-/** Trim history to fit within token limits while preserving schema validity */
-export function trimHistory(msgs: Message[]): Message[] {
-  if (msgs.length <= 2) return msgs;
+/**
+ * Prune verbose tool results from past completed turns to keep prompt payloads lean.
+ * The active turn (last turn) is kept completely intact so the assistant can read full outputs.
+ */
+export function prunePastToolResults(turns: Message[][]): Message[][] {
+  if (turns.length <= 1) return turns;
 
-  let totalTokens = estimateTokens(msgs);
-  if (totalTokens <= MAX_HISTORY_TOKENS) return msgs;
+  return turns.map((turn, index) => {
+    // Active turn: keep full output for current turn reasoning
+    if (index === turns.length - 1) return turn;
+
+    return turn.map((msg) => {
+      if (msg.role === "tool" && msg.content && msg.content.length > 120) {
+        const isErr = msg.content.startsWith("❌");
+        const brief = isErr
+          ? msg.content.slice(0, 100)
+          : `[output processed by assistant: ${msg.content.slice(0, 60).replace(/\s+/g, " ")}...]`;
+        return {
+          ...msg,
+          content: brief,
+        };
+      }
+      return msg;
+    });
+  });
+}
+
+/** Get safe max history tokens based on provider limits */
+export function getMaxHistoryTokens(baseURL?: string, model?: string): number {
+  const url = baseURL || "";
+  const m = (model || "").toLowerCase();
+  // Groq free tier has strict TPM limits (~6K-8K tokens/min)
+  if (url.includes("groq.com") || m.startsWith("qwen/")) {
+    return 3000;
+  }
+  return MAX_HISTORY_TOKENS;
+}
+
+/**
+ * Build a structured local context summary without making an LLM API call.
+ * Avoids burning tokens or triggering 429 rate limits during compact.
+ */
+export function buildLocalContextSummary(msgs: Message[]): string {
+  const userQueries: string[] = [];
+  const referencedItems = new Set<string>();
+  const actions: string[] = [];
+
+  for (const m of msgs) {
+    if (m.role === "user" && m.content) {
+      userQueries.push(m.content.trim().slice(0, 120));
+    }
+    if (m.role === "assistant" && m.tool_calls) {
+      for (const tc of m.tool_calls) {
+        const name = tc.function?.name;
+        if (name) actions.push(name);
+        try {
+          const args = JSON.parse(tc.function?.arguments || "{}");
+          if (args.path) referencedItems.add(String(args.path));
+          if (args.url) referencedItems.add(String(args.url));
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }
+
+  const sections: string[] = [];
+  if (userQueries.length > 0) {
+    sections.push(`User queries:\n${userQueries.map((q, i) => `${i + 1}. ${q}`).join("\n")}`);
+  }
+  if (referencedItems.size > 0) {
+    sections.push(`Referenced files/URLs:\n${Array.from(referencedItems).map((item) => `- ${item}`).join("\n")}`);
+  }
+  if (actions.length > 0) {
+    const unique = Array.from(new Set(actions));
+    sections.push(`Tools executed: ${unique.join(", ")}`);
+  }
+
+  return sections.join("\n\n") || "Previous conversation context retained.";
+}
+
+/** Trim history to fit within token limits while preserving schema validity and pruning old tool outputs */
+export function trimHistory(msgs: Message[], maxTokens: number = MAX_HISTORY_TOKENS): Message[] {
+  if (msgs.length <= 2) return msgs;
 
   // Always keep the first message (system context)
   const systemMsg = msgs[0];
   const rest = msgs.slice(1);
 
-  const turns = groupIntoTurns(rest);
+  // Group into atomic turns and prune verbose tool outputs from completed past turns
+  let turns = prunePastToolResults(groupIntoTurns(rest));
 
   // Keep dropping oldest turns until under token limit, leaving at least the last turn
   while (turns.length > 1) {
     const flattened = [systemMsg, ...turns.flat()];
-    if (estimateTokens(flattened) <= MAX_HISTORY_TOKENS) {
+    if (estimateTokens(flattened) <= maxTokens) {
       break;
     }
     turns.shift();
@@ -172,10 +251,30 @@ export class Agent {
   async compact(): Promise<string | null> {
     const msgs = this.history.getAll();
     if (msgs.length <= 1) return null;
-    const summary = await summarizeHistory(this.client, this.model, msgs);
-    if (!summary) return null;
-    this.history.resetWithSummary(summary);
-    return summary;
+
+    const baseURL = (this.client as any)?.baseURL || "";
+    const isGroq = baseURL.includes("groq.com") || this.model.toLowerCase().startsWith("qwen/");
+
+    // On Groq or strict rate-limited providers, use fast local summary to prevent 429
+    if (isGroq) {
+      const summary = buildLocalContextSummary(msgs);
+      this.history.resetWithSummary(summary);
+      return summary;
+    }
+
+    try {
+      const summary = await summarizeHistory(this.client, this.model, msgs);
+      if (summary) {
+        this.history.resetWithSummary(summary);
+        return summary;
+      }
+    } catch {
+      // Fall back to zero-cost local summary if API call fails
+      const summary = buildLocalContextSummary(msgs);
+      this.history.resetWithSummary(summary);
+      return summary;
+    }
+    return null;
   }
 
   async run(input: string): Promise<void> {
@@ -213,7 +312,8 @@ export class Agent {
       const llmStart = performance.now();
       try {
         // Use streaming for real-time output
-        const msgs = trimHistory(this.history.getAll());
+        const maxHistory = getMaxHistoryTokens((this.client as any)?.baseURL, this.model);
+        const msgs = trimHistory(this.history.getAll(), maxHistory);
         if (process.stdout.isTTY && !isJsonMode()) {
           renderThinkingDone();
           response = await callLLMStream(
