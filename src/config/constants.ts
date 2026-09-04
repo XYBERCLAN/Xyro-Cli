@@ -17,6 +17,11 @@ export const DEFAULT_MODEL = "gpt-4o";
 // ~35K tokens - safe for free tier TPM and 128K context models
 export const CONTEXT_WINDOW_WARN_TOKENS = 35_000;
 
+// Post-turn rate-limit guard: compact history after a turn if estimated tokens exceed this.
+// Keeps each request small enough for free-tier providers (e.g. Groq 8K TPM).
+// Set to ~3.5K to leave headroom for system prompt + next user message.
+export const POST_TURN_COMPACT_TOKENS = 3_500;
+
 // Diff preview: max lines to show in a diff before truncating
 export const DIFF_MAX_LINES = 50;
 

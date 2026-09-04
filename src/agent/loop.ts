@@ -4,7 +4,7 @@ import { Message, AgentOptions } from "./types.js";
 import { HistoryManager } from "./history.js";
 import { createClient, callLLMStream, summarizeHistory, LLMResponse } from "../providers/llm.js";
 import { executeTool } from "../tools/registry.js";
-import { DEFAULT_MODEL, DEFAULT_MAX_TOOL_CALLS, CONTEXT_WINDOW_WARN_TOKENS } from "../config/constants.js";
+import { DEFAULT_MODEL, DEFAULT_MAX_TOOL_CALLS, CONTEXT_WINDOW_WARN_TOKENS, POST_TURN_COMPACT_TOKENS } from "../config/constants.js";
 import {
   renderAssistant,
   renderUserMessage,
@@ -253,6 +253,22 @@ export class Agent {
       }
 
       if (!response.tool_calls || response.tool_calls.length === 0) {
+        // Post-turn rate-limit guard: if history grew large during this turn,
+        // compact it now so the NEXT request starts lean and avoids TPM limits.
+        const postTurnTokens = estimateTokens(this.history.getAll());
+        if (postTurnTokens > POST_TURN_COMPACT_TOKENS) {
+          if (!isJsonMode()) {
+            console.log(`  ${pc.dim("...")} context grew to ~${postTurnTokens} tokens, compacting to avoid rate limits...`);
+          }
+          try {
+            await this.compact();
+            if (!isJsonMode()) {
+              console.log(`  ${pc.green("OK")} context compacted — next turn starts fresh`);
+            }
+          } catch {
+            // non-critical: compact failed, continue without it
+          }
+        }
         break;
       }
 
