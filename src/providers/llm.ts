@@ -80,10 +80,19 @@ export function isRateLimitError(err: unknown): boolean {
 export function isTransientNetworkError(err: unknown): boolean {
   if (!err) return false;
   if ((err as any)?.name === "APIConnectionTimeoutError") return true;
+  const status = (err as any)?.status || (err as any)?.response?.status;
+  if (status === 500 || status === 502 || status === 503 || status === 504) {
+    return true;
+  }
   const msg = err instanceof Error ? err.message : String(err);
   const cause = (err as any)?.cause?.message || (err as any)?.cause?.code || "";
   const combined = `${msg} ${cause}`.toLowerCase();
   return (
+    combined.includes("503") ||
+    combined.includes("502") ||
+    combined.includes("504") ||
+    combined.includes("overloaded") ||
+    combined.includes("service unavailable") ||
     combined.includes("timed out") ||
     combined.includes("timeout") ||
     combined.includes("etimedout") ||
@@ -160,6 +169,16 @@ export async function withRetry<T>(fn: () => Promise<T>, maxRetries = 4): Promis
             reason = "Groq output token limit (OTPM)";
           } else {
             reason = "rate limited";
+          }
+        } else {
+          const msg = err instanceof Error ? err.message : String(err);
+          const status = (err as any)?.status || (err as any)?.response?.status;
+          if (status === 503 || msg.includes("503") || msg.toLowerCase().includes("overloaded")) {
+            reason = "model overloaded / server busy (503)";
+          } else if (status === 502 || status === 504 || msg.includes("502") || msg.includes("504")) {
+            reason = `server error (${status || "50x"})`;
+          } else if (msg.toLowerCase().includes("timed out") || msg.toLowerCase().includes("timeout")) {
+            reason = "request timed out";
           }
         }
         console.log(

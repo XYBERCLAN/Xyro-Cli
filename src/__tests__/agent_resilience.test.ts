@@ -28,6 +28,8 @@ describe("Rate Limit & Network Detection", () => {
     assert.strictEqual(isTransientNetworkError(new Error("fetch failed")), true);
     assert.strictEqual(isTransientNetworkError(new Error("Request timed out.")), true);
     assert.strictEqual(isTransientNetworkError({ name: "APIConnectionTimeoutError", message: "timeout" }), true);
+    assert.strictEqual(isTransientNetworkError({ status: 503, message: "Service Unavailable" }), true);
+    assert.strictEqual(isTransientNetworkError(new Error("Model is overloaded, please try again")), true);
     assert.strictEqual(isTransientNetworkError(new Error("Syntax error")), false);
   });
 
