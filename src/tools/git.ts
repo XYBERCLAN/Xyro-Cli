@@ -1,6 +1,7 @@
 import { execSync } from "node:child_process";
 
 const GIT_TIMEOUT = 15_000;
+const GIT_PUSH_TIMEOUT = 60_000; // push over HTTPS can take 20-30s
 
 function runGit(args: string): string {
   try {
@@ -139,7 +140,21 @@ export async function gitPush(args?: { remote?: string; branch?: string; force?:
   const branch = args?.branch || "";
   const force = args?.force ? " --force-with-lease" : "";
   const target = branch ? `${remote} ${branch}` : remote;
-  const result = runGit(`push${force} ${target}`);
-  if (result.startsWith("❌")) return result;
-  return `✅ Pushed to ${remote}${branch ? ` (${branch})` : ""}\n${result}`;
+  const cmd = `git push${force} ${target}`;
+  try {
+    const output = execSync(cmd, {
+      encoding: "utf-8",
+      timeout: GIT_PUSH_TIMEOUT,
+      maxBuffer: 5 * 1024 * 1024,
+      cwd: process.cwd(),
+    });
+    return `✅ Pushed to ${remote}${branch ? ` (${branch})` : ""}\n${output.trim() || "(no output)"}`;
+  } catch (err: unknown) {
+    if (err instanceof Error) {
+      const msg = err.message;
+      if (msg.includes("timed out")) return `❌ git push timed out after ${GIT_PUSH_TIMEOUT / 1000}s`;
+      return `❌ git push error: ${msg.slice(0, 300)}`;
+    }
+    return "❌ Unknown git push error";
+  }
 }

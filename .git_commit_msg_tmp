@@ -1,4 +1,4 @@
-feat: post-turn auto-compact to avoid rate limits
+fix: increase git push timeout to 60s to prevent ETIMEDOUT
 Assisted by XYRO
 
 🤖 Generated with XYRO
