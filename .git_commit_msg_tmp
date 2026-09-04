@@ -1,4 +1,4 @@
-fix: increase git push timeout to 60s to prevent ETIMEDOUT
+feat: add git PR tools (git_create_pr, git_pr_view)
 Assisted by XYRO
 
 🤖 Generated with XYRO

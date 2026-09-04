@@ -16,6 +16,8 @@ import {
   gitStash,
   gitStashPop,
   gitPush,
+  gitCreatePr,
+  gitPrView,
 } from "./git.js";
 import { loadPlugins } from "../config/plugins.js";
 
@@ -133,6 +135,24 @@ const builtinTools: Tool[] = [
       force: { type: "boolean", description: "Force push with lease (safer than --force)" },
     }, []),
     execute: (args) => gitPush(args as { remote?: string; branch?: string; force?: boolean }),
+  },
+  {
+    definition: def("git_create_pr", "Open a pull request on GitHub or view existing PR for current branch", {
+      title: { type: "string", description: "Pull request title (defaults to latest commit message)" },
+      body: { type: "string", description: "Pull request description in markdown" },
+      repo: { type: "string", description: "Target repository (e.g. owner/repo, defaults to upstream or origin)" },
+      base: { type: "string", description: "Base branch to merge into (default: main)" },
+      head: { type: "string", description: "Head branch containing changes (default: current branch or fork:branch)" },
+      draft: { type: "boolean", description: "Create as draft pull request" },
+    }, []),
+    execute: (args) => gitCreatePr(args as { title?: string; body?: string; repo?: string; base?: string; head?: string; draft?: boolean }),
+  },
+  {
+    definition: def("git_pr_view", "View pull request details and status on GitHub", {
+      pr: { type: "string", description: "Pull request number, branch, or URL (defaults to current branch)" },
+      repo: { type: "string", description: "Repository (defaults to upstream or origin)" },
+    }, []),
+    execute: (args) => gitPrView(args as { pr?: string; repo?: string }),
   },
 ];
 
