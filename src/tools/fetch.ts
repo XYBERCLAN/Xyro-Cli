@@ -7,6 +7,49 @@ const DEFAULT_MAX_LENGTH = 6000;
 const FETCH_TIMEOUT_MS = 15_000;
 
 /**
+ * SSRF guard: refuse requests to localhost, loopback, link-local, and private
+ * address ranges. This prevents an agent (or a prompt-injection via fetched
+ * content) from probing internal services, cloud metadata endpoints, or the
+ * user's own network.
+ */
+export function isPrivateHost(hostname: string): boolean {
+  const h = hostname.toLowerCase().replace(/^\[|\]$/g, "");
+
+  // Hostnames
+  if (
+    h === "localhost" ||
+    h.endsWith(".localhost") ||
+    h.endsWith(".internal") ||
+    h.endsWith(".local")
+  ) {
+    return true;
+  }
+
+  // IP literal
+  const ipv4 = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ipv4) {
+    const [a, b] = [Number(ipv4[1]), Number(ipv4[2])];
+    if (a >= 255) return false;
+    // 0.x.x.x, 10.x.x.x, 127.x.x.x, 169.254.x.x, 172.16-31.x.x, 192.168.x.x, 198.18-19.x.x
+    if (a === 0 || a === 10 || a === 127) return true;
+    if (a === 169 && b === 254) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 198 && (b === 18 || b === 19)) return true;
+    // 100.64.0.0/10 (CGNAT)
+    if (a === 100 && b >= 64 && b <= 127) return true;
+    return false;
+  }
+
+  // IPv6 loopback/link-local/unique-local
+  if (h.startsWith("::") || h.startsWith("fd") || h.startsWith("fc") || h.startsWith("fe80")) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
  * Strip HTML tags and convert common structures into readable plain text.
  */
 export function htmlToText(html: string): string {
@@ -80,6 +123,11 @@ export async function fetchUrl(args: { url: string; maxLength?: number }): Promi
     }
   } catch {
     return `❌ Error: Invalid URL format '${url}'`;
+  }
+
+  // SSRF guard: block internal/private targets before any connection attempt
+  if (isPrivateHost(parsedUrl.hostname)) {
+    return `❌ Error: URL host '${parsedUrl.hostname}' is blocked (private/internal address)`;
   }
 
   // GitHub repository special handling: if URL is https://github.com/:owner/:repo (with optional /)

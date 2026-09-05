@@ -6,6 +6,8 @@
 import { readdirSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { IGNORED_DIRS } from "../config/constants.js";
+import { resolveProjectPath } from "./safety.js";
+import { GitIgnoreMatcher } from "./gitignore.js";
 
 function matchGlob(pattern: string, filePath: string): boolean {
   // Normalize both pattern and filePath to forward slashes
@@ -42,7 +44,7 @@ function matchGlob(pattern: string, filePath: string): boolean {
   }
 }
 
-function walkDir(dir: string, root: string, results: string[], maxResults = 200): void {
+function walkDir(dir: string, root: string, results: string[], matcher: GitIgnoreMatcher, maxResults = 200): void {
   if (results.length >= maxResults) return;
   let entries: string[];
   try {
@@ -54,6 +56,8 @@ function walkDir(dir: string, root: string, results: string[], maxResults = 200)
     if (results.length >= maxResults) break;
     if (IGNORED_DIRS.has(entry)) continue;
     const fullPath = join(dir, entry);
+    const relPath = relative(root, fullPath).replace(/\\/g, "/");
+    if (matcher.isIgnored(relPath)) continue;
     let stat;
     try {
       stat = statSync(fullPath);
@@ -61,21 +65,23 @@ function walkDir(dir: string, root: string, results: string[], maxResults = 200)
       continue;
     }
     if (stat.isDirectory()) {
-      walkDir(fullPath, root, results, maxResults);
+      walkDir(fullPath, root, results, matcher, maxResults);
     } else {
-      results.push(relative(root, fullPath).replace(/\\/g, "/"));
+      results.push(relPath);
     }
   }
 }
 
 export async function glob(args: { pattern: string; path?: string }): Promise<string> {
-  const root = args.path || process.cwd();
+  const resolveResult = resolveProjectPath(args.path || ".");
+  if (!resolveResult.ok) return resolveResult.message;
+  const root = resolveResult.path;
   const pattern = args.pattern;
 
   if (!pattern) return "❌ Error: pattern is required";
 
   const allFiles: string[] = [];
-  walkDir(root, root, allFiles, 500);
+  walkDir(root, root, allFiles, new GitIgnoreMatcher(root), 500);
 
   const matches = allFiles.filter((f) => matchGlob(pattern, f));
 

@@ -1,12 +1,15 @@
 import { readFileSync } from "node:fs";
 import { isWindows } from "../config/platform.js";
+import { resolveProjectPath } from "./safety.js";
 
 export async function readFile(args: {
   path: string;
   start_line?: number;
   end_line?: number;
 }): Promise<string> {
-  const filePath = args.path;
+  const resolveResult = resolveProjectPath(args.path);
+  if (!resolveResult.ok) return resolveResult.message;
+  const filePath = resolveResult.path;
   const content = readFileSync(filePath, { encoding: "utf-8", flag: "r" });
   // Handle both \n and \r\n line endings
   const allLines = content.split(/\r?\n/);

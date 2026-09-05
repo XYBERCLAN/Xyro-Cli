@@ -143,12 +143,13 @@ const builtinTools: Tool[] = [
     execute: (args) => writeFile(args as { path: string; content: string }),
   },
   {
-    definition: def("edit_file", "Replace text in a file (first occurrence)", {
+    definition: def("edit_file", "Replace text in a file (replaces all occurrences)", {
       path: { type: "string", description: "File path" },
       old_text: { type: "string", description: "Text to find" },
       new_text: { type: "string", description: "Replacement text" },
+      replace_all: { type: "boolean", description: "Replace all occurrences (defaults to true when multiple matches exist)" },
     }, ["path", "old_text", "new_text"]),
-    execute: (args) => editFile(args as { path: string; old_text: string; new_text: string }),
+    execute: (args) => editFile(args as { path: string; old_text: string; new_text: string; replace_all?: boolean }),
   },
   {
     definition: def("run_command", "Execute a shell command (30s timeout)", {

@@ -1,7 +1,9 @@
 import { readFileSync, readdirSync } from "node:fs";
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { IGNORED_DIRS } from "../config/constants.js";
 import { isIgnoredDir, isWindows } from "../config/platform.js";
+import { resolveProjectPath } from "./safety.js";
+import { GitIgnoreMatcher } from "./gitignore.js";
 
 function shouldIgnore(fp: string): boolean {
   // Normalize path separators for consistent matching
@@ -13,16 +15,17 @@ function shouldIgnore(fp: string): boolean {
   return false;
 }
 
-function getAllFiles(dir: string): string[] {
+function getAllFiles(dir: string, matcher: GitIgnoreMatcher): string[] {
   const results: string[] = [];
   try {
     const entries = readdirSync(dir, { withFileTypes: true });
     for (const entry of entries) {
       const full = join(dir, entry.name);
       if (entry.name.startsWith(".")) continue;
+      if (matcher.isIgnored(relative(dir, full).replace(/\\/g, "/"))) continue;
       if (entry.isDirectory()) {
         if (!isIgnoredDir(entry.name, IGNORED_DIRS)) {
-          results.push(...getAllFiles(full));
+          results.push(...getAllFiles(full, matcher));
         }
       } else {
         results.push(full);
@@ -36,8 +39,11 @@ function getAllFiles(dir: string): string[] {
 
 export async function searchCode(args: { pattern: string; path?: string }): Promise<string> {
   const pattern = args.pattern.toLowerCase();
-  const dir = args.path || ".";
-  const files = getAllFiles(dir);
+  const resolveResult = resolveProjectPath(args.path || ".");
+  if (!resolveResult.ok) return resolveResult.message;
+  const dir = resolveResult.path;
+  const matcher = new GitIgnoreMatcher(dir);
+  const files = getAllFiles(dir, matcher);
   const matches: string[] = [];
 
   for (const fp of files) {
