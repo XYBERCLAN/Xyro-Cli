@@ -24,6 +24,7 @@ import pc from "picocolors";
 import { createClient, callLLMStream } from "../providers/llm.js";
 import { executeTool, getToolDefinitions } from "./registry.js";
 import { truncateToolResult } from "../agent/loop.js";
+import { loadPersistedConfig } from "../config/persist.js";
 
 const SUB_AGENT_MAX_STEPS = 6;
 const SUB_AGENT_TIMEOUT_MS = 60_000;
@@ -156,10 +157,21 @@ export async function spawnAgent(args: {
     return `❌ Unknown sub-agent type "${type}". Valid types: ${Object.keys(SYSTEM_PROMPTS).join(", ")}`;
   }
 
-  // Get LLM client from env (same as main agent)
-  const baseURL = process.env.XYRO_BASE_URL;
-  const apiKey = process.env.XYRO_API_KEY || process.env.OPENAI_API_KEY || "";
-  const model = process.env.XYRO_MODEL || "gpt-4o-mini";
+  // Inherit model / credentials / base URL from the persisted session config
+  // so the sub-agent uses the same provider as the main agent. Fall back to
+  // explicit env vars, but never a silent OpenAI-only default that would hang
+  // with an empty key on a random provider.
+  const saved = loadPersistedConfig();
+  const baseURL = process.env.XYRO_BASE_URL || saved.baseURL;
+  const apiKey = process.env.XYRO_API_KEY || process.env.OPENAI_API_KEY || saved.apiKey;
+  const model = process.env.XYRO_MODEL || saved.model;
+
+  if (!apiKey) {
+    return `❌ spawn_agent: no API key configured. Run /provider first (or pass --api-key / set OPENAI_API_KEY).`;
+  }
+  if (!model) {
+    return `❌ spawn_agent: no model configured. Run /model to pick a model for your provider.`;
+  }
 
   const client = createClient(baseURL, apiKey);
 
