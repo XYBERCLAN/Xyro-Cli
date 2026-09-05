@@ -7,6 +7,8 @@ import { listFiles } from "../tools/fs.js";
 import { generateDiff, generateInlineDiff } from "../tools/diff.js";
 import { runCommand } from "../tools/shell.js";
 import { gitCreatePr, gitPrView } from "../tools/git.js";
+import { fetchUrl, htmlToText } from "../tools/fetch.js";
+import { getEnvironmentContext } from "../config/platform.js";
 import { writeFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
@@ -240,6 +242,62 @@ describe("git PR tools", () => {
       result.includes("pull/10") || result.includes("already exists") || result.includes("✅") || result.includes("❌"),
       `Expected PR detection result: ${result.slice(0, 200)}`
     );
+  });
+});
+
+describe("htmlToText", () => {
+  it("strips html tags and extracts readable text", () => {
+    const html = `
+      <html>
+        <head><title>Test Page</title><style>body { color: red; }</style></head>
+        <body>
+          <script>console.log("ignore");</script>
+          <h1>Main Title</h1>
+          <p>This is a <b>formatted</b> paragraph with &amp; entity.</p>
+          <ul>
+            <li>Item 1</li>
+            <li>Item 2</li>
+          </ul>
+        </body>
+      </html>
+    `;
+    const text = htmlToText(html);
+    assert.ok(text.includes("# Main Title"));
+    assert.ok(text.includes("This is a formatted paragraph with & entity."));
+    assert.ok(text.includes("- Item 1"));
+    assert.ok(text.includes("- Item 2"));
+    assert.ok(!text.includes("<style>"));
+    assert.ok(!text.includes("console.log"));
+  });
+});
+
+describe("fetchUrl", () => {
+  it("rejects invalid URLs", async () => {
+    const result = await fetchUrl({ url: "ftp://invalid-protocol.com" });
+    assert.ok(result.includes("❌ Error"));
+  });
+
+  it("fetches a valid webpage or GitHub README successfully", async () => {
+    const result = await fetchUrl({ url: "https://github.com/XYBERCLAN/Xyro-Cli" });
+    // Should fetch repo README or page content
+    assert.ok(
+      result.includes("XYRO") || result.includes("terminal") || result.includes("cli") || result.includes("GitHub"),
+      `Expected repo or CLI content, got: ${result.slice(0, 200)}`
+    );
+  });
+});
+
+describe("getEnvironmentContext", () => {
+  it("includes current OS, shell, and guidance", () => {
+    const ctx = getEnvironmentContext();
+    assert.ok(ctx.includes("Current Host Environment"));
+    assert.ok(ctx.includes("Operating System:"));
+    assert.ok(ctx.includes("Shell for run_command:"));
+    if (process.platform === "win32") {
+      assert.ok(ctx.includes("cmd.exe"));
+      assert.ok(ctx.includes("CRITICAL WINDOWS RULES:"));
+      assert.ok(ctx.includes("NEVER use Unix commands"));
+    }
   });
 });
 

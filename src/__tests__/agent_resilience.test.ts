@@ -1,7 +1,15 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { Message } from "../agent/types.js";
-import { trimHistory, estimateTokens, truncateToolResult, MAX_TOOL_RESULT_CHARS } from "../agent/loop.js";
+import {
+  trimHistory,
+  estimateTokens,
+  truncateToolResult,
+  MAX_TOOL_RESULT_CHARS,
+  prunePastToolResults,
+  getMaxHistoryTokens,
+  buildLocalContextSummary,
+} from "../agent/loop.js";
 import { isRateLimitError, extractRetryDelay, isTransientNetworkError } from "../providers/llm.js";
 
 describe("Rate Limit & Network Detection", () => {
@@ -18,6 +26,10 @@ describe("Rate Limit & Network Detection", () => {
     assert.strictEqual(isTransientNetworkError(new Error("ETIMEDOUT connection")), true);
     assert.strictEqual(isTransientNetworkError(new Error("ECONNRESET")), true);
     assert.strictEqual(isTransientNetworkError(new Error("fetch failed")), true);
+    assert.strictEqual(isTransientNetworkError(new Error("Request timed out.")), true);
+    assert.strictEqual(isTransientNetworkError({ name: "APIConnectionTimeoutError", message: "timeout" }), true);
+    assert.strictEqual(isTransientNetworkError({ status: 503, message: "Service Unavailable" }), true);
+    assert.strictEqual(isTransientNetworkError(new Error("Model is overloaded, please try again")), true);
     assert.strictEqual(isTransientNetworkError(new Error("Syntax error")), false);
   });
 
@@ -113,4 +125,67 @@ describe("History Trimming and Context Protection", () => {
       }
     }
   });
+
+  it("prunes verbose tool results from past completed turns but preserves active turn", () => {
+    const pastTurn: Message[] = [
+      { role: "user", content: "read a file" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "c1", type: "function", function: { name: "read_file", arguments: "{}" } }],
+      },
+      { role: "tool", tool_call_id: "c1", content: "A".repeat(500) },
+      { role: "assistant", content: "File read done." },
+    ];
+
+    const activeTurn: Message[] = [
+      { role: "user", content: "check status" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "c2", type: "function", function: { name: "git_status", arguments: "{}" } }],
+      },
+      { role: "tool", tool_call_id: "c2", content: "B".repeat(500) },
+    ];
+
+    const pruned = prunePastToolResults([pastTurn, activeTurn]);
+
+    // Past turn tool result should be pruned
+    assert.ok(pruned[0][2].content!.length < 150);
+    assert.ok(pruned[0][2].content!.includes("[output processed"));
+
+    // Active turn tool result must remain intact with full 500 chars
+    assert.strictEqual(pruned[1][2].content!.length, 500);
+  });
+
+  it("calculates adaptive history limits for Groq vs standard models", () => {
+    assert.strictEqual(getMaxHistoryTokens("https://api.groq.com/openai/v1", "qwen/qwen3.8-27b"), 3000);
+    assert.strictEqual(getMaxHistoryTokens(undefined, "qwen/qwen3.6-27b"), 3000);
+    assert.strictEqual(getMaxHistoryTokens("https://api.openai.com/v1", "gpt-4o"), 20000);
+  });
+
+  it("builds a structured local context summary with zero API calls", () => {
+    const messages: Message[] = [
+      { role: "user", content: "What is this repo about?" },
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [
+          {
+            id: "1",
+            type: "function",
+            function: { name: "fetch_url", arguments: JSON.stringify({ url: "https://github.com/XYBERCLAN/Xyro-Cli" }) },
+          },
+        ],
+      },
+      { role: "tool", tool_call_id: "1", content: "ok" },
+      { role: "assistant", content: "It is a CLI assistant." },
+    ];
+
+    const summary = buildLocalContextSummary(messages);
+    assert.ok(summary.includes("What is this repo about?"));
+    assert.ok(summary.includes("https://github.com/XYBERCLAN/Xyro-Cli"));
+    assert.ok(summary.includes("fetch_url"));
+  });
 });
+

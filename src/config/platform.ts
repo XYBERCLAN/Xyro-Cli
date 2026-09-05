@@ -121,6 +121,42 @@ export function getDefaultShell(): string | undefined {
 }
 
 /**
+ * Return system/platform guidance to include in the system prompt so the LLM
+ * knows what OS it is running on and uses the right tools & command syntax.
+ */
+export function getEnvironmentContext(): string {
+  const osName = isWin ? "Windows" : platform() === "darwin" ? "macOS" : "Linux";
+  const shellName = isWin ? "cmd.exe" : "/bin/sh";
+  const cwd = process.cwd();
+
+  const lines = [
+    `## Current Host Environment`,
+    `- Operating System: ${osName} (${platform()})`,
+    `- Current Working Directory: ${cwd}`,
+    `- Shell for run_command: ${shellName}`,
+    `- RULE #1: ALWAYS PREFER built-in tools (read_file, write_file, edit_file, list_files, search_code, fetch_url) over run_command. Built-in tools are cross-platform and reliable.`,
+  ];
+
+  if (isWin) {
+    lines.push(
+      `- CRITICAL WINDOWS RULES:`,
+      `  * You are running on Windows with cmd.exe.`,
+      `  * NEVER use Unix commands like 'cat', 'head', 'tail', 'grep', 'ls', 'which', 'export' — they DO NOT EXIST in cmd.exe.`,
+      `  * NEVER use ';' to chain commands — cmd.exe uses '&' or '&&'.`,
+      `  * To read or search files, DO NOT call shell commands; USE read_file or search_code.`,
+      `  * To fetch URLs or inspect repos/docs, USE fetch_url (NOT curl or git clone).`,
+      `  * If shell commands are strictly necessary, use Windows equivalents: 'type' instead of 'cat', 'dir' instead of 'ls', 'where' instead of 'which', 'findstr' instead of 'grep'.`
+    );
+  } else {
+    lines.push(
+      `- To fetch URLs or inspect online repos/docs, USE fetch_url (NOT curl).`
+    );
+  }
+
+  return lines.join("\n");
+}
+
+/**
  * Check if running on Windows
  */
 export { isWin as isWindows };

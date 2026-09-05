@@ -1,4 +1,4 @@
-feat: add git PR tools (git_create_pr, git_pr_view)
+refactor(ui): enhance terminal-native rendering, spinners, thinking animations, and retry wait times
 Assisted by XYRO
 
 🤖 Generated with XYRO

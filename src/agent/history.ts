@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { Message } from "./types.js";
 import { SYSTEM_PROMPT } from "../config/constants.js";
-import { getHistoryDir } from "../config/platform.js";
+import { getHistoryDir, getEnvironmentContext } from "../config/platform.js";
 import { loadProjectContext } from "../config/loader.js";
 import { historyToMarkdown } from "./usage.js";
 
@@ -29,7 +29,7 @@ export class HistoryManager {
   }
 
   systemMessage(): Message {
-    let systemContent = SYSTEM_PROMPT;
+    let systemContent = `${SYSTEM_PROMPT}\n\n${getEnvironmentContext()}`;
     const projectContext = loadProjectContext();
     if (projectContext) {
       systemContent += `\n\n## Project Context\n${projectContext}`;

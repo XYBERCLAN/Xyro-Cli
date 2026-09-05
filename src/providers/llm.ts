@@ -1,12 +1,14 @@
 import OpenAI from "openai";
 import { Message } from "../agent/types.js";
 import { getToolDefinitions } from "../tools/registry.js";
+import { renderThinking, renderThinkingDone, renderCapacityWait } from "../ui/render.js";
 import pc from "picocolors";
 
 export interface LLMResponse {
   content: string | null;
   tool_calls: OpenAI.Chat.Completions.ChatCompletionMessageToolCall[];
   usage?: unknown;
+  actualModel?: string;
 }
 
 export type StreamChunkHandler = (chunk: string) => void;
@@ -20,7 +22,7 @@ export function createClient(baseURL?: string, apiKey?: string): OpenAI {
   const config: Record<string, unknown> = {
     baseURL: baseURL || undefined,
     apiKey: apiKey || process.env["OPENAI_API_KEY"],
-    timeout: 45_000,
+    timeout: 120_000,
     maxRetries: 0,
   };
 
@@ -79,10 +81,22 @@ export function isRateLimitError(err: unknown): boolean {
 /** Check if an error represents a transient network issue that warrants a retry */
 export function isTransientNetworkError(err: unknown): boolean {
   if (!err) return false;
+  if ((err as any)?.name === "APIConnectionTimeoutError") return true;
+  const status = (err as any)?.status || (err as any)?.response?.status;
+  if (status === 500 || status === 502 || status === 503 || status === 504) {
+    return true;
+  }
   const msg = err instanceof Error ? err.message : String(err);
   const cause = (err as any)?.cause?.message || (err as any)?.cause?.code || "";
   const combined = `${msg} ${cause}`.toLowerCase();
   return (
+    combined.includes("503") ||
+    combined.includes("502") ||
+    combined.includes("504") ||
+    combined.includes("overloaded") ||
+    combined.includes("service unavailable") ||
+    combined.includes("timed out") ||
+    combined.includes("timeout") ||
     combined.includes("etimedout") ||
     combined.includes("econnreset") ||
     combined.includes("connection error") ||
@@ -136,6 +150,60 @@ export function extractRetryDelay(err: unknown, attempt: number): number {
   return Math.min(25000, baseMs + jitter);
 }
 
+/** Fallback candidate models per provider for fast failover on 503/429/404 */
+export const PROVIDER_FALLBACK_MODELS: Record<string, string[]> = {
+  google: [
+    "gemini-3.5-flash",
+    "gemini-3.6-flash",
+    "gemini-flash-latest",
+    "gemini-3.8-flash",
+    "gemini-flash-lite-latest",
+  ],
+  groq: [
+    "qwen/qwen3.8-27b",
+    "qwen/qwen3.6-27b",
+    "groq/compound",
+  ],
+  openrouter: [
+    "google/gemini-2.0-flash-exp:free",
+    "meta-llama/llama-3.3-70b-instruct:free",
+    "deepseek/deepseek-chat:free",
+    "qwen/qwen-2.5-coder-32b-instruct:free",
+  ],
+};
+
+/** Get fallback candidate chain starting with current model */
+export function getFallbackChain(baseURL: string | undefined, currentModel: string): string[] {
+  let providerKey = "google";
+  if (baseURL?.includes("groq.com")) providerKey = "groq";
+  else if (baseURL?.includes("openrouter.ai")) providerKey = "openrouter";
+  else if (baseURL?.includes("googleapis.com")) providerKey = "google";
+
+  const list = PROVIDER_FALLBACK_MODELS[providerKey] || [];
+  return [currentModel, ...list.filter((m) => m !== currentModel)];
+}
+
+/** Check if an error warrants failing over to a fallback model */
+export function isFallbackableError(err: unknown): boolean {
+  if (!err) return false;
+  const msg = err instanceof Error ? err.message : String(err);
+  const status = (err as any)?.status || (err as any)?.response?.status;
+  const lower = msg.toLowerCase();
+  return (
+    status === 503 ||
+    status === 404 ||
+    status === 429 ||
+    lower.includes("503") ||
+    lower.includes("overloaded") ||
+    lower.includes("high demand") ||
+    lower.includes("not_found") ||
+    lower.includes("no longer available") ||
+    lower.includes("rate limit") ||
+    lower.includes("quota exceeded") ||
+    lower.includes("resource has been exhausted")
+  );
+}
+
 /** Retry wrapper for rate-limited and transient API calls */
 export async function withRetry<T>(fn: () => Promise<T>, maxRetries = 4): Promise<T> {
   let lastError: unknown;
@@ -149,6 +217,17 @@ export async function withRetry<T>(fn: () => Promise<T>, maxRetries = 4): Promis
       const isNetwork = isTransientNetworkError(err);
 
       if ((isRateLimit || isNetwork) && attempt < maxRetries) {
+        // Fast failover for 503 (model overloaded / high demand):
+        // Allow at most 1 quick retry (~1.5s) then fail fast so fallback model engages immediately
+        const is503 =
+          (err as any)?.status === 503 ||
+          String(err).includes("503") ||
+          String(err).toLowerCase().includes("overloaded") ||
+          String(err).toLowerCase().includes("high demand");
+        if (is503 && attempt >= 1) {
+          throw err;
+        }
+
         const waitMs = extractRetryDelay(err, attempt);
         let reason = "provider API latency / network delay";
         if (isRateLimit) {
@@ -158,11 +237,29 @@ export async function withRetry<T>(fn: () => Promise<T>, maxRetries = 4): Promis
           } else {
             reason = "rate limited";
           }
+        } else {
+          const msg = err instanceof Error ? err.message : String(err);
+          const status = (err as any)?.status || (err as any)?.response?.status;
+          if (status === 503 || msg.includes("503") || msg.toLowerCase().includes("overloaded")) {
+            reason = "model overloaded / server busy (503)";
+          } else if (status === 502 || status === 504 || msg.includes("502") || msg.includes("504")) {
+            reason = `server error (${status || "50x"})`;
+          } else if (msg.toLowerCase().includes("timed out") || msg.toLowerCase().includes("timeout")) {
+            reason = "request timed out";
+          }
         }
-        console.log(
-          `  ${pc.yellow("...")} ${reason}, waiting ${(waitMs / 1000).toFixed(1)}s (retry ${attempt + 1}/${maxRetries})...`
-        );
+        const waitSec = Math.ceil(waitMs / 1000);
+        if (process.stdout.isTTY) {
+          renderCapacityWait(waitSec);
+        } else {
+          console.log(
+            `  ${pc.yellow("...")} ${reason}, waiting ${waitSec}s (retry ${attempt + 1}/${maxRetries})...`
+          );
+        }
         await sleep(waitMs);
+        if (process.stdout.isTTY) {
+          renderThinking("thinking...");
+        }
         continue;
       }
       throw err;
@@ -175,105 +272,178 @@ export async function withRetry<T>(fn: () => Promise<T>, maxRetries = 4): Promis
 export async function callLLM(
   client: OpenAI,
   model: string,
-  messages: Message[]
+  messages: Message[],
+  tools?: OpenAI.ChatCompletionTool[],
+  onModelSwitched?: (newModel: string, reason: string) => void
 ): Promise<LLMResponse> {
-  const max_tokens = getMaxTokensForModel(client, model);
-  const response = await withRetry(() =>
-    client.chat.completions.create({
-      model,
-      messages: messages as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
-      tools: getToolDefinitions(),
-      max_tokens,
-    })
-  );
+  const baseURL = (client as any)?.baseURL || "";
+  const candidates = getFallbackChain(baseURL, model);
+  let lastError: unknown;
 
-  const msg = response.choices[0].message;
-  return {
-    content: msg.content,
-    tool_calls: msg.tool_calls || [],
-    usage: response.usage || null,
-  };
+  for (let i = 0; i < candidates.length; i++) {
+    const candidateModel = candidates[i];
+    try {
+      const max_tokens = getMaxTokensForModel(client, candidateModel);
+      const toolDefs = tools !== undefined ? (tools.length > 0 ? tools : undefined) : getToolDefinitions();
+      const response = await withRetry(() =>
+        client.chat.completions.create({
+          model: candidateModel,
+          messages: messages as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+          ...(toolDefs ? { tools: toolDefs } : {}),
+          max_tokens,
+        })
+      );
+
+      const msg = response.choices[0].message;
+      if (candidateModel !== model) {
+        onModelSwitched?.(candidateModel, `model ${model} overloaded or unavailable`);
+      }
+      return {
+        content: msg.content,
+        tool_calls: msg.tool_calls || [],
+        usage: response.usage || null,
+        actualModel: candidateModel,
+      };
+    } catch (err: unknown) {
+      lastError = err;
+      const hasNext = i + 1 < candidates.length;
+      if (hasNext && isFallbackableError(err)) {
+        const nextModel = candidates[i + 1];
+        const is503 = (err as any)?.status === 503 || String(err).includes("503") || String(err).toLowerCase().includes("overloaded");
+        const reason = is503 ? "overloaded (503)" : "unavailable";
+        renderThinkingDone();
+        console.log(`  ${pc.cyan("◆")} ${candidateModel} is ${reason}, switching to fallback: ${pc.bold(nextModel)}...`);
+        renderThinking("thinking...");
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  throw lastError;
 }
 
 /**
- * Streaming LLM call — yields content chunks in real time.
- * Returns the full assembled response when the stream completes.
+ * Streaming LLM call with automatic multi-model failover.
+ * Yields content chunks in real time and automatically switches to fallback
+ * candidate models if the primary model returns 503/429/404.
  */
 export async function callLLMStream(
   client: OpenAI,
   model: string,
   messages: Message[],
-  onChunk: StreamChunkHandler
+  onChunk: StreamChunkHandler,
+  tools?: OpenAI.ChatCompletionTool[],
+  onModelSwitched?: (newModel: string, reason: string) => void
 ): Promise<LLMResponse> {
-  const max_tokens = getMaxTokensForModel(client, model);
-  const stream = await withRetry(() =>
-    client.chat.completions.create({
-      model,
-      messages: messages as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
-      tools: getToolDefinitions(),
-      stream: true,
-      max_tokens,
-    })
-  );
+  const baseURL = (client as any)?.baseURL || "";
+  const candidates = getFallbackChain(baseURL, model);
+  let lastError: unknown;
 
-  let content = "";
-  const toolCallsMap = new Map<number, OpenAI.Chat.Completions.ChatCompletionMessageToolCall>();
-  let usage: unknown = null;
+  for (let i = 0; i < candidates.length; i++) {
+    const candidateModel = candidates[i];
+    try {
+      const max_tokens = getMaxTokensForModel(client, candidateModel);
+      const toolDefs = tools !== undefined ? (tools.length > 0 ? tools : undefined) : getToolDefinitions();
+      const stream = await withRetry(() =>
+        client.chat.completions.create({
+          model: candidateModel,
+          messages: messages as OpenAI.Chat.Completions.ChatCompletionMessageParam[],
+          ...(toolDefs ? { tools: toolDefs } : {}),
+          stream: true,
+          max_tokens,
+        })
+      );
 
-  for await (const chunk of stream) {
-    const choice = chunk.choices[0];
-    if (!choice) continue;
+      let content = "";
+      const toolCallsMap = new Map<number, OpenAI.Chat.Completions.ChatCompletionMessageToolCall>();
+      let usage: unknown = null;
 
-    const delta = choice.delta;
+      for await (const chunk of stream) {
+        const choice = chunk.choices[0];
+        if (!choice) continue;
 
-    // Content streaming
-    if (delta.content) {
-      content += delta.content;
-      onChunk(delta.content);
-    }
+        const delta = choice.delta;
 
-    // Tool call streaming (arguments come in fragments)
-    if (delta.tool_calls) {
-      for (const tc of delta.tool_calls) {
-        const idx = tc.index ?? 0;
-        if (!toolCallsMap.has(idx)) {
-          toolCallsMap.set(idx, {
-            ...tc,
-            id: tc.id || "",
-            type: "function" as const,
-            function: {
-              name: tc.function?.name || "",
-              arguments: "",
-            },
-          } as any);
+        // Content streaming
+        if (delta.content) {
+          content += delta.content;
+          onChunk(delta.content);
         }
-        const existing = toolCallsMap.get(idx)!;
-        if (tc.id) existing.id = tc.id;
-        if (tc.function?.name) existing.function.name = tc.function.name;
-        if (tc.function?.arguments) existing.function.arguments += tc.function.arguments;
 
-        // Preserve extra metadata fields (e.g. extra_content with thought_signature for Google AI Studio)
-        for (const [key, val] of Object.entries(tc)) {
-          if (key !== "index" && key !== "function" && key !== "id" && key !== "type") {
-            (existing as any)[key] = val;
+        // Tool call streaming (arguments come in fragments)
+        if (delta.tool_calls) {
+          for (const tc of delta.tool_calls) {
+            const idx = tc.index ?? 0;
+            if (!toolCallsMap.has(idx)) {
+              toolCallsMap.set(idx, {
+                ...tc,
+                id: tc.id || "",
+                type: "function" as const,
+                function: {
+                  name: tc.function?.name || "",
+                  arguments: tc.function?.arguments || "",
+                },
+              });
+            } else {
+              const existing = toolCallsMap.get(idx)!;
+              if (tc.function?.arguments) {
+                existing.function.arguments += tc.function.arguments;
+              }
+              if (tc.function?.name) {
+                existing.function.name = tc.function.name;
+              }
+              if (tc.id) {
+                existing.id = tc.id;
+              }
+            }
           }
         }
-      }
-    }
 
-    // Usage (only on last chunk)
-    if (chunk.usage) {
-      usage = chunk.usage;
+        // Preserve extra metadata fields (e.g. extra_content with thought_signature for Google AI Studio)
+        if ((chunk as any).extra_content) {
+          (usage as any) = { ...((usage as any) || {}), extra_content: (chunk as any).extra_content };
+        }
+
+        // Usage (only on last chunk)
+        if (chunk.usage) {
+          usage = chunk.usage;
+        }
+      }
+
+      if (candidateModel !== model) {
+        onModelSwitched?.(candidateModel, `model ${model} overloaded or unavailable`);
+      }
+
+      return {
+        content: content || null,
+        tool_calls: Array.from(toolCallsMap.values()),
+        usage,
+        actualModel: candidateModel,
+      };
+    } catch (err: unknown) {
+      lastError = err;
+      const hasNext = i + 1 < candidates.length;
+      if (hasNext && isFallbackableError(err)) {
+        const nextModel = candidates[i + 1];
+        const is503 =
+          (err as any)?.status === 503 ||
+          String(err).includes("503") ||
+          String(err).toLowerCase().includes("overloaded") ||
+          String(err).toLowerCase().includes("high demand");
+        const reason = is503 ? "overloaded (503)" : "unavailable";
+        renderThinkingDone();
+        console.log(
+          `  ${pc.cyan("◆")} ${candidateModel} is ${reason}, switching to fallback: ${pc.bold(nextModel)}...`
+        );
+        renderThinking("thinking...");
+        continue;
+      }
+      throw err;
     }
   }
 
-  const toolCalls = Array.from(toolCallsMap.values());
-
-  return {
-    content: content || null,
-    tool_calls: toolCalls,
-    usage,
-  };
+  throw lastError;
 }
 
 export async function summarizeHistory(

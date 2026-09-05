@@ -5,6 +5,11 @@ import { writeFile, editFile } from "./write.js";
 import { runCommand } from "./shell.js";
 import { listFiles } from "./fs.js";
 import { searchCode } from "./search.js";
+import { fetchUrl } from "./fetch.js";
+import { writeTodos } from "./todos.js";
+import { glob } from "./glob.js";
+import { proposeWriteFile } from "./propose.js";
+import { spawnAgent } from "./subagent.js";
 import {
   gitStatus,
   gitDiff,
@@ -44,10 +49,91 @@ function def(
 // Built-in tools
 const builtinTools: Tool[] = [
   {
-    definition: def("read_file", "Read file contents with line numbers", {
-      path: { type: "string", description: "File path to read" },
-    }, ["path"]),
-    execute: (args) => readFile(args as { path: string }),
+    definition: def(
+      "read_file",
+      "Read file contents with line numbers (supports windowed/paginated reads)",
+      {
+        path: { type: "string", description: "File path to read" },
+        start_line: { type: "number", description: "First line to read (1-indexed, optional)" },
+        end_line: { type: "number", description: "Last line to read (1-indexed, optional)" },
+      },
+      ["path"]
+    ),
+    execute: (args) =>
+      readFile(args as { path: string; start_line?: number; end_line?: number }),
+  },
+  {
+    definition: def(
+      "propose_write_file",
+      "Propose changes to a file with diff preview and interactive user approval before saving",
+      {
+        path: { type: "string", description: "File path" },
+        content: { type: "string", description: "Proposed complete file content" },
+        reason: { type: "string", description: "Reason or description of the changes" },
+      },
+      ["path", "content"]
+    ),
+    execute: (args) =>
+      proposeWriteFile(args as { path: string; content: string; reason?: string }),
+  },
+  {
+    definition: def(
+      "glob",
+      "Find files matching a glob pattern across the project tree (e.g. **/*.ts, src/**/*.json)",
+      {
+        pattern: { type: "string", description: "Glob pattern to match" },
+        path: { type: "string", description: "Directory root to search from (defaults to cwd)" },
+      },
+      ["pattern"]
+    ),
+    execute: (args) => glob(args as { pattern: string; path?: string }),
+  },
+  {
+    definition: def(
+      "write_todos",
+      "Track and update in-session task checklist to organize multi-step work and avoid losing context",
+      {
+        todos: {
+          type: "array",
+          items: { type: "string" },
+          description: "New todo tasks to add to the checklist",
+        },
+        mark_done: {
+          type: "array",
+          items: { type: "number" },
+          description: "IDs of todo items to mark as completed",
+        },
+        clear: {
+          type: "boolean",
+          description: "Clear all existing todos",
+        },
+      },
+      []
+    ),
+    execute: (args) =>
+      writeTodos(args as { todos?: string[]; mark_done?: number[]; clear?: boolean }),
+  },
+  {
+    definition: def(
+      "spawn_agent",
+      "Spawn a focused sub-agent with isolated context to solve a dedicated sub-task",
+      {
+        prompt: { type: "string", description: "Sub-task instructions and goal for the agent" },
+        type: {
+          type: "string",
+          enum: ["file_finder", "code_reviewer", "task_planner", "summarizer", "generic"],
+          description: "Specialized sub-agent role (defaults to generic)",
+        },
+        context_files: {
+          type: "array",
+          items: { type: "string" },
+          description: "List of file paths to highlight for the sub-agent",
+        },
+      },
+      ["prompt"]
+    ),
+    execute: (args) =>
+      spawnAgent(args as { prompt: string; type?: any; context_files?: string[] }),
   },
   {
     definition: def("write_file", "Write content to a file (creates directories)", {
@@ -82,6 +168,12 @@ const builtinTools: Tool[] = [
       path: { type: "string", description: "Search directory" },
     }, ["pattern"]),
     execute: (args) => searchCode(args as { pattern: string; path?: string }),
+  },
+  {
+    definition: def("fetch_url", "Fetch and extract text content from a web URL or GitHub repository", {
+      url: { type: "string", description: "The web URL to fetch (http or https)" },
+    }, ["url"]),
+    execute: (args) => fetchUrl(args as { url: string }),
   },
   // ─── Git tools ───────────────────────────────────────────────
   {
