@@ -8,7 +8,7 @@ on:
 
 jobs:
   test:
-    name: Test & Build (${{ matrix.node }})
+    name: Test & Build (Node ${{ matrix.node }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -27,44 +27,30 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Typecheck
+      - name: Typecheck / lint
         run: npm run lint
 
       - name: Build
         run: npm run build
 
+      - name: Run tests
+        run: npm test
+
+  coverage-gate:
+    name: Coverage gate (Node 22)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
       - name: Run tests with coverage gate
         run: npm run test:coverage:ci
-
-  typecheck-only:
-    name: Typecheck (fast gate)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-      - name: Install
-        run: npm ci
-      - name: Typecheck
-        run: npm run lint
-
-  coverage-report:
-    name: Coverage summary
-    runs-on: ubuntu-latest
-    if: always()
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: "22"
-          cache: npm
-      - name: Install
-        run: npm ci
-      - name: Coverage
-        run: npm run test:coverage
