@@ -1,8 +1,7 @@
 /**
  * spawn_agent — Run a focused sub-agent with a fresh, isolated context.
  *
- * This is Xyro's equivalent of Freebuff's spawn_agents, adapted for a
- * single-process CLI. Each call spins up a lightweight LLM loop with:
+ * Each call spins up a lightweight LLM loop with:
  *   - A fresh message history (no parent context pollution)
  *   - A focused system prompt for the specific sub-task
  *   - Access to a curated subset of tools
@@ -195,4 +194,64 @@ export async function spawnAgent(args: {
     : `\n[Sub-agent completed in ${result.steps} step(s)]`;
 
   return result.output + suffix;
+}
+
+/**
+ * spawn_agents — Run multiple sub-agents in PARALLEL.
+ *
+ * Each job runs concurrently with its own isolated context, tools and step
+ * budget. Results are collected with Promise.allSettled so one failing agent
+ * never blocks the others.
+ */
+export async function spawnAgents(args: {
+  agents: {
+    type?: SubAgentType;
+    prompt: string;
+    context_files?: string[];
+  }[];
+}): Promise<string> {
+  const jobs = Array.isArray(args.agents) ? args.agents : [];
+  if (jobs.length === 0) return "❌ spawn_agents: agents[] is required";
+
+  const saved = loadPersistedConfig();
+  const baseURL = process.env.XYRO_BASE_URL || saved.baseURL;
+  const apiKey = process.env.XYRO_API_KEY || process.env.OPENAI_API_KEY || saved.apiKey;
+  const model = process.env.XYRO_MODEL || saved.model;
+
+  if (!apiKey) {
+    return `❌ spawn_agents: no API key configured. Run /provider first (or pass --api-key / set OPENAI_API_KEY).`;
+  }
+  if (!model) {
+    return `❌ spawn_agents: no model configured. Run /model to pick a model for your provider.`;
+  }
+
+  const client = createClient(baseURL, apiKey);
+
+  process.stdout.write(`  ${pc.cyan("◆")} Spawning ${jobs.length} sub-agents in parallel...\n`);
+
+  const results = await Promise.allSettled(
+    jobs.map((job) => {
+      const type: SubAgentType = (job.type as SubAgentType) || "generic";
+      let prompt = job.prompt;
+      if (job.context_files && job.context_files.length > 0) {
+        prompt += `\n\nContext files to consider:\n${job.context_files.map((f) => `- ${f}`).join("\n")}`;
+      }
+      return runSubAgent(client, model, SYSTEM_PROMPTS[type] || SYSTEM_PROMPTS.generic, prompt, ALLOWED_TOOLS[type] || ALLOWED_TOOLS.generic);
+    })
+  );
+
+  const sections: string[] = [];
+  let totalSteps = 0;
+  results.forEach((r, i) => {
+    const label = `Agent ${i + 1}: ${String(jobs[i].prompt).slice(0, 80)}`;
+    if (r.status === "fulfilled") {
+      totalSteps += r.value.steps;
+      const marker = r.value.timedOut ? "timed out" : `completed in ${r.value.steps} step(s)`;
+      sections.push(`[${label}] (${marker})\n${r.value.output}`);
+    } else {
+      sections.push(`[${label}] (failed)\n${r.reason instanceof Error ? r.reason.message : String(r.reason)}`);
+    }
+  });
+
+  return `Parallel sub-agents finished (${results.length} total, ${totalSteps} steps combined):\n\n${sections.join("\n\n")}`;
 }

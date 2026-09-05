@@ -23,4 +23,5 @@ export interface AgentOptions {
   apiKey?: string;
   maxToolCalls?: number;
   workingDir?: string;
+  planMode?: boolean;
 }

@@ -18,8 +18,11 @@
     "dev": "tsx src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
-    "test": "node --import tsx --test src/__tests__/**/*.test.ts",
-    "test:watch": "node --import tsx --test --watch src/__tests__/**/*.test.ts"
+    "test": "node --import tsx --test src/__tests__/*.test.ts",
+    "test:watch": "node --import tsx --test --watch src/__tests__/*.test.ts",
+    "test:coverage": "node --import tsx --test --experimental-test-coverage --test-coverage-exclude=\"src/__tests__/**\" src/__tests__/*.test.ts",
+    "test:coverage:ci": "node --import tsx --test --experimental-test-coverage --test-coverage-exclude=\"src/__tests__/**\" --test-coverage-lines=75 --test-coverage-functions=55 --test-coverage-branches=50 src/__tests__/*.test.ts",
+    "lint": "tsc --noEmit"
   },
   "dependencies": {
     "@clack/prompts": "^0.9.0",

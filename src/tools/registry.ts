@@ -9,7 +9,10 @@ import { fetchUrl } from "./fetch.js";
 import { writeTodos } from "./todos.js";
 import { glob } from "./glob.js";
 import { proposeWriteFile } from "./propose.js";
-import { spawnAgent } from "./subagent.js";
+import { spawnAgent, spawnAgents } from "./subagent.js";
+import { findFiles } from "./find_files.js";
+import { endTurn } from "./end_turn.js";
+import { revertFile } from "./undo.js";
 import {
   gitStatus,
   gitDiff,
@@ -134,6 +137,84 @@ const builtinTools: Tool[] = [
     ),
     execute: (args) =>
       spawnAgent(args as { prompt: string; type?: any; context_files?: string[] }),
+  },
+  {
+    definition: def(
+      "spawn_agents",
+      "Run multiple sub-agents in parallel with isolated contexts and aggregate their results",
+      {
+        agents: {
+          type: "array",
+          description: "List of sub-agent jobs to run in parallel",
+          items: {
+            type: "object",
+            properties: {
+              prompt: { type: "string", description: "Sub-task instructions and goal for the agent" },
+              type: {
+                type: "string",
+                enum: ["file_finder", "code_reviewer", "task_planner", "summarizer", "generic"],
+                description: "Specialized sub-agent role (defaults to generic)",
+              },
+              context_files: {
+                type: "array",
+                items: { type: "string" },
+                description: "List of file paths to highlight for the sub-agent",
+              },
+            },
+          },
+        },
+      },
+      ["agents"]
+    ),
+    execute: (args) =>
+      spawnAgents(args as { agents: { prompt: string; type?: any; context_files?: string[] }[] }),
+  },
+  {
+    definition: def(
+      "find_files",
+      "Find the most relevant files for a query, ranked by filename/path/content match (gitignore-aware, fast, free)",
+      {
+        query: { type: "string", description: "Search query describing what you're looking for" },
+        path: { type: "string", description: "Directory root to search from (defaults to cwd)" },
+        max_results: { type: "number", description: "Max results to return (default 20, max 50)" },
+      },
+      ["query"]
+    ),
+    execute: (args) => findFiles(args as { query: string; path?: string; max_results?: number }),
+  },
+  {
+    definition: def(
+      "end_turn",
+      "Explicitly end your turn when the task is complete. Call this instead of looping further once you've finished.",
+      {
+        summary: { type: "string", description: "Short summary of what was accomplished this turn" },
+        reason: { type: "string", description: "Why you are ending the turn" },
+      },
+      []
+    ),
+    execute: (args) => endTurn(args as { reason?: string; summary?: string }),
+  },
+  {
+    definition: def(
+      "task_completed",
+      "Signal that the current task is finished and the turn should end (alias of end_turn)",
+      {
+        summary: { type: "string", description: "Short summary of what was accomplished this turn" },
+      },
+      []
+    ),
+    execute: (args) => endTurn(args as { reason?: string; summary?: string }),
+  },
+  {
+    definition: def(
+      "revert_file",
+      "Restore a file to its previous version using the automatic snapshot taken before the last write_file/edit_file",
+      {
+        path: { type: "string", description: "File path to revert" },
+      },
+      ["path"]
+    ),
+    execute: (args) => revertFile(args as { path: string }),
   },
   {
     definition: def("write_file", "Write content to a file (creates directories)", {
@@ -289,4 +370,26 @@ export function getToolCount(): { builtin: number; plugins: number; total: numbe
     plugins: allTools.length - builtinTools.length,
     total: allTools.length,
   };
+}
+
+/** Tools exposed while in plan mode (read-only + planning only). */
+const PLAN_MODE_TOOLS = new Set([
+  "read_file",
+  "list_files",
+  "glob",
+  "search_code",
+  "find_files",
+  "write_todos",
+  "end_turn",
+  "task_completed",
+  "git_status",
+  "git_diff",
+  "git_log",
+  "git_branch",
+  "git_pr_view",
+]);
+
+/** Tool definitions exposed in plan mode (write/execute/network tools filtered out). */
+export function getPlanModeToolDefinitions(): OpenAI.ChatCompletionTool[] {
+  return allTools.filter((t) => PLAN_MODE_TOOLS.has(t.definition.function.name)).map((t) => t.definition);
 }
