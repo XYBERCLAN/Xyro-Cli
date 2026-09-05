@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 import * as p from "@clack/prompts";
+import pc from "picocolors";
 import { Agent } from "../agent/loop.js";
 import { UsageTracker, formatUsage } from "../agent/usage.js";
 import { summarizeHistory } from "../providers/llm.js";
@@ -19,6 +20,8 @@ export interface CommandContext {
   setApiKey: (k: string) => void;
   usage: UsageTracker;
   persistConfig: (c: { provider?: string; model?: string; baseURL?: string; apiKey?: string }) => void;
+  setPlanMode?: (v: boolean) => void;
+  isPlanMode?: () => boolean;
 }
 
 export interface CommandResult {
@@ -38,15 +41,17 @@ Commands:
   /save              save conversation history
   /resume            reload last saved session
   /clear             reset conversation history
+  /plan              toggle PLAN MODE (read-only planning; switch back to build with /plan again)
   /init              scaffold an AGENTS.md project context file
   /exit              save and quit
-Bare words also work: help, status, model, cost, compact, history, export, save, resume, clear, exit, quit
+Bare words also work: help, status, model, cost, compact, history, export, save, resume, clear, plan, exit, quit
 `.trim();
 
 const ALIASES: Record<string, string> = {
   help: "/help", status: "/status", model: "/model", provider: "/provider",
   cost: "/cost", compact: "/compact", history: "/history", export: "/export",
-  save: "/save", resume: "/resume", clear: "/clear", init: "/init", quit: "/exit", exit: "/exit",
+  save: "/save", resume: "/resume", clear: "/clear", plan: "/plan",
+  init: "/init", quit: "/exit", exit: "/exit",
 };
 
 function isCommand(input: string): string | null {
@@ -105,6 +110,7 @@ export async function handleCommand(
         `messages: ${msgs.length} (incl. ${toolCalls} tool results)`,
         `tools: ${toolInfo.total} (${toolInfo.builtin} built-in + ${toolInfo.plugins} plugin)` ,
         `max tool calls: ${agent.getMaxToolCalls()}`,
+        `plan mode: ${agent.isPlanMode() ? pc.green("ON") : pc.dim("off")}`,
       ];
       renderAssistant(lines.join("\n"));
       return { action: "continue" };
@@ -259,6 +265,13 @@ export async function handleCommand(
     case "init":
       renderAssistant(writeAgentsMd());
       return { action: "continue" };
+
+    case "plan": {
+      const next = ctx.isPlanMode ? !ctx.isPlanMode() : !agent.isPlanMode();
+      ctx.setPlanMode?.(next);
+      renderInfo(next ? "PLAN MODE enabled — read-only planning. Type your request to make a plan." : "PLAN MODE disabled — back to build mode.");
+      return { action: "continue" };
+    }
 
     case "exit":
       agent.save();

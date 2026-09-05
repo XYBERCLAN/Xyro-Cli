@@ -3,7 +3,9 @@ import pc from "picocolors";
 import { Message, AgentOptions } from "./types.js";
 import { HistoryManager } from "./history.js";
 import { createClient, callLLMStream, summarizeHistory, LLMResponse } from "../providers/llm.js";
-import { executeTool } from "../tools/registry.js";
+import { executeTool, getPlanModeToolDefinitions } from "../tools/registry.js";
+import { requestPermission, shouldAskPermission, PERMISSION_DENIED_RESULT } from "../tools/permissions.js";
+import { END_TURN_TOOL_NAMES } from "../tools/end_turn.js";
 import { DEFAULT_MODEL, DEFAULT_MAX_TOOL_CALLS, CONTEXT_WINDOW_WARN_TOKENS, POST_TURN_COMPACT_TOKENS } from "../config/constants.js";
 import { savePersistedConfig } from "../config/persist.js";
 import {
@@ -29,6 +31,16 @@ export const MAX_TOOL_RESULT_CHARS = 4000;
 /** Max estimated tokens for conversation history before trimming */
 export const MAX_HISTORY_TOKENS = 20000;
 
+/**
+ * Doom-loop guard:
+ * if the exact same tool call (name + arguments) fires N times consecutively,
+ * we stop the turn instead of burning tokens indefinitely.
+ */
+export const DOOM_LOOP_THRESHOLD = 3;
+
+/** Max consecutive "thought-only" LLM rounds before forcing a stop. */
+export const MAX_THINK_ROUNDS = 5;
+
 /** Sleep utility */
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -53,6 +65,59 @@ export function estimateTokens(msgs: Message[]): number {
     }
   }
   return Math.ceil(chars / 4);
+}
+
+/**
+ * Track a tool-call signature and detect a doom loop: the same signature
+ * repeated DOOM_LOOP_THRESHOLD times consecutively.
+ */
+export function isRepeatedToolCall(
+  signature: string,
+  lastRun: { sig: string; run: number } | null
+): { sig: string; run: number; isDoom: boolean } {
+  const run = lastRun && lastRun.sig === signature ? lastRun.run + 1 : 1;
+  return { sig: signature, run, isDoom: run >= DOOM_LOOP_THRESHOLD };
+}
+
+/**
+ * Detect a "thought-only" LLM response:
+ * the model only emitted reasoning/thinking text with no tool call and no
+ * real answer — we should keep going instead of ending the turn.
+ */
+export function isThinkOnlyResponse(content: string | null): boolean {
+  if (!content) return false;
+  const trimmed = content.trim();
+  if (!trimmed) return false;
+  if (/^<thinking>|^thinking[:\-]|^let me think|^i(n)? need to think/i.test(trimmed)) {
+    return true;
+  }
+  const withoutTags = trimmed.replace(/<thinking>[\s\S]*?<\/thinking>/g, "").trim();
+  return withoutTags === "";
+}
+
+/**
+ * Split history for compaction v2: isolate the previous system/user/assistant
+ * turns from the most recent (atomic) turn, which is kept verbatim so the
+ * model retains its immediate working state after compaction.
+ */
+export function splitForCompact(msgs: Message[]): { older: Message[]; recent: Message[] } | null {
+  if (msgs.length <= 2) return null;
+  const systemMsg = msgs[0];
+  const rest = msgs.slice(1);
+  const turns = groupIntoTurns(rest);
+  if (turns.length <= 1) return null;
+  const pruned = prunePastToolResults(turns);
+  const recentTurns = pruned[pruned.length - 1];
+  const olderTurns = pruned.slice(0, -1);
+  return {
+    older: [systemMsg as Message, ...olderTurns.flat()],
+    recent: recentTurns,
+  };
+}
+
+/** Canonical signpost prefix for compaction summaries. */
+export function canonicalSummaryHeader(): string {
+  return "What did we do so far?";
 }
 
 /** Group messages into atomic turns to prevent splitting assistant tool_calls from tool results */
@@ -174,7 +239,8 @@ export function buildLocalContextSummary(msgs: Message[]): string {
     sections.push(`Tools executed: ${unique.join(", ")}`);
   }
 
-  return sections.join("\n\n") || "Previous conversation context retained.";
+  const body = sections.join("\n\n") || "Previous conversation context retained.";
+  return `${canonicalSummaryHeader()}\n\n${body}`;
 }
 
 /** Trim history to fit within token limits while preserving schema validity and pruning old tool outputs */
@@ -219,6 +285,9 @@ export class Agent {
     this.model = opts.model || DEFAULT_MODEL;
     this.maxToolCalls = opts.maxToolCalls || DEFAULT_MAX_TOOL_CALLS;
     this.history = new HistoryManager();
+    if (opts.planMode) {
+      this.history.setPlanMode(true);
+    }
   }
 
   setModel(model: string): void {
@@ -227,6 +296,19 @@ export class Agent {
 
   getModel(): string {
     return this.model;
+  }
+
+  setPlanMode(enabled: boolean): void {
+    this.history.setPlanMode(enabled);
+  }
+
+  isPlanMode(): boolean {
+    return this.history.isPlanMode();
+  }
+
+  /** Rebuild the system message in place (plan mode toggles, skill changes). */
+  refreshSystemMessage(): void {
+    this.history.refreshSystemMessage();
   }
 
   updateClient(baseURL: string, apiKey: string): void {
@@ -251,31 +333,32 @@ export class Agent {
 
   async compact(): Promise<string | null> {
     const msgs = this.history.getAll();
-    if (msgs.length <= 1) return null;
+    const split = splitForCompact(msgs);
+    if (!split) return null;
 
     const baseURL = (this.client as any)?.baseURL || "";
     const isGroq = baseURL.includes("groq.com") || this.model.toLowerCase().startsWith("qwen/");
 
-    // On Groq or strict rate-limited providers, use fast local summary to prevent 429
+    let summary: string;
     if (isGroq) {
-      const summary = buildLocalContextSummary(msgs);
-      this.history.resetWithSummary(summary);
-      return summary;
+      // On Groq or strict rate-limited providers, use fast local summary to prevent 429
+      summary = buildLocalContextSummary(split.older);
+    } else {
+      try {
+        summary = (await summarizeHistory(this.client, this.model, split.older)) || "";
+      } catch {
+        // Fall back to zero-cost local summary if API call fails
+        summary = buildLocalContextSummary(split.older);
+      }
     }
 
-    try {
-      const summary = await summarizeHistory(this.client, this.model, msgs);
-      if (summary) {
-        this.history.resetWithSummary(summary);
-        return summary;
-      }
-    } catch {
-      // Fall back to zero-cost local summary if API call fails
-      const summary = buildLocalContextSummary(msgs);
-      this.history.resetWithSummary(summary);
-      return summary;
+    if (!summary || !summary.trim()) {
+      summary = buildLocalContextSummary(split.older);
     }
-    return null;
+
+    // Compaction v2: keep the summary AND the most recent turn verbatim.
+    this.history.resetWithSummaryAndRecent(summary, split.recent);
+    return summary;
   }
 
   async run(input: string): Promise<void> {
@@ -283,6 +366,8 @@ export class Agent {
     if (!process.stdin.isTTY) renderUserMessage(input);
 
     let toolCallCount = 0;
+    let thinkRounds = 0;
+    let lastToolRun: { sig: string; run: number } | null = null;
 
     while (true) {
       // Auto-compact: check if context is getting too large
@@ -315,21 +400,12 @@ export class Agent {
         // Use streaming for real-time output
         const maxHistory = getMaxHistoryTokens((this.client as any)?.baseURL, this.model);
         const msgs = trimHistory(this.history.getAll(), maxHistory);
-        if (process.stdout.isTTY && !isJsonMode()) {
-          response = await callLLMStream(
-            this.client,
-            this.model,
-            msgs,
-            (chunk) => renderStreamChunk(chunk)
-          );
-        } else {
-          response = await callLLMStream(
-            this.client,
-            this.model,
-            msgs,
-            () => {} // no-op for non-TTY / JSON mode
-          );
-        }
+        const toolDefs = this.history.isPlanMode() ? getPlanModeToolDefinitions() : undefined;
+        const onChunk =
+          process.stdout.isTTY && !isJsonMode()
+            ? (chunk: string) => renderStreamChunk(chunk)
+            : () => {}; // no-op for non-TTY / JSON mode
+        response = await callLLMStream(this.client, this.model, msgs, onChunk, toolDefs);
       } finally {
         renderThinkingDone();
       }
@@ -362,6 +438,14 @@ export class Agent {
       }
 
       if (!response.tool_calls || response.tool_calls.length === 0) {
+        // Thought-only responses (reasoning text, no tool call, no answer)
+        // shouldn't end the turn — keep going so the model can act.
+        if (isThinkOnlyResponse(response.content) && thinkRounds < MAX_THINK_ROUNDS) {
+          thinkRounds++;
+          await sleep(200);
+          continue;
+        }
+
         // Post-turn rate-limit guard: if history grew large during this turn,
         // compact it now so the NEXT request starts lean and avoids TPM limits.
         const postTurnTokens = estimateTokens(this.history.getAll());
@@ -387,10 +471,27 @@ export class Agent {
         console.log(`  ${pc.dim("│")} ${pc.dim(`executing ${totalTools} tool calls...`)}`);
       }
 
+      let doomDetected = false;
+      let endedViaEndTurn = false;
+
       for (const tc of response.tool_calls) {
         toolCallCount++;
         const name = tc.function.name;
         const args = JSON.parse(tc.function.arguments);
+
+        // Doom-loop guard: identical tool call repeated consecutively
+        const signature = `${name}(${JSON.stringify(args)})`;
+        const track = isRepeatedToolCall(signature, lastToolRun);
+        lastToolRun = track;
+        if (track.isDoom) {
+          doomDetected = true;
+          break;
+        }
+
+        // Permission gate (Paquet B): mutating/network tools ask in interactive mode
+        const treatment = shouldAskPermission(name)
+          ? await requestPermission(name, args)
+          : "allow";
 
         const start = performance.now();
         renderToolCall(name, args, toolCallCount);
@@ -398,7 +499,10 @@ export class Agent {
         // Show running indicator
         if (useTTY) renderToolRunning(name);
 
-        const result = await executeTool(name, args);
+        const result =
+          treatment === "deny"
+            ? PERMISSION_DENIED_RESULT
+            : await executeTool(name, args);
         const elapsed = ((performance.now() - start) / 1000).toFixed(1);
         if (useTTY) renderToolRunningDone();
 
@@ -409,6 +513,25 @@ export class Agent {
           tool_call_id: tc.id,
           content: truncateToolResult(result),
         });
+
+        // Explicit end-of-turn (Paquet A)
+        if (END_TURN_TOOL_NAMES.has(name)) {
+          endedViaEndTurn = true;
+        }
+      }
+
+      thinkRounds = 0; // a real action round breaks any thought-only streak
+
+      if (doomDetected) {
+        this.history.add({
+          role: "assistant",
+          content: `[loop] Stopped: the same tool call was repeated ${DOOM_LOOP_THRESHOLD} times in a row. Consider a different approach or ask the user for clarification.`,
+        });
+        break;
+      }
+
+      if (endedViaEndTurn) {
+        break;
       }
 
       if (toolCallCount >= this.maxToolCalls) {

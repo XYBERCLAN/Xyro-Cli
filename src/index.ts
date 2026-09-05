@@ -41,6 +41,8 @@ program
   .option("--base-url <url>", "OpenAI-compatible base URL")
   .option("--provider <id>", "Provider ID (e.g. groq, openrouter, deepseek)")
   .option("--max-tool-calls <n>", "Max tool calls per turn", "25")
+  .option("--plan", "Start in PLAN MODE (read-only, produces a plan)", false)
+  .option("--no-approve", "Skip interactive approval prompts for mutating tools", false)
   .option("--resume", "Resume previous conversation", false)
   .option("--no-banner", "Skip interactive setup and banner")
   .option("--json", "JSON output mode (skips banner)", false)
@@ -51,6 +53,11 @@ const opts = program.opts();
 if (opts.v) {
   console.log(packageVersion());
   process.exit(0);
+}
+
+// --no-approve disables permission prompts (also honors XYRO_NO_APPROVE)
+if (opts.approve === false) {
+  process.env.XYRO_NO_APPROVE = "1";
 }
 
 if (opts.json) {
@@ -187,6 +194,7 @@ async function main(): Promise<void> {
     baseURL,
     apiKey,
     maxToolCalls: parseInt(opts.maxToolCalls, 10),
+    planMode: opts.plan,
   });
 
   const usage = new UsageTracker();
@@ -231,6 +239,11 @@ async function main(): Promise<void> {
       setApiKey: (k) => { apiKey = k; },
       usage,
       persistConfig: (c) => savePersistedConfig({ provider: c.provider, model: c.model, baseURL: c.baseURL, apiKey: c.apiKey }),
+      setPlanMode: (v) => {
+        agent.setPlanMode(v);
+        agent.refreshSystemMessage();
+      },
+      isPlanMode: () => agent.isPlanMode(),
     });
 
     if (cmdResult) {

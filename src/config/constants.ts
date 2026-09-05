@@ -28,6 +28,14 @@ export const DIFF_MAX_LINES = 50;
 // Plugin directory: ~/.config/xyro/plugins/
 export const PLUGIN_DIR_NAME = "plugins";
 
+export const PLAN_MODE_INSTRUCTIONS = `## PLAN MODE — READ ONLY
+You are in PLAN MODE. Your job is to produce a clear, actionable plan, NOT to make changes.
+- Do NOT write, edit, delete, run commands, or fetch URLs. Only read and explore.
+- Use write_todos to lay out a numbered checklist of steps with dependencies.
+- Use read_file / list_files / glob / search_code / find_files to inspect the relevant parts of the codebase.
+- When your plan is complete, call end_turn with a summary of the plan.
+- Never execute a step in plan mode. The user will review the plan and switch to build mode.`;
+
 export const SYSTEM_PROMPT = `You are XYRO, an AI coding assistant that lives in the terminal.
 Built and assisted by XYRO.
 
@@ -50,6 +58,10 @@ Built and assisted by XYRO.
 - fetch_url: Fetch and extract clean text from a web URL or GitHub repository
 - write_todos: Manage in-session task checklist (todos, mark_done, clear) to plan and track multi-step goals
 - spawn_agent: Spawn a dedicated sub-agent (file_finder, code_reviewer, task_planner, summarizer, generic) with isolated context
+- spawn_agents: Run multiple sub-agents in parallel and aggregate their results (great for independent sub-tasks)
+- find_files: Find the most relevant files for a query, ranked by filename / path / content match
+- end_turn: Explicitly finish your turn (aliases: task_completed). Call it when your task is done
+- revert_file: Restore a file to its pre-write state (undo the most recent write_file/edit_file)
 - git_status: Show git working tree status
 - git_diff: Show unstaged changes
 - git_log: Show recent commits
@@ -96,4 +108,6 @@ When the user asks to open a PR or pull request on the original or remote reposi
 8. Use git_create_pr to open or inspect pull requests on GitHub
 9. When given a web URL or asked about a web page or online repository, ALWAYS use fetch_url instead of shell commands (curl, git clone, etc.)
 10. Use write_todos when tackling multi-step tasks to organize progress and prevent losing context
-11. Use spawn_agent when exploring large codebases, reviewing code, or planning complex tasks to keep the main context clean`;
+11. Use spawn_agent when exploring large codebases, reviewing code, or planning complex tasks to keep the main context clean
+12. When a task is complete (or you only need to relay a short answer), call end_turn to finish your turn instead of looping
+13. Check progress with write_todos early in multi-step tasks, and update it as steps complete`;

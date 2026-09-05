@@ -458,7 +458,7 @@ export async function summarizeHistory(
       messages: [
         {
           role: "system",
-          content: `Summarize the following conversation between a user and a coding assistant. Preserve: tasks completed, files modified, key decisions, and open follow-ups. Be concise - under 500 words.`,
+          content: `Summarize the following conversation between a user and a coding assistant. Preserve: tasks completed, files modified, key decisions, and open follow-ups. Begin your summary with the exact phrase "What did we do so far?" followed by a short recap. Be concise - under 500 words.`,
         },
         {
           role: "user",

@@ -4,6 +4,7 @@ import pc from "picocolors";
 import { isWindows } from "../config/platform.js";
 import { generateDiff, generateInlineDiff } from "./diff.js";
 import { resolveProjectPath } from "./safety.js";
+import { backupFile } from "./undo.js";
 
 function normalizeForDisplay(p: string): string {
   return isWindows ? p.replace(/\\/g, "/") : p;
@@ -22,6 +23,7 @@ export async function writeFile(args: { path: string; content: string }): Promis
   // Show diff if file already exists
   let diffPreview = "";
   if (existsSync(filePath)) {
+    backupFile(filePath); // snapshot for revert_file
     const oldContent = readFileSync(filePath, "utf-8");
     if (oldContent === args.content) {
       return `ℹ️ ${normalizeForDisplay(filePath)} — no changes needed`;
@@ -52,6 +54,7 @@ export async function editFile(args: {
   if (!content.includes(args.old_text)) {
     return "❌ Target text not found in file";
   }
+  backupFile(filePath); // snapshot for revert_file
   const occurrenceCount = content.split(args.old_text).length - 1;
   const replaceAll = args.replace_all === true || occurrenceCount > 1;
   const updated = replaceAll

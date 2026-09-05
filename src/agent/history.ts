@@ -1,9 +1,10 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { Message } from "./types.js";
-import { SYSTEM_PROMPT } from "../config/constants.js";
+import { SYSTEM_PROMPT, PLAN_MODE_INSTRUCTIONS } from "../config/constants.js";
 import { getHistoryDir, getEnvironmentContext } from "../config/platform.js";
 import { loadProjectContext } from "../config/loader.js";
+import { loadSkills } from "../config/skills.js";
 import { historyToMarkdown } from "./usage.js";
 
 type ResponseListener = (usage: unknown) => void;
@@ -15,9 +16,18 @@ function historyFilePath(): string {
 export class HistoryManager {
   private messages: Message[] = [];
   private listeners: ResponseListener[] = [];
+  private planMode = false;
 
   constructor() {
     this.reset();
+  }
+
+  setPlanMode(enabled: boolean): void {
+    this.planMode = enabled;
+  }
+
+  isPlanMode(): boolean {
+    return this.planMode;
   }
 
   onResponse(listener: ResponseListener): void {
@@ -30,11 +40,25 @@ export class HistoryManager {
 
   systemMessage(): Message {
     let systemContent = `${SYSTEM_PROMPT}\n\n${getEnvironmentContext()}`;
+    if (this.planMode) {
+      systemContent += `\n\n${PLAN_MODE_INSTRUCTIONS}`;
+    }
     const projectContext = loadProjectContext();
     if (projectContext) {
       systemContent += `\n\n## Project Context\n${projectContext}`;
     }
+    const skills = loadSkills();
+    if (skills) {
+      systemContent += `\n\n${skills}`;
+    }
     return { role: "system", content: systemContent };
+  }
+
+  /** Rebuild the system message in place (e.g. after toggling plan mode or adding skills). */
+  refreshSystemMessage(): void {
+    if (this.messages.length > 0) {
+      this.messages[0] = this.systemMessage();
+    }
   }
 
   reset(): void {
@@ -50,6 +74,19 @@ export class HistoryManager {
         content: `## Previous Conversation (compacted summary)\n${summary}`,
       },
     ];
+  }
+
+  /**
+   * Compaction v2: keep a summary of the older history AND a verbatim tail of
+   * the most recent turn(s) so the model retains its immediate working state.
+   */
+  resetWithSummaryAndRecent(summary: string, recent: Message[]): void {
+    const sys = this.systemMessage();
+    const sumMsg: Message = {
+      role: "system",
+      content: `## Previous Conversation\n${summary}`,
+    };
+    this.messages = [sys, sumMsg, ...recent];
   }
 
   add(msg: Message): void {
