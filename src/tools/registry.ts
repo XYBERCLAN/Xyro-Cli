@@ -26,6 +26,18 @@ import {
   gitPush,
   gitCreatePr,
   gitPrView,
+  gitAdd,
+  gitDiffStaged,
+  gitDiffUnstaged,
+  gitReset,
+  gitShow,
+  gitCreateBranch,
+  gitPull,
+  gitFetch,
+  gitRemote,
+  gitRebase,
+  gitPrList,
+  gitPrStatus,
 } from "./git.js";
 import { loadPlugins } from "../config/plugins.js";
 
@@ -327,6 +339,75 @@ const builtinTools: Tool[] = [
       repo: { type: "string", description: "Repository (defaults to upstream or origin)" },
     }, []),
     execute: (args) => gitPrView(args as { pr?: string; repo?: string }),
+  },
+  // Extended Git tools
+  {
+    definition: def("git_add", "Stage files for commit", {
+      files: { type: "array", items: { type: "string" }, description: "Files to stage (omit to stage all)" },
+    }, []),
+    execute: (args) => gitAdd(args as { files?: string[] }),
+  },
+  {
+    definition: def("git_diff_staged", "Show changes staged for commit", {}, []),
+    execute: () => gitDiffStaged(),
+  },
+  {
+    definition: def("git_diff_unstaged", "Show unstaged changes", {}, []),
+    execute: () => gitDiffUnstaged(),
+  },
+  {
+    definition: def("git_reset", "Unstage all staged changes (git reset)", {}, []),
+    execute: () => gitReset(),
+  },
+  {
+    definition: def("git_show", "Show the contents of a commit", {
+      revision: { type: "string", description: "Commit SHA, branch, or tag" },
+    }, ["revision"]),
+    execute: (args) => gitShow(args as { revision: string }),
+  },
+  {
+    definition: def("git_create_branch", "Create and switch to a new branch", {
+      branch: { type: "string", description: "Branch name" },
+      base: { type: "string", description: "Base branch to create from (default: current)" },
+    }, ["branch"]),
+    execute: (args) => gitCreateBranch(args as { branch: string; base?: string }),
+  },
+  {
+    definition: def("git_pull", "Pull changes from remote", {
+      remote: { type: "string", description: "Remote name (default: origin)" },
+      branch: { type: "string", description: "Branch name (default: current)" },
+    }, []),
+    execute: (args) => gitPull(args as { remote?: string; branch?: string }),
+  },
+  {
+    definition: def("git_fetch", "Fetch changes from remote", {
+      remote: { type: "string", description: "Remote name (default: origin)" },
+      prune: { type: "boolean", description: "Prune remote-tracking branches" },
+    }, []),
+    execute: (args) => gitFetch(args as { remote?: string; prune?: boolean }),
+  },
+  {
+    definition: def("git_remote", "List remotes", {}, []),
+    execute: () => gitRemote(),
+  },
+  {
+    definition: def("git_rebase", "Rebase onto another branch", {
+      branch: { type: "string", description: "Branch to rebase onto" },
+    }, ["branch"]),
+    execute: (args) => gitRebase(args as { branch: string }),
+  },
+  {
+    definition: def("git_pr_list", "List pull requests on GitHub", {
+      repo: { type: "string", description: "Repository (owner/repo)" },
+      state: { type: "string", description: "State: open, closed, merged, all (default: open)" },
+    }, []),
+    execute: (args) => gitPrList(args as { repo?: string; state?: string }),
+  },
+  {
+    definition: def("git_pr_status", "Show GitHub PR status for current branch/context", {
+      repo: { type: "string", description: "Repository (owner/repo)" },
+    }, []),
+    execute: (args) => gitPrStatus(args as { repo?: string }),
   },
 ];
 
