@@ -205,9 +205,36 @@ describe("sessions — listing, resolution, mutation", () => {
 
   it("skips corrupted session files instead of throwing", () => {
     const id = getOrCreateProjectSession();
-    writeFileSync(join(DATA_HOME, "xyro", "sessions", `${id}.json`), "{ not json", "utf-8");
-    assert.deepEqual(listSessions(), []);
+    const file = join(DATA_HOME, "xyro", "sessions", `${id}.json`);
+    writeFileSync(file, "{ not json", "utf-8");
+
+    assert.deepEqual(listSessions(), [], "the list survives a corrupted file");
     assert.equal(loadSessionMessages(id), null);
+    assert.equal(getSessionMeta(id), null, "metadata lookup survives it too");
+    assert.equal(resolveSessionId(id), null, "and the id is no longer resolvable");
+  });
+
+  it("rejects a session file whose shape is wrong", () => {
+    const id = getOrCreateProjectSession();
+    const file = join(DATA_HOME, "xyro", "sessions", `${id}.json`);
+    // Valid JSON, but no messages array: must not be mistaken for a session.
+    writeFileSync(file, JSON.stringify({ id, name: "broken" }), "utf-8");
+
+    assert.equal(getSessionMeta(id), null);
+    assert.equal(loadSessionMessages(id), null);
+    assert.deepEqual(listSessions(), []);
+
+    // A non-object payload is rejected just the same.
+    writeFileSync(file, JSON.stringify("nope"), "utf-8");
+    assert.equal(getSessionMeta(id), null);
+    assert.deepEqual(listSessions(), []);
+  });
+
+  it("ignores non-file entries in the sessions directory", () => {
+    getOrCreateProjectSession();
+    mkdirSync(join(DATA_HOME, "xyro", "sessions", "subdir.json"), { recursive: true });
+    const sessions = listSessions();
+    assert.equal(sessions.length, 1, "a directory named like a session is not listed");
   });
 
   it("migrates the legacy single-file session exactly once", () => {

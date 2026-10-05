@@ -149,7 +149,7 @@ export function listSessions(): SessionSummary[] {
         current: (parsed.projectKey || "") === currentKey,
       });
     } catch {
-      // corrupted session file — ignore it rather than breaking the whole list
+      // Corrupted session file: skip it rather than breaking the whole list.
     }
   }
 
