@@ -7,6 +7,7 @@ import { summarizeHistory } from "../providers/llm.js";
 import { FREE_PROVIDERS, interactiveSetup, Provider } from "../ui/prompts.js";
 import { renderInfo, renderError, renderAssistant, isJsonMode } from "../ui/render.js";
 import { getToolCount } from "../tools/registry.js";
+import { addRule, clearRules, loadRules, removeRule } from "../tools/permissions.js";
 import {
   deleteSession,
   describeSession,
@@ -55,9 +56,13 @@ Commands:
   /switch [name]     switch to another session (interactive picker if omitted)
   /rename <name>     rename the current session
   /delete [name]     delete a session (defaults to the current one)
+  /permissions       list tool permission rules
+  /permissions allow <tool|*> [path-pattern]
+  /permissions deny <tool|*> [path-pattern]
+  /permissions remove <rule-id> | reset
   /init              scaffold an AGENTS.md project context file
   /exit              save and quit
-Bare words also work: help, status, model, cost, compact, history, export, save, resume, clear, plan, sessions, new, switch, rename, delete, exit, quit
+Bare words also work: help, status, model, cost, compact, history, export, save, resume, clear, plan, sessions, new, switch, rename, delete, permissions, init, exit, quit
 `.trim();
 
 const ALIASES: Record<string, string> = {
@@ -67,7 +72,85 @@ const ALIASES: Record<string, string> = {
   init: "/init", quit: "/exit", exit: "/exit",
   sessions: "/sessions", session: "/sessions", new: "/new",
   switch: "/switch", rename: "/rename", delete: "/delete",
+  permissions: "/permissions", perms: "/permissions",
 };
+
+/**
+ * /permissions — inspect and edit the saved allow/deny rules.
+ *
+ * Rules belong to the user, never to the agent: there is deliberately no tool
+ * that can add them, because a self-granting tool would void every check.
+ */
+function handlePermissionsCommand(arg: string): void {
+  const parts = arg.split(/\s+/).filter(Boolean);
+  const sub = (parts[0] || "").toLowerCase();
+
+  if (!sub) {
+    const rules = loadRules();
+    if (rules.length === 0) {
+      renderInfo(
+        "No permission rules saved — mutating tools ask for approval.\n" +
+          "  /permissions allow write_file src/**   always allow writes under src/\n" +
+          "  /permissions deny run_command rm       never run commands matching rm\n" +
+          "  /permissions reset                      forget every rule"
+      );
+      return;
+    }
+    renderInfo(
+      `${rules.length} permission rule(s):\n` +
+        rules
+          .map(
+            (r) =>
+              `  ${r.id}  ${r.action === "allow" ? "allow" : "deny "}  ` +
+              `${r.tools.join(", ")}${r.paths.length ? `  on ${r.paths.join(", ")}` : ""}`
+          )
+          .join("\n")
+    );
+    return;
+  }
+
+  if (sub === "reset") {
+    const n = clearRules();
+    renderInfo(n > 0 ? `Removed ${n} rule(s)` : "No rules to remove");
+    return;
+  }
+
+  if (sub === "remove" || sub === "rm") {
+    const id = parts[1];
+    if (!id) {
+      renderError("Usage: /permissions remove <rule-id>");
+      return;
+    }
+    renderInfo(removeRule(id) ? `Removed rule ${id}` : `No rule with id ${id}`);
+    return;
+  }
+
+  if (sub === "allow" || sub === "deny") {
+    const tool = parts[1];
+    if (!tool) {
+      renderError(`Usage: /permissions ${sub} <tool|*> [path-pattern]`);
+      return;
+    }
+    try {
+      const rule = addRule({ action: sub, tools: [tool], paths: parts.slice(2) });
+      renderInfo(
+        `Rule ${rule.id}: ${sub} ${tool}${rule.paths.length ? ` on ${rule.paths.join(", ")}` : ""}`
+      );
+    } catch (err) {
+      renderError(err instanceof Error ? err.message : String(err));
+    }
+    return;
+  }
+
+  renderError(
+    `Unknown /permissions sub-command "${sub}".\n` +
+      "  /permissions                       list rules\n" +
+      "  /permissions allow <tool|*> [path] allow a tool, optionally for paths matching a glob\n" +
+      "  /permissions deny <tool|*> [path]  refuse a tool (deny rules win over allow)\n" +
+      "  /permissions remove <id>           drop one rule\n" +
+      "  /permissions reset                 drop every rule"
+  );
+}
 
 function formatAge(ts: number): string {
   if (!ts) return "unknown";
@@ -410,6 +493,11 @@ export async function handleCommand(
       } else {
         renderError(`Failed to delete session "${target}"`);
       }
+      return { action: "continue" };
+    }
+
+    case "permissions": {
+      handlePermissionsCommand(arg);
       return { action: "continue" };
     }
 

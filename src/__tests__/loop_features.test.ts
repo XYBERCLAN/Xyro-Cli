@@ -12,7 +12,7 @@ import {
 } from "../agent/loop.js";
 import { HistoryManager } from "../agent/history.js";
 import { getPlanModeToolDefinitions, getToolDefinitions, executeTool } from "../tools/registry.js";
-import { shouldAskPermission, requestPermission } from "../tools/permissions.js";
+import { shouldAskPermission, checkPermission } from "../tools/permissions.js";
 import { findFiles } from "../tools/find_files.js";
 import { clearSkillsCache, loadSkills } from "../config/skills.js";
 import { backupFile, revertFile } from "../tools/undo.js";
@@ -111,14 +111,15 @@ describe("Paquet B — permission gate", () => {
 
   it("asks for mutating tools in the default policy", () => {
     delete process.env.XYRO_NO_APPROVE;
-    assert.equal(shouldAskPermission("write_file"), true);
-    assert.equal(shouldAskPermission("run_command"), true);
-    assert.equal(shouldAskPermission("fetch_url"), true);
+    assert.equal(shouldAskPermission("write_file", { path: "a.ts" }), true);
+    assert.equal(shouldAskPermission("run_command", { command: "ls" }), true);
+    assert.equal(shouldAskPermission("fetch_url", { url: "https://example.com" }), true);
+    assert.equal(shouldAskPermission("propose_write_file", { path: "a.ts" }), true);
   });
 
   it("never asks for read-only / bookkeeping tools", () => {
     delete process.env.XYRO_NO_APPROVE;
-    assert.equal(shouldAskPermission("read_file"), false);
+    assert.equal(shouldAskPermission("read_file", { path: "a.ts" }), false);
     assert.equal(shouldAskPermission("list_files"), false);
     assert.equal(shouldAskPermission("write_todos"), false);
     assert.equal(shouldAskPermission("git_status"), false);
@@ -126,24 +127,26 @@ describe("Paquet B — permission gate", () => {
     assert.equal(shouldAskPermission("revert_file"), false);
   });
 
-  it("XYRO_NO_APPROVE disables prompting entirely", () => {
+  it("XYRO_NO_APPROVE allows unattended runs", async () => {
     process.env.XYRO_NO_APPROVE = "1";
     try {
-      assert.equal(shouldAskPermission("write_file"), false);
-      assert.equal(shouldAskPermission("run_command"), false);
+      assert.equal((await checkPermission("write_file", { path: "a.ts" })).decision, "allow");
+      assert.equal((await checkPermission("run_command", { command: "npm test" })).decision, "allow");
     } finally {
       delete process.env.XYRO_NO_APPROVE;
     }
   });
 
-  it("auto-approves outside an interactive terminal (scripts/CI)", async () => {
+  it("refuses instead of silently approving outside a terminal (scripts/CI)", async () => {
     const stdin = process.stdin.isTTY;
     const stdout = process.stdout.isTTY;
     (process.stdin as any).isTTY = false;
     (process.stdout as any).isTTY = false;
+    delete process.env.XYRO_NO_APPROVE;
     try {
-      const verdict = await requestPermission("run_command", { command: "npm test" });
-      assert.equal(verdict, "allow");
+      const outcome = await checkPermission("run_command", { command: "npm test" });
+      assert.equal(outcome.decision, "deny");
+      assert.match(outcome.reason ?? "", /--no-approve/);
     } finally {
       (process.stdin as any).isTTY = stdin;
       (process.stdout as any).isTTY = stdout;

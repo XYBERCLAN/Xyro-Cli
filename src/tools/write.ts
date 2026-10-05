@@ -4,16 +4,29 @@ import pc from "picocolors";
 import { isWindows } from "../config/platform.js";
 import { generateDiff, generateInlineDiff } from "./diff.js";
 import { resolveProjectPath } from "./safety.js";
+import { isHardDeniedPath } from "./permissions.js";
 import { backupFile } from "./undo.js";
 
 function normalizeForDisplay(p: string): string {
   return isWindows ? p.replace(/\\/g, "/") : p;
 }
 
+/**
+ * Second line of defence after the permission gate: even if a caller forgets to
+ * ask, credential and VCS files are never written.
+ */
+function refuseIfSensitive(tool: string, filePath: string): string | null {
+  if (!isHardDeniedPath(filePath)) return null;
+  return `⛔ ${tool} refused: "${normalizeForDisplay(filePath)}" holds credentials or VCS internals and is never writable through a tool.`;
+}
+
 export async function writeFile(args: { path: string; content: string }): Promise<string> {
   const resolveResult = resolveProjectPath(args.path);
   if (!resolveResult.ok) return resolveResult.message;
   const filePath = resolveResult.path;
+
+  const refusal = refuseIfSensitive("write_file", filePath);
+  if (refusal) return refusal;
 
   const dir = dirname(filePath);
   if (dir && !existsSync(dir)) {
@@ -46,6 +59,9 @@ export async function editFile(args: {
   const resolveResult = resolveProjectPath(args.path);
   if (!resolveResult.ok) return resolveResult.message;
   const filePath = resolveResult.path;
+
+  const refusal = refuseIfSensitive("edit_file", filePath);
+  if (refusal) return refusal;
 
   if (!existsSync(filePath)) {
     return `❌ File not found: ${normalizeForDisplay(filePath)}`;

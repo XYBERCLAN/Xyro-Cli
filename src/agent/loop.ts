@@ -4,7 +4,7 @@ import { Message, AgentOptions } from "./types.js";
 import { HistoryManager } from "./history.js";
 import { createClient, callLLMStream, summarizeHistory, LLMResponse } from "../providers/llm.js";
 import { executeTool, getPlanModeToolDefinitions } from "../tools/registry.js";
-import { requestPermission, shouldAskPermission, PERMISSION_DENIED_RESULT } from "../tools/permissions.js";
+import { checkPermission, permissionDeniedResult } from "../tools/permissions.js";
 import { END_TURN_TOOL_NAMES } from "../tools/end_turn.js";
 import { DEFAULT_MODEL, DEFAULT_MAX_TOOL_CALLS, CONTEXT_WINDOW_WARN_TOKENS, POST_TURN_COMPACT_TOKENS } from "../config/constants.js";
 import { savePersistedConfig } from "../config/persist.js";
@@ -517,10 +517,9 @@ export class Agent {
           break;
         }
 
-        // Permission gate (Paquet B): mutating/network tools ask in interactive mode
-        const treatment = shouldAskPermission(name)
-          ? await requestPermission(name, args)
-          : "allow";
+        // Permission gate: allow / deny / ask, with path-scoped rules. Every
+        // call goes through it, so a saved deny rule is honoured too.
+        const { decision, reason } = await checkPermission(name, args);
 
         const start = performance.now();
         renderToolCall(name, args, toolCallCount);
@@ -529,8 +528,8 @@ export class Agent {
         if (useTTY) renderToolRunning(name);
 
         const result =
-          treatment === "deny"
-            ? PERMISSION_DENIED_RESULT
+          decision === "deny"
+            ? permissionDeniedResult(name, reason)
             : await executeTool(name, args);
         const elapsed = ((performance.now() - start) / 1000).toFixed(1);
         if (useTTY) renderToolRunningDone();

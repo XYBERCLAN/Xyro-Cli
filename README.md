@@ -54,6 +54,7 @@ Unlike most AI coding tools that require a VS Code extension, a web dashboard, o
 | ★ | **Config Persistence** | Remembers your provider, model, and API key across sessions |
 | ❖ | **Headless / JSON** | One-shot `-p` runs with NDJSON events and exit codes, for CI and scripting |
 | ✔ | **Self-Verification** | `diagnostics` typechecks and lints; `run_tests` runs the suite and names the failures |
+| ⚖ | **Permission Rules** | Per-tool allow/deny rules with path globs; credentials and unattended runs refused |
 | ◈ | **Free-Tier Friendly** | Built-in provider presets for Groq, OpenRouter, DeepSeek free tiers |
 | ▣ | **Error Handling** | Granular API error formatting per provider (auth, rate-limit, model-not-found) |
 
@@ -149,10 +150,49 @@ xyro -p "Now add tests for it" --session feature       # continues it
 | `/switch <id\|name>` | Load another session into this session |
 | `/rename <name>` | Rename the current session |
 | `/delete <id\|name>` | Delete a session |
+| `/permissions` | List tool permission rules |
+| `/permissions allow <tool\|*> [pattern]` | Always allow a tool, optionally for matching paths |
+| `/permissions deny <tool\|*> [pattern]` | Never allow a tool (deny rules beat allow rules) |
+| `/permissions remove <id>` / `reset` | Drop one rule / all rules |
 
 Sessions are stored per project directory, so switching folders in a terminal
 gives you a separate conversation; the history is auto-saved about a second
 after each change.
+
+### Permissions
+
+Mutating and networked tools (`write_file`, `edit_file`, `propose_write_file`,
+`run_command`, `fetch_url`, the `git_*` writers) ask for confirmation before
+running. Rules let you settle that once instead of every turn:
+
+```bash
+/permissions allow write_file src/**        # always allow writes under src/
+/permissions allow edit_file src/**/*.ts    # always allow edits of TS files in src/
+/permissions deny run_command *rm -rf*      # never run that command
+/permissions deny write_file vendor/**      # never touch vendored code
+```
+
+Pattern rules:
+
+- a pattern with `/` is relative to the project root; a leading `**` means any
+  depth (`**/.git/**`)
+- a bare pattern matches a file name at any depth (`*.log`, `.env`)
+- for `run_command` the pattern is matched against the command text
+- `deny` always beats `allow`, whatever the order
+- rules live in `<config>/permissions.json`, and are managed by you only —
+  there is deliberately no tool that can add one
+
+Two things are refused no matter what:
+
+- **credential and VCS paths** (`.env*`, `*.pem`, `*.key`, `.ssh/**`, `.aws/**`,
+  `.git/**`, `.npmrc`, …) can never be written by a file tool
+- **unattended runs** (`--json`, piped stdin, CI) refuse any tool that would
+  need a prompt, because nobody is there to answer it. Pass `--no-approve` (or
+  set a rule) to authorise them up front:
+
+```bash
+xyro -p "fix the lint errors" --json --no-approve
+```
 
 ---
 

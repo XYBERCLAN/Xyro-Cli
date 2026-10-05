@@ -2,16 +2,23 @@
  * propose_write_file — Show a diff and prompt the user for approval before writing.
  * Works like write_file but with a confirmation gate: the user can accept, reject, or
  * optionally edit in-place. On rejection the file is left untouched.
+ *
+ * The path goes through `resolveProjectPath` like every other writing tool, and
+ * the permission gate in `loop.ts` decides whether this call may run at all.
  */
 
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { createInterface } from "node:readline";
 import { generateDiff } from "./diff.js";
+import { resolveProjectPath } from "./safety.js";
+import { isHardDeniedPath } from "./permissions.js";
 
 async function promptUser(question: string): Promise<string> {
-  // In non-TTY mode (piped/JSON), auto-accept so sub-agents don't stall
-  if (!process.stdout.isTTY || !process.stdin.isTTY) return "y";
+  // Outside a TTY there is nobody to answer: refusing is the only safe answer.
+  // (Sub-agents run headless, and silently accepting a write there is how files
+  // get rewritten without review.)
+  if (!process.stdout.isTTY || !process.stdin.isTTY) return "n";
 
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   return new Promise((resolve) => {
@@ -27,11 +34,20 @@ export async function proposeWriteFile(args: {
   content: string;
   reason?: string;
 }): Promise<string> {
-  const { path: filePath, content, reason } = args;
+  // Same confinement as write_file/edit_file: no `../` escape, no absolute
+  // path outside the project.
+  const resolved = resolveProjectPath(args.path);
+  if (!resolved.ok) return resolved.message;
+  const filePath = resolved.path;
+  const content = args.content;
+  const reason = args.reason;
 
-  const oldContent = existsSync(filePath)
-    ? readFileSync(filePath, { encoding: "utf-8" })
-    : "";
+  // Credential and VCS paths are never writable, prompt or not.
+  if (isHardDeniedPath(filePath)) {
+    return `⛔ propose_write_file refused: "${filePath}" holds credentials or VCS internals and is never writable through a tool.`;
+  }
+
+  const oldContent = existsSync(filePath) ? readFileSync(filePath, { encoding: "utf-8" }) : "";
 
   if (oldContent === content) {
     return `✅ No changes needed for ${filePath}`;
@@ -73,6 +89,10 @@ export async function proposeWriteFile(args: {
     writeFileSync(filePath, newContent, "utf-8");
     return `✅ Custom content written to ${filePath}`;
   } else {
-    return `⏭️ Changes rejected — ${filePath} was not modified`;
+    const why =
+      !process.stdin.isTTY || !process.stdout.isTTY
+        ? " (no interactive terminal to confirm with — write_file is available if the user has approved it)"
+        : "";
+    return `⛔ Changes refused — ${filePath} was not modified${why}`;
   }
 }

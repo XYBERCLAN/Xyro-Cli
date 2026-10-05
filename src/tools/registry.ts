@@ -413,12 +413,13 @@ const PLAN_MODE_TOOLS = new Set([
   "write_todos",
   "end_turn",
   "task_completed",
-  "diagnostics",
   "git_status",
   "git_diff",
   "git_log",
   "git_branch",
   "git_pr_view",
+  "revert_file",
+  "diagnostics",
 ]);
 
 /** Tool definitions exposed in plan mode (write/execute/network tools filtered out). */
