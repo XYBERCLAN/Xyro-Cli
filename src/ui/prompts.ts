@@ -536,7 +536,12 @@ export async function interactiveSetup(): Promise<Config> {
 
 export const CANCEL = Symbol("cancel");
 
-function readAllStdin(): Promise<string> {
+/**
+ * Read the whole of stdin as a single string. Used by the piped/headless
+ * entry points (`xyro -p ...`, `echo "..." | xyro`) to turn stdin into the
+ * prompt itself.
+ */
+export async function readAllStdin(): Promise<string> {
   return new Promise((resolve) => {
     let data = "";
     process.stdin.resume();

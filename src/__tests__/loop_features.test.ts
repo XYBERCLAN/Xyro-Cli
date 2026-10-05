@@ -20,10 +20,20 @@ import { writeFile, editFile } from "../tools/write.js";
 
 const TEST_ROOT = join(process.cwd(), "__test_features__");
 const OLD_CWD = process.cwd();
+// Redirect XDG dirs so sessions/todos/history created by HistoryManager land in
+// a throwaway directory instead of the developer's real ~/.local/share.
+const OLD_XDG_DATA = process.env["XDG_DATA_HOME"];
+const OLD_XDG_CONFIG = process.env["XDG_CONFIG_HOME"];
+const TEST_DATA_HOME = join(TEST_ROOT, ".xdg-data");
+const TEST_CONFIG_HOME = join(TEST_ROOT, ".xdg-config");
 
 function setup() {
   rmSync(TEST_ROOT, { recursive: true, force: true });
   mkdirSync(TEST_ROOT, { recursive: true });
+  mkdirSync(TEST_DATA_HOME, { recursive: true });
+  mkdirSync(TEST_CONFIG_HOME, { recursive: true });
+  process.env["XDG_DATA_HOME"] = TEST_DATA_HOME;
+  process.env["XDG_CONFIG_HOME"] = TEST_CONFIG_HOME;
   process.chdir(TEST_ROOT);
   writeFileSync(join(TEST_ROOT, ".gitignore"), "vendor/\n*.secret\n", "utf-8");
   mkdirSync(join(TEST_ROOT, "src"), { recursive: true });
@@ -34,6 +44,10 @@ function setup() {
 
 function teardown() {
   process.chdir(OLD_CWD);
+  if (OLD_XDG_DATA === undefined) delete process.env["XDG_DATA_HOME"];
+  else process.env["XDG_DATA_HOME"] = OLD_XDG_DATA;
+  if (OLD_XDG_CONFIG === undefined) delete process.env["XDG_CONFIG_HOME"];
+  else process.env["XDG_CONFIG_HOME"] = OLD_XDG_CONFIG;
   rmSync(TEST_ROOT, { recursive: true, force: true });
 }
 

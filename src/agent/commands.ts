@@ -7,6 +7,14 @@ import { summarizeHistory } from "../providers/llm.js";
 import { FREE_PROVIDERS, interactiveSetup, Provider } from "../ui/prompts.js";
 import { renderInfo, renderError, renderAssistant, isJsonMode } from "../ui/render.js";
 import { getToolCount } from "../tools/registry.js";
+import {
+  deleteSession,
+  describeSession,
+  listSessions,
+  renameSession,
+  resolveSessionId,
+  type SessionSummary,
+} from "./sessions.js";
 
 export interface CommandContext {
   agent: Agent;
@@ -42,9 +50,14 @@ Commands:
   /resume            reload last saved session
   /clear             reset conversation history
   /plan              toggle PLAN MODE (read-only planning; switch back to build with /plan again)
+  /sessions          list conversation sessions (per project)
+  /new [name]        start a new named session for this project
+  /switch [name]     switch to another session (interactive picker if omitted)
+  /rename <name>     rename the current session
+  /delete [name]     delete a session (defaults to the current one)
   /init              scaffold an AGENTS.md project context file
   /exit              save and quit
-Bare words also work: help, status, model, cost, compact, history, export, save, resume, clear, plan, exit, quit
+Bare words also work: help, status, model, cost, compact, history, export, save, resume, clear, plan, sessions, new, switch, rename, delete, exit, quit
 `.trim();
 
 const ALIASES: Record<string, string> = {
@@ -52,7 +65,35 @@ const ALIASES: Record<string, string> = {
   cost: "/cost", compact: "/compact", history: "/history", export: "/export",
   save: "/save", resume: "/resume", clear: "/clear", plan: "/plan",
   init: "/init", quit: "/exit", exit: "/exit",
+  sessions: "/sessions", session: "/sessions", new: "/new",
+  switch: "/switch", rename: "/rename", delete: "/delete",
 };
+
+function formatAge(ts: number): string {
+  if (!ts) return "unknown";
+  const s = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
+  return `${Math.floor(s / 86400)}d ago`;
+}
+
+/** Text table of every session, marking the ones from this project. */
+function renderSessionList(sessions: SessionSummary[], currentId: string): void {
+  if (sessions.length === 0) {
+    renderAssistant("No sessions yet. The current conversation is saved automatically after every turn.");
+    return;
+  }
+  const lines = sessions.map((s) => {
+    const marker = s.id === currentId ? pc.green("*") : " ";
+    const scope = s.current ? pc.dim("(this project)") : pc.dim(`(${s.projectPath || "unknown"})`);
+    return `${marker} ${s.id}  ${s.name.padEnd(16)} ${String(s.messageCount).padStart(4)} msgs  ${formatAge(s.updatedAt).padEnd(9)} ${scope}`;
+  });
+  renderAssistant(
+    `${sessions.length} session(s):\n${lines.join("\n")}\n\n` +
+      `* = current. Switch with /switch <id|name>, start fresh with /new [name].`
+  );
+}
 
 function isCommand(input: string): string | null {
   const trimmed = input.trim();
@@ -94,6 +135,25 @@ export async function handleCommand(
   const arg = rest.join(" ").trim();
   const { agent, usage, model } = ctx;
 
+  /** Shared by `/switch` and `/sessions <name>`: resolve a token then load it. */
+  const switchTo = async (token: string): Promise<CommandResult> => {
+    const id = resolveSessionId(token);
+    if (!id) {
+      renderError(`No session matches "${token}". Use /sessions to list them.`);
+      return { action: "continue" };
+    }
+    if (id === agent.getSessionId()) {
+      renderInfo("Already on that session");
+      return { action: "continue" };
+    }
+    if (agent.switchSession(id)) {
+      renderInfo(`Switched to session "${agent.getSessionName()}" (${id})`);
+    } else {
+      renderError(`Failed to load session "${token}"`);
+    }
+    return { action: "continue" };
+  };
+
   switch (name) {
     case "help":
       renderAssistant(HELP_TEXT);
@@ -107,6 +167,7 @@ export async function handleCommand(
         `model: ${ctx.model}`,
         `provider: ${ctx.provider}`,
         `cwd: ${process.cwd()}`,
+        `session: ${agent.getSessionName()} (${agent.getSessionId()})`,
         `messages: ${msgs.length} (incl. ${toolCalls} tool results)`,
         `tools: ${toolInfo.total} (${toolInfo.builtin} built-in + ${toolInfo.plugins} plugin)` ,
         `max tool calls: ${agent.getMaxToolCalls()}`,
@@ -270,6 +331,85 @@ export async function handleCommand(
       const next = ctx.isPlanMode ? !ctx.isPlanMode() : !agent.isPlanMode();
       ctx.setPlanMode?.(next);
       renderInfo(next ? "PLAN MODE enabled — read-only planning. Type your request to make a plan." : "PLAN MODE disabled — back to build mode.");
+      return { action: "continue" };
+    }
+
+    case "sessions": {
+      const sessions = listSessions();
+      // `/sessions <name>` is a shortcut for switching.
+      if (arg) {
+        return await switchTo(arg);
+      }
+      renderSessionList(sessions, agent.getSessionId());
+      return { action: "continue" };
+    }
+
+    case "new": {
+      const id = agent.newSession(arg || undefined);
+      renderInfo(`New session started: ${arg || "default"} (${id})`);
+      return { action: "continue" };
+    }
+
+    case "switch": {
+      if (!arg) {
+        const sessions = listSessions();
+        if (sessions.length === 0) {
+          renderInfo("No sessions to switch to");
+          return { action: "continue" };
+        }
+        if (isJsonMode()) {
+          renderSessionList(sessions, agent.getSessionId());
+          return { action: "continue" };
+        }
+        const choice = await p.select({
+          message: "Switch to session",
+          options: sessions.map((s) => ({
+            value: s.id,
+            label: describeSession(s),
+            hint: `${s.messageCount} msgs · ${formatAge(s.updatedAt)}${s.id === agent.getSessionId() ? " · current" : ""}`,
+          })),
+        });
+        if (p.isCancel(choice)) {
+          renderInfo("Session switch cancelled");
+          return { action: "continue" };
+        }
+        return switchTo(String(choice));
+      }
+      return await switchTo(arg);
+    }
+
+    case "rename": {
+      if (!arg) {
+        renderError("Usage: /rename <new name>");
+        return { action: "continue" };
+      }
+      const ok = renameSession(agent.getSessionId(), arg);
+      renderInfo(ok ? `Session renamed to "${arg}"` : "Failed to rename session");
+      return { action: "continue" };
+    }
+
+    case "delete": {
+      const target = arg || agent.getSessionId();
+      const id = arg ? resolveSessionId(arg) : agent.getSessionId();
+      if (!id) {
+        renderError(`No session matches "${arg}"`);
+        return { action: "continue" };
+      }
+      if (id === agent.getSessionId() && !arg) {
+        renderError("Refusing to delete the session you are using. Use /delete <other-id> or start a /new session first.");
+        return { action: "continue" };
+      }
+      const meta = listSessions().find((s) => s.id === id);
+      if (deleteSession(id)) {
+        if (id === agent.getSessionId()) {
+          agent.newSession();
+          renderInfo(`Deleted session "${meta?.name || target}" — started a fresh one`);
+        } else {
+          renderInfo(`Deleted session "${meta?.name || target}"`);
+        }
+      } else {
+        renderError(`Failed to delete session "${target}"`);
+      }
       return { action: "continue" };
     }
 

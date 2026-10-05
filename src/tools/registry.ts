@@ -28,6 +28,7 @@ import {
   gitPrView,
 } from "./git.js";
 import { loadPlugins } from "../config/plugins.js";
+import { runDiagnostics, runProjectTests } from "./verify.js";
 
 function def(
   name: string,
@@ -239,6 +240,36 @@ const builtinTools: Tool[] = [
     execute: (args) => runCommand(args as { command: string }),
   },
   {
+    definition: def(
+      "diagnostics",
+      "Typecheck and lint the project (auto-detects the toolchain) and return parsed file:line:col findings. Prefer this over guessing commands with run_command.",
+      {
+        scope: {
+          type: "string",
+          description: "Which checks to run: 'all' (default), 'typecheck', or 'lint'",
+        },
+        timeout_ms: { type: "number", description: "Per-command timeout in ms (default 120000)" },
+      },
+      []
+    ),
+    execute: (args) => runDiagnostics(args as { scope?: string; timeout_ms?: number }),
+  },
+  {
+    definition: def(
+      "run_tests",
+      "Run the project's own test suite (auto-detects npm/pnpm/yarn/bun, cargo, go or pytest) and return pass/fail counts plus the failing test names.",
+      {
+        filter: {
+          type: "string",
+          description: "Optional extra argument appended to the test command (e.g. a test name or file)",
+        },
+        timeout_ms: { type: "number", description: "Timeout in ms (default 300000)" },
+      },
+      []
+    ),
+    execute: (args) => runProjectTests(args as { filter?: string; timeout_ms?: number }),
+  },
+  {
     definition: def("list_files", "List directory structure (recursive, 3 levels)", {
       path: { type: "string", description: "Directory path" },
     }, []),
@@ -382,6 +413,7 @@ const PLAN_MODE_TOOLS = new Set([
   "write_todos",
   "end_turn",
   "task_completed",
+  "diagnostics",
   "git_status",
   "git_diff",
   "git_log",

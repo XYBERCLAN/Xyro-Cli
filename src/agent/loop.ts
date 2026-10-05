@@ -284,10 +284,29 @@ export class Agent {
     this.client = createClient(opts.baseURL, opts.apiKey);
     this.model = opts.model || DEFAULT_MODEL;
     this.maxToolCalls = opts.maxToolCalls || DEFAULT_MAX_TOOL_CALLS;
-    this.history = new HistoryManager();
+    this.history = new HistoryManager({ sessionId: opts.sessionId });
     if (opts.planMode) {
       this.history.setPlanMode(true);
     }
+  }
+
+  /** Session id this agent is bound to. */
+  getSessionId(): string {
+    return this.history.getSessionId();
+  }
+
+  getSessionName(): string {
+    return this.history.getSessionName();
+  }
+
+  /** Load another session's messages into this agent. */
+  switchSession(id: string): boolean {
+    return this.history.switchSession(id);
+  }
+
+  /** Start a fresh (optionally named) session for this project. */
+  newSession(name?: string): string {
+    return this.history.newSession(name);
   }
 
   setModel(model: string): void {
@@ -362,6 +381,16 @@ export class Agent {
   }
 
   async run(input: string): Promise<void> {
+    try {
+      await this.runTurn(input);
+    } finally {
+      // Autosave the turn (debounced) even when a provider error was thrown,
+      // so a crash or a closed terminal never loses the user's work.
+      this.history.touch();
+    }
+  }
+
+  private async runTurn(input: string): Promise<void> {
     this.history.add({ role: "user", content: input });
     if (!process.stdin.isTTY) renderUserMessage(input);
 
@@ -548,7 +577,7 @@ export class Agent {
   }
 
   save(): void {
-    this.history.save();
+    this.history.flush();
   }
 
   load(): boolean {

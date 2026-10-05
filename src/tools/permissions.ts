@@ -42,6 +42,7 @@ const ASK_ALWAYS = new Set([
   "edit_file",
   "fetch_url",
   "run_command",
+  "run_tests",
   "spawn_agent",
   "spawn_agents",
   "git_commit",

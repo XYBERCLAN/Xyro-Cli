@@ -24,4 +24,6 @@ export interface AgentOptions {
   maxToolCalls?: number;
   workingDir?: string;
   planMode?: boolean;
+  /** Session id to bind to (defaults to this project's `default` session). */
+  sessionId?: string;
 }

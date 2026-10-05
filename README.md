@@ -48,11 +48,12 @@ Unlike most AI coding tools that require a VS Code extension, a web dashboard, o
 | Icon | Area | Description |
 |------|------|-------------|
 | ◆ | **Provider-Agnostic** | Works with OpenAI, Groq, OpenRouter, DeepSeek, or any OpenAI-compatible API |
-| ▸ | **Persistent Sessions** | Auto-saves conversation history; resume with `--resume` |
+| ▸ | **Persistent Sessions** | One conversation per project, auto-saved; named sessions, switchable and resumable |
 | ● | **Tool System** | Filesystem read/write, shell execution, code search, glob matching |
 | ⚡ | **Interactive Prompts** | Rich terminal UI via clack prompts, gradient banners, colored output |
 | ★ | **Config Persistence** | Remembers your provider, model, and API key across sessions |
-| ❖ | **No-Banner Mode** | Headless/JSON output for CI pipelines and scripting |
+| ❖ | **Headless / JSON** | One-shot `-p` runs with NDJSON events and exit codes, for CI and scripting |
+| ✔ | **Self-Verification** | `diagnostics` typechecks and lints; `run_tests` runs the suite and names the failures |
 | ◈ | **Free-Tier Friendly** | Built-in provider presets for Groq, OpenRouter, DeepSeek free tiers |
 | ▣ | **Error Handling** | Granular API error formatting per provider (auth, rate-limit, model-not-found) |
 
@@ -98,16 +99,41 @@ xyro --api-key sk-... --base-url https://api.example.com/v1 --model gpt-4o
 Usage: xyro [options]
 
 Options:
+  -p, --prompt <text>     Run one prompt and exit (implies headless mode)
   --api-key <key>          API key
   -m, --model <model>      LLM model
   --base-url <url>         OpenAI-compatible base URL
   --provider <id>          Provider ID (groq, openrouter, deepseek)
   --max-tool-calls <n>     Max tool calls per turn (default: 25)
-  --resume                 Resume previous conversation
+  --session <name>         Named session to use (created if missing)
+  --resume [name]          Resume the default session, or a named one
   --no-banner              Skip interactive setup and banner
   --json                   JSON output mode (skips banner)
   -V, --version            output the version number
   -h, --help               display help for command
+```
+
+### Headless Mode
+
+With `-p/--prompt`, or with a prompt piped on stdin and no TTY, XYRO runs a
+single turn and exits — useful for CI, cron and scripts:
+
+```bash
+xyro -p "Summarise the diff and flag security issues" --json
+echo "Explain this stack trace" | xyro --json
+```
+
+- Every line is one JSON object (NDJSON): `user`, `assistant`, `tool`,
+  `error`, and a final `done` event carrying `ok`, `exit_code`, `session`,
+  token usage and cost.
+- Exit codes: `0` success, `1` the run failed (API error, crash), `2` bad usage
+  (missing API key, unknown option).
+- `--session <name>` / `--resume [name]` pick the conversation to continue, so
+  a follow-up turn is possible:
+
+```bash
+xyro -p "Add a login form" --session feature          # first turn
+xyro -p "Now add tests for it" --session feature       # continues it
 ```
 
 ### Interactive Commands
@@ -117,6 +143,16 @@ Options:
 | `exit` / `quit` | Save and exit |
 | `clear` | Reset conversation history |
 | `resume` | Reload last session |
+| `/status` | Session name/id, turn count, token usage and cost |
+| `/sessions` | List every saved session, marking the current project |
+| `/new [name]` | Start a new session for this project |
+| `/switch <id\|name>` | Load another session into this session |
+| `/rename <name>` | Rename the current session |
+| `/delete <id\|name>` | Delete a session |
+
+Sessions are stored per project directory, so switching folders in a terminal
+gives you a separate conversation; the history is auto-saved about a second
+after each change.
 
 ---
 
@@ -164,6 +200,13 @@ Options:
 | `shell` | Execute shell commands with timeout |
 | `search` | Regex/grep file contents |
 | `glob` | Pattern-based file discovery |
+| `diagnostics` | Typecheck + lint the project, auto-detected, parsed to `file:line:col` findings |
+| `run_tests` | Run the project's own test suite, reporting counts and failing test names |
+
+`diagnostics` and `run_tests` read the project's own `package.json` scripts
+(plus `tsconfig.json`, ESLint config, `Cargo.toml`, `go.mod`, `pyproject.toml`),
+so they invoke the same commands a developer would. The agent is instructed to
+run both after changing code rather than claim success on an unverified change.
 
 ---
 
@@ -196,7 +239,7 @@ XYRO is in early development. Here is what it does not yet have, in rough priori
 | ❖ | **File watching** — no `--watch` mode for continuous feedback | Future |
 | ★ | **Config profiles** — single saved config only | Future |
 | ▣ | **Streaming output** — blocks until full LLM response | Future |
-| ◈ | **Test runner** — no built-in test execution harness | Future |
+| ◈ | **Test runner** — no built-in test execution harness | Done (`run_tests`) |
 | ▣ | **Self-hosted docs** — no `xyro --help` beyond commander output | Future |
 | ⚡ | **Multi-turn planning** — no explicit plan/approve step before execution | Future |
 

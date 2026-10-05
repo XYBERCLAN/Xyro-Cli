@@ -9,12 +9,18 @@ import { dirname, join } from "node:path";
 import { Agent } from "./agent/loop.js";
 import { handleCommand } from "./agent/commands.js";
 import { UsageTracker } from "./agent/usage.js";
-import { renderConfigBanner, renderInfo, renderError, setJsonMode } from "./ui/render.js";
-import { interactiveSetup, askForInput, CANCEL, FREE_PROVIDERS } from "./ui/prompts.js";
+import { renderConfigBanner, renderInfo, renderError, renderDone, setJsonMode, isJsonMode } from "./ui/render.js";
+import { interactiveSetup, askForInput, readAllStdin, CANCEL, FREE_PROVIDERS } from "./ui/prompts.js";
 import { printXyroHead } from "./cli/banner-icon.js";
 import { printBanner } from "./cli/banner.js";
 import { loadPersistedConfig, savePersistedConfig } from "./config/persist.js";
 import { initializeTools, getToolCount } from "./tools/registry.js";
+import { getOrCreateProjectSession, migrateLegacySession, resolveSessionId } from "./agent/sessions.js";
+
+/** Process exit codes for headless runs. */
+const EXIT_OK = 0;
+const EXIT_RUN_ERROR = 1;
+const EXIT_USAGE = 2;
 
 let bannerPrinted = false;
 
@@ -41,9 +47,11 @@ program
   .option("--base-url <url>", "OpenAI-compatible base URL")
   .option("--provider <id>", "Provider ID (e.g. groq, openrouter, deepseek)")
   .option("--max-tool-calls <n>", "Max tool calls per turn", "25")
+  .option("-p, --prompt <text>", "Headless one-shot: run a single prompt, print the result and exit")
+  .option("--session <name>", "Session name to create or resume for this project (default: \"default\")")
   .option("--plan", "Start in PLAN MODE (read-only, produces a plan)", false)
   .option("--no-approve", "Skip interactive approval prompts for mutating tools", false)
-  .option("--resume", "Resume previous conversation", false)
+  .option("--resume [name]", "Resume a saved session (defaults to this project's session)")
   .option("--no-banner", "Skip interactive setup and banner")
   .option("--json", "JSON output mode (skips banner)", false)
   .parse(process.argv);
@@ -116,6 +124,53 @@ function formatApiError(err: unknown, provider: string, model: string): string {
   return `${provider} error${status ? ` (${status})` : ""}: ${msg}`;
 }
 
+/**
+ * Headless one-shot: run a single prompt, emit a terminal `done` event and
+ * exit with a meaningful status code (0 ok / 1 run error / 2 usage error).
+ * This is the entry point for scripts and CI:
+ *
+ *   xyro -p "summarise src/index.ts" --json
+ *   echo "fix the failing test" | xyro
+ */
+async function runHeadless(
+  agent: Agent,
+  usage: UsageTracker,
+  prompt: string,
+  formatError: (err: unknown) => string
+): Promise<number> {
+  let exitCode = EXIT_OK;
+  let errorMessage: string | undefined;
+
+  try {
+    await agent.run(prompt);
+  } catch (err: unknown) {
+    exitCode = EXIT_RUN_ERROR;
+    errorMessage = formatError(err) || (err instanceof Error ? err.message : String(err));
+    renderError(errorMessage);
+  }
+
+  // Persist immediately: the debounced autosave timer is unref'd and may not
+  // fire before the process exits.
+  agent.save();
+
+  const snap = usage.snapshot(agent.getModel());
+  renderDone({
+    ok: exitCode === EXIT_OK,
+    exitCode,
+    session: agent.getSessionId(),
+    usage: {
+      apiCalls: snap.apiCalls,
+      promptTokens: snap.promptTokens,
+      completionTokens: snap.completionTokens,
+      totalTokens: snap.totalTokens,
+    },
+    cost: usage.estimatedCost(agent.getModel()),
+    error: errorMessage,
+  });
+
+  return exitCode;
+}
+
 async function main(): Promise<void> {
   // Initialize built-in + plugin tools
   await initializeTools();
@@ -174,7 +229,12 @@ async function main(): Promise<void> {
     bannerPrinted = true;
   }
 
-  if (!apiKey && opts.banner !== false && !opts.json) {
+  // A headless run (`-p`, or a prompt piped on stdin) must never open the
+  // interactive provider setup: it would hang a script forever.
+  const wantsOneShot =
+    (typeof opts.prompt === "string" && opts.prompt.trim().length > 0) || !process.stdin.isTTY;
+
+  if (!apiKey && opts.banner !== false && !opts.json && !wantsOneShot) {
     const config = await interactiveSetup();
     apiKey = config.apiKey;
     model = config.model;
@@ -186,8 +246,20 @@ async function main(): Promise<void> {
   if (!apiKey) {
     console.error(pc.red("\n  ✗ No API key provided"));
     console.error(pc.dim("  Pass --api-key, --provider, or set OPENAI_API_KEY"));
-    process.exit(1);
+    process.exit(EXIT_USAGE);
   }
+
+  // Bring a pre-sessions single-file conversation into the new layout once.
+  migrateLegacySession();
+
+  // Session resolution: an explicit name (--session/--resume <name>) wins,
+  // otherwise this project keeps its own "default" session and simply
+  // continues it, so several projects never mix their conversations.
+  const requestedSession = (typeof opts.resume === "string" ? opts.resume : opts.session) || "";
+  const sessionName = requestedSession.trim();
+  const sessionId = sessionName
+    ? resolveSessionId(sessionName) || getOrCreateProjectSession(sessionName)
+    : getOrCreateProjectSession();
 
   const agent = new Agent({
     model,
@@ -195,6 +267,7 @@ async function main(): Promise<void> {
     apiKey,
     maxToolCalls: parseInt(opts.maxToolCalls, 10),
     planMode: opts.plan,
+    sessionId,
   });
 
   const usage = new UsageTracker();
@@ -202,9 +275,33 @@ async function main(): Promise<void> {
 
   let currentModel = model;
 
-  if (opts.resume) {
-    const loaded = agent.load();
-    renderInfo(loaded ? "Resumed previous conversation" : "No saved session found");
+  // Headless one-shot mode: `-p "..."`, or a prompt piped on stdin.
+  let oneShot: string | null = null;
+  if (typeof opts.prompt === "string" && opts.prompt.trim()) {
+    oneShot = opts.prompt.trim();
+  } else if (!process.stdin.isTTY) {
+    const piped = (await readAllStdin()).trim();
+    if (piped) oneShot = piped;
+  }
+
+  if (oneShot) {
+    // A headless run must continue its session exactly like the TUI does,
+    // otherwise `--session feature` would always start from an empty history
+    // and could never build on a previous turn.
+    agent.load();
+    const code = await runHeadless(
+      agent,
+      usage,
+      oneShot,
+      (err) => formatApiError(err, provider, agent.getModel())
+    );
+    process.exit(code);
+  }
+
+  // Continue the session (a fresh project session simply has nothing to load).
+  const loaded = agent.load();
+  if (loaded && !isJsonMode()) {
+    renderInfo(`Session "${agent.getSessionName()}" — ${agent.getHistory().length} messages`);
   }
 
   renderConfigBanner(model, provider);

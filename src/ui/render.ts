@@ -328,6 +328,47 @@ export function renderInfo(msg: string): void {
   console.log(`  ${pc.dim("ℹ")} ${pc.dim(msg)}`);
 }
 
+export interface DonePayload {
+  ok: boolean;
+  exitCode: number;
+  session?: string;
+  usage?: {
+    apiCalls: number;
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+  };
+  cost?: number;
+  error?: string;
+}
+
+/**
+ * Terminal event of a headless run. In JSON mode this closes the NDJSON
+ * stream with a machine-readable `done` line carrying usage and cost, so a
+ * script can branch on the outcome without parsing prose.
+ */
+export function renderDone(payload: DonePayload): void {
+  if (jsonMode) {
+    json({
+      type: "done",
+      ok: payload.ok,
+      exit_code: payload.exitCode,
+      session: payload.session,
+      usage: payload.usage,
+      cost: payload.cost,
+      error: payload.error,
+    });
+    return;
+  }
+  stopShimmer();
+  const status = payload.ok ? pc.green("done") : pc.red(`failed (exit ${payload.exitCode})`);
+  const bits = [`${status}`];
+  if (payload.usage) bits.push(`${payload.usage.totalTokens} tokens`);
+  if (typeof payload.cost === "number" && payload.cost > 0) bits.push(`$${payload.cost.toFixed(4)}`);
+  if (payload.error) bits.push(payload.error);
+  console.log(`  ${pc.dim("◆")} ${bits.join(pc.dim(" · "))}`);
+}
+
 // ─── Streaming support ───────────────────────────────────────────
 
 let streamBuffer = "";
