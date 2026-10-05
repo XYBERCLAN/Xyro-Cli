@@ -153,7 +153,14 @@ export function listSessions(): SessionSummary[] {
     }
   }
 
-  out.sort((a, b) => b.updatedAt - a.updatedAt);
+  // Newest first. Timestamps have millisecond resolution, so two sessions
+  // touched in the same millisecond tie: fall back to creation time and then
+  // to the id so the listing never reorders itself between two calls.
+  out.sort((a, b) => {
+    if (b.updatedAt !== a.updatedAt) return b.updatedAt - a.updatedAt;
+    if (b.createdAt !== a.createdAt) return b.createdAt - a.createdAt;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+  });
   return out;
 }
 

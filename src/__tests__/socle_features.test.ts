@@ -144,9 +144,12 @@ describe("sessions — listing, resolution, mutation", () => {
   beforeEach(setup);
   afterEach(teardown);
 
-  it("lists sessions newest first and flags the current project", () => {
+  it("lists sessions newest first and flags the current project", async () => {
     const a = getOrCreateProjectSession();
     saveSessionMessages(a, [userMsg]);
+    // Timestamps have millisecond resolution: wait so B is unambiguously newer
+    // instead of relying on the ordering of two same-millisecond writes.
+    await new Promise((r) => setTimeout(r, 5));
     process.chdir(PROJECT_B);
     const b = getOrCreateProjectSession();
     saveSessionMessages(b, [userMsg, asstMsg]);
@@ -155,8 +158,21 @@ describe("sessions — listing, resolution, mutation", () => {
     assert.equal(sessions.length, 2);
     assert.equal(sessions[0].id, b, "most recently updated first");
     assert.equal(sessions[0].current, true, "B is the cwd here");
+    assert.equal(sessions[1].id, a);
     assert.equal(sessions[1].current, false);
     assert.equal(sessions[1].messageCount, 1);
+  });
+
+  it("keeps the listing order stable for same-millisecond sessions", async () => {
+    const a = getOrCreateProjectSession();
+    process.chdir(PROJECT_B);
+    const b = getOrCreateProjectSession();
+    saveSessionMessages(a, [userMsg]);
+    saveSessionMessages(b, [userMsg]);
+
+    const first = listSessions().map((s) => s.id);
+    assert.deepEqual(listSessions().map((s) => s.id), first, "ties must not reshuffle");
+    assert.deepEqual([...first].sort(), [a, b].sort(), "both sessions are listed");
   });
 
   it("resolves a session by id, exact name and loose name", () => {
