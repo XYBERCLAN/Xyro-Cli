@@ -5,6 +5,7 @@ name: Auto release
 #   feat: → minor · fix:/perf:/revert: → patch · breaking (type!: / BREAKING CHANGE) → major
 #   docs/chore/test/ci/refactor only → nothing is published
 #   put [release] in a commit message to force a patch, [skip release] to skip
+#   a version that was tagged but never reached npm is published on the next run
 # Users on any older XYRO see a pop-up on their next launch and can /update.
 #
 # Needs the NPM_TOKEN repository secret (an npm automation token). If main is
@@ -26,7 +27,7 @@ jobs:
   release:
     name: Decide, test, publish
     # Our own version commits must not trigger another release
-    if: ${{ !startsWith(github.event.head_commit.message, 'chore(release)') }}
+    if: ${{ !startsWith(github.event.head_commit.message, 'chore(release)') && !contains(github.event.head_commit.message, '[skip release]') }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -44,6 +45,13 @@ jobs:
       - name: Decide the version bump from the commits
         id: bump
         run: |
+          VERSION=$(node -p "require('./package.json').version")
+          # Catch-up: a version that was tagged but never reached npm (say, a bad token) is published first
+          if [ "$VERSION" != "0.0.0" ] && ! npm view "xyro-cli@$VERSION" version >/dev/null 2>&1 && git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
+            echo "bump=catchup" >> "$GITHUB_OUTPUT"
+            echo "Publishing v$VERSION, which was versioned but never published"
+            exit 0
+          fi
           BUMP=$(node scripts/release-bump.mjs)
           echo "bump=$BUMP" >> "$GITHUB_OUTPUT"
           echo "Release type: $BUMP"
@@ -79,8 +87,8 @@ jobs:
         run: npm test
 
       - name: Bump version (commit + tag)
-        if: steps.bump.outputs.bump != 'none'
-        id: version
+        if: steps.bump.outputs.bump != 'none' && steps.bump.outputs.bump != 'catchup'
+        id: bump_version
         env:
           BUMP: ${{ steps.bump.outputs.bump }}
         run: |
@@ -88,14 +96,18 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           case "$BUMP" in patch|minor|major) ;; *) echo "::error::invalid bump: $BUMP"; exit 1 ;; esac
           npm version "$BUMP" -m "chore(release): v%s"
-          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Version to publish
+        if: steps.bump.outputs.bump != 'none'
+        id: version
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
 
       - name: Rebuild with the new version
-        if: steps.bump.outputs.bump != 'none'
+        if: steps.bump.outputs.bump != 'none' && steps.bump.outputs.bump != 'catchup'
         run: npm run build
 
       - name: Push version commit and tag
-        if: steps.bump.outputs.bump != 'none'
+        if: steps.bump.outputs.bump != 'none' && steps.bump.outputs.bump != 'catchup'
         run: git push --follow-tags origin HEAD:${{ github.ref_name }}
 
       - name: Publish to npm
@@ -106,6 +118,8 @@ jobs:
 
       - name: Create GitHub Release
         if: steps.bump.outputs.bump != 'none'
-        run: gh release create "v${{ steps.version.outputs.version }}" --title "XYRO v${{ steps.version.outputs.version }}" --generate-notes
+        run: |
+          TAG="v${{ steps.version.outputs.version }}"
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "XYRO $TAG" --generate-notes
         env:
           GH_TOKEN: ${{ github.token }}
