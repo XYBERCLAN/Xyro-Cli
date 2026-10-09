@@ -30,6 +30,7 @@ import {
   AgentModePicker,
   StatusModal,
   CostModal,
+  PermissionModal,
   AGENT_MODE_DEFS,
   AgentModeDef,
 } from "./overlays.js";
@@ -158,6 +159,7 @@ export class TuiApp {
   private agentPicker = new AgentModePicker();
   private statusModal = new StatusModal();
   private costModal = new CostModal();
+  private permissionModal = new PermissionModal();
   private themePicker = new ThemePicker();
   private themeId = "xyro";
   private onThemeChangeCb: ((id: string) => void) | null = null;
@@ -300,6 +302,7 @@ export class TuiApp {
   }
 
   private getActiveOverlayRows(width: number): RenderLine[] {
+    if (this.permissionModal.isOpen()) return this.permissionModal.render(width);
     if (this.modelPicker.isOpen()) return this.modelPicker.render(width);
     if (this.commandPicker.isOpen()) return this.commandPicker.render(width);
     if (this.agentPicker.isOpen()) return this.agentPicker.render(width);
@@ -310,6 +313,11 @@ export class TuiApp {
     return [];
   }
 
+
+  /** Ask the user to approve a tool call; resolves true on "y". */
+  askPermission(label: string): Promise<boolean> {
+    return this.permissionModal.ask(label);
+  }
 
   setMeta(model: string, provider?: string, agentName?: string): void {
     this.model = model;
@@ -869,6 +877,7 @@ export class TuiApp {
   }
 
   private closeAnyOverlay(): boolean {
+    if (this.permissionModal.isOpen()) { this.permissionModal.close(); return true; }
     if (this.modelPicker.isOpen()) { this.modelPicker.close(); return true; }
     if (this.commandPicker.isOpen()) { this.commandPicker.close(); return true; }
     if (this.agentPicker.isOpen()) { this.agentPicker.close(); return true; }
@@ -919,6 +928,10 @@ export class TuiApp {
     const cp = key.codePointAt(0) || 0;
 
     // Active modals take exclusive keyboard focus
+    if (this.permissionModal.isOpen()) {
+      this.permissionModal.handleKey(key);
+      return;
+    }
     if (this.modelPicker.isOpen()) {
       this.modelPicker.handleKey(key);
       return;

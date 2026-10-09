@@ -4,6 +4,7 @@ import { join, extname } from "node:path";
 import fg from "fast-glob";
 import { IGNORED_DIRS } from "../config/constants.js";
 import { isWindows } from "../config/platform.js";
+import { resolveProjectPath } from "./safety.js";
 
 function createProject(): Project {
   return new Project({
@@ -19,6 +20,8 @@ const SUPPORTED_EXTS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]);
 
 export async function astInspectFile(args: { path: string }): Promise<string> {
   const filePath = args.path;
+  const resolved = resolveProjectPath(filePath);
+  if (!resolved.ok) return resolved.message;
   if (!existsSync(filePath)) {
     return `❌ File not found: ${filePath}`;
   }
@@ -127,6 +130,8 @@ export async function astFindSymbol(args: { symbol: string; path?: string }): Pr
   if (!symbol) return "❌ Symbol name is required";
 
   const dir = args.path || ".";
+  const resolved = resolveProjectPath(dir);
+  if (!resolved.ok) return resolved.message;
   const ignorePatterns = Array.from(IGNORED_DIRS).flatMap((d) => [`**/${d}/**`, `**/${d}`]);
   ignorePatterns.push("**/.*/**");
 
@@ -135,6 +140,7 @@ export async function astFindSymbol(args: { symbol: string; path?: string }): Pr
     dot: false,
     onlyFiles: true,
     ignore: ignorePatterns,
+    followSymbolicLinks: false,
   });
 
   files.sort();

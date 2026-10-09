@@ -50,6 +50,12 @@ const ASK_ALWAYS = new Set([
   "git_stash",
   "git_stash_pop",
   "git_checkout",
+  "git_add",
+  "git_reset",
+  "git_create_branch",
+  "git_pull",
+  "git_fetch",
+  "git_rebase",
 ]);
 
 export function shouldAskPermission(name: string): boolean {
@@ -60,6 +66,11 @@ export function shouldAskPermission(name: string): boolean {
 
 export function canPromptUser(): boolean {
   return Boolean(process.stdin.isTTY) && Boolean(process.stdout.isTTY) && !isJsonMode();
+}
+
+export function describeToolCall(name: string, args: Record<string, unknown>): string {
+  const detail = previewArgs(name, args);
+  return `${name}${detail ? ` (${detail})` : ""}`;
 }
 
 function previewArgs(name: string, args: Record<string, unknown>): string {
@@ -85,12 +96,11 @@ export async function requestPermission(
   if (!shouldAskPermission(name)) return "allow";
   if (!canPromptUser()) return "allow";
 
-  const detail = previewArgs(name, args);
   try {
-    const ok = await confirmAction(`${name}${detail ? ` (${detail})` : ""}`);
+    const ok = await confirmAction(describeToolCall(name, args));
     return ok ? "allow" : "deny";
   } catch {
-    return "allow";
+    return "deny";
   }
 }
 

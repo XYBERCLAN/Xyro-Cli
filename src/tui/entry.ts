@@ -95,6 +95,7 @@ export async function runTuiMode(opts: {
     onAssistantDone: (dur) => tui.addAssistantFooter(dur),
     onToolStart: (name, summary) => tui.addToolRunning(name, summary),
     onToolResult: (name, summary, elapsed, failed) => tui.addToolDone(name, summary, elapsed, failed),
+    requestPermission: (label) => tui.askPermission(label),
   };
   agent.setOutputAdapter(output);
 

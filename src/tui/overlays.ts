@@ -568,3 +568,60 @@ export class CostModal {
     return out;
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 5. TOOL PERMISSION APPROVAL POP-OUT
+// ─────────────────────────────────────────────────────────────────────────────
+
+export class PermissionModal {
+  private request: { label: string; resolve: (ok: boolean) => void } | null = null;
+
+  isOpen(): boolean { return this.request !== null; }
+
+  ask(label: string): Promise<boolean> {
+    // A new request supersedes (and denies) any stale one
+    this.request?.resolve(false);
+    return new Promise((resolve) => {
+      this.request = { label, resolve };
+    });
+  }
+
+  private settle(ok: boolean): void {
+    const req = this.request;
+    this.request = null;
+    req?.resolve(ok);
+  }
+
+  /** Deny and dismiss — used by Esc / closeAnyOverlay. */
+  close(): void { this.settle(false); }
+
+  handleKey(key: string): boolean {
+    if (!this.request) return false;
+    const k = key.toLowerCase();
+    if (k === "y") this.settle(true);
+    else if (k === "n" || key === "\u001b" || (key.codePointAt(0) ?? 0) === 3) this.settle(false);
+    return true;
+  }
+
+  render(termWidth: number): RenderLine[] {
+    if (!this.request) return [];
+    const t = currentTheme();
+    const boxW = Math.max(40, Math.min(78, termWidth - 4));
+    const innerW = boxW - 2;
+    const margin = " ".repeat(Math.max(2, Math.floor((termWidth - boxW) / 2)));
+    const text = ` ${this.request.label}`;
+    const shown = visualWidth(text) > innerW ? text.slice(0, innerW - 1) + "…" : text;
+    const pad = Math.max(0, innerW - visualWidth(shown));
+    return [
+      renderModalTopBorder("Allow this action?", innerW, margin, BRAND_AMBER),
+      line(
+        span(margin),
+        span("│", { fg: BRAND_AMBER }),
+        span(shown, { fg: "#F3F4F6", bg: t.backgroundElement, bold: true }),
+        span(" ".repeat(pad), { bg: t.backgroundElement }),
+        span("│", { fg: BRAND_AMBER })
+      ),
+      renderModalBottomBorder("y = allow   n / Esc = deny", innerW, margin, BRAND_AMBER),
+    ];
+  }
+}

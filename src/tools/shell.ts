@@ -3,19 +3,62 @@ import { SHELL_TIMEOUT_MS } from "../config/constants.js";
 import { getDangerousPatterns } from "../config/platform.js";
 
 /**
+ * Normalize a shell command for safety inspection:
+ * - Collapse repeated whitespace ("rm -rf  /x" === "rm -rf /x")
+ * - Collapse repeated forward slashes ("//tmp" === "/tmp")
+ * - Strip harmless quoting characters for pattern matching
+ * - Lowercase for comparison
+ */
+function normalizeForInspection(cmd: string): string {
+  return cmd
+    .replace(/\s+/g, " ")
+    .replace(/\/+/g, "/")
+    .replace(/\\\s/g, " ")
+    .replace(/["'`]/g, "")
+    .trim()
+    .toLowerCase();
+}
+
+/**
+ * Split a command into its logical statements so that a dangerous command
+ * hidden behind `cd dir && rm -rf x`, `true; rm -rf /`, or `a | b` is still caught.
+ */
+function splitStatements(cmd: string): string[] {
+  return cmd
+    .split(/\s*(?:&&|\|\||;|\||`|\n|\$\()\s*/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+/**
  * Check if a command is dangerous and should be blocked.
  * Checks both Unix and Windows patterns regardless of platform
  * for defense in depth (e.g., WSL on Windows, or cross-platform scripts).
+ *
+ * Normalizes whitespace/slashes, inspects every `&&`/`;`/`|` segment
+ * separately, and matches tokens so `rm -r -f`, `rm --recursive --force`,
+ * `sudo rm -rf x` and `cd /tmp && rm -rf x` are all caught.
  */
-function isDangerousCommand(cmd: string): boolean {
+export function isDangerousCommand(cmd: string): boolean {
   const { unix, windows } = getDangerousPatterns();
-  const allPatterns = [...unix, ...windows];
-  const lowerCmd = cmd.toLowerCase();
-  for (const pattern of allPatterns) {
-    if (lowerCmd.includes(pattern.toLowerCase())) {
-      return true;
+  const normalizedSegments = splitStatements(cmd).map((s) => normalizeForInspection(s));
+  const allNormalized = normalizedSegments.join(" ") + "\n" + normalizeForInspection(cmd);
+
+  // 1) Token-level detection: `rm` with recursive/force flags is always refused.
+  for (const seg of normalizedSegments) {
+    let tokens = seg.split(/\s+/);
+    while (tokens[0] === "sudo" || tokens[0] === "doas" || tokens[0] === "command") tokens = tokens.slice(1);
+    if (tokens[0] === "rm" || tokens[0]?.endsWith("/rm")) {
+      const flags = tokens.slice(1).filter((t) => t.startsWith("-")).join(" ");
+      if (/-[a-z]*[rf]|--recursive|--force/.test(flags)) return true;
     }
   }
+
+  // 2) Substring match (after normalization, so spacing/slash doubling can't hide them).
+  for (const pat of [...unix, ...windows]) {
+    if (allNormalized.includes(pat.toLowerCase())) return true;
+  }
+
   return false;
 }
 

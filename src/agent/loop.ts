@@ -4,6 +4,7 @@ import { Message, AgentOptions } from "./types.js";
 import { HistoryManager } from "./history.js";
 import { createClient, callLLMStream, summarizeHistory, LLMResponse } from "../providers/llm.js";
 import { executeTool } from "../tools/registry.js";
+import { requestPermission, shouldAskPermission, describeToolCall, PERMISSION_DENIED_RESULT } from "../tools/permissions.js";
 import { DEFAULT_MODEL, DEFAULT_MAX_TOOL_CALLS, CONTEXT_WINDOW_WARN_TOKENS, POST_TURN_COMPACT_TOKENS } from "../config/constants.js";
 import {
   renderAssistant,
@@ -31,6 +32,8 @@ export interface AgentOutput {
   onToolStart?(name: string, summary: string): void;
   onToolResult?(name: string, summary: string, elapsed: string, failed: boolean): void;
   onError?(message: string): void;
+  /** Ask the user to approve a mutating/exec tool call (TUI modal). */
+  requestPermission?(label: string): Promise<boolean>;
 }
 
 /** Max characters for tool results before truncation */
@@ -312,6 +315,16 @@ export class Agent {
         const name = tc.function.name;
         const args = JSON.parse(tc.function.arguments);
 
+        // Permission gate: mutating/exec tools need user approval
+        let allowed = true;
+        if (shouldAskPermission(name)) {
+          allowed = this.output
+            ? this.output.requestPermission
+              ? await this.output.requestPermission(describeToolCall(name, args))
+              : false
+            : (await requestPermission(name, args)) === "allow";
+        }
+
         const start = performance.now();
         const argsSummary = JSON.stringify(args).slice(0, 60);
         if (this.output) {
@@ -321,7 +334,7 @@ export class Agent {
           if (useTTY) renderToolRunning(name);
         }
 
-        const result = await executeTool(name, args);
+        const result = allowed ? await executeTool(name, args) : PERMISSION_DENIED_RESULT;
         const elapsed = ((performance.now() - start) / 1000).toFixed(1);
         if (this.output) {
           const failed = result.startsWith("❌") || result.includes("Error");
