@@ -74,6 +74,11 @@ jobs:
           # repository on npmjs.com, and falls back to NPM_TOKEN otherwise
           if npx -y npm@12 publish --provenance --access public --tag "$TAG" 2> publish.err; then exit 0; fi
           cat publish.err
+          # Already published (e.g. approved on npmjs.com while this run started): nothing left to do
+          if grep -q "cannot publish over the previously published" publish.err; then
+            echo "::notice::This version is already on npm."
+            exit 0
+          fi
           if grep -q "E_STAGE_REQUIRED" publish.err; then
             npx -y npm@12 stage publish . --provenance --access public --tag "$TAG"
             VERSION=$(node -p "require('./package.json').version")
