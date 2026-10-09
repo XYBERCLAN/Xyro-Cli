@@ -316,6 +316,9 @@ export async function runTuiMode(opts: {
     });
   };
 
+  // Esc while XYRO works: stop the turn (model call, commands, experts)
+  tui.onStop(() => agent.stop());
+
   tui.onExit(() => {
     void link?.stop();
     agent.save();

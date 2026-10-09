@@ -206,6 +206,8 @@ export class TuiApp {
   private onExpertsTrustCb: (() => void) | null = null;
   private onLearningRequestCb: ((cmd: string) => void) | null = null;
   private onLinkRequestCb: ((text: string) => void) | null = null;
+  private onStopCb: (() => boolean) | null = null;
+  private stopping = false;
   private linkedPeers = 0;
   private homeNotice: { label: string; text: string } | null = null;
   private updatePopup = new UpdateModal();
@@ -478,6 +480,8 @@ export class TuiApp {
   onExpertsTrust(cb: () => void): void { this.onExpertsTrustCb = cb; }
   onLearningRequest(cb: (cmd: string) => void): void { this.onLearningRequestCb = cb; }
   onLinkRequest(cb: (text: string) => void): void { this.onLinkRequestCb = cb; }
+  /** Esc while busy: stop the running turn (callback returns false when nothing was running). */
+  onStop(cb: () => boolean): void { this.onStopCb = cb; }
 
   /** XYRO Link: how many other sessions on this project are connected. */
   setLinkedPeers(n: number): void {
@@ -827,6 +831,7 @@ export class TuiApp {
 
   setBusy(b: boolean): void {
     this.busy = b;
+    this.stopping = false;
     if (b) {
       this.turnStart = Date.now();
       if (this.view.view === "session") {
@@ -850,7 +855,7 @@ export class TuiApp {
   private refreshLiveRows(): void {
     const width = this.chatWidth();
     if (this.thinkingAt >= 0) {
-      this.scroll.setLine(this.thinkingAt, thinkingRow(this.animTick, (Date.now() - this.thinkingSince) / 1000));
+      this.scroll.setLine(this.thinkingAt, thinkingRow(this.animTick, (Date.now() - this.thinkingSince) / 1000, this.stopping));
     }
     for (const tl of this.liveTools) {
       this.scroll.setLine(tl.at, toolRow(tl.name, tl.target, "running", this.animTick, (Date.now() - tl.start) / 1000, "", width));
@@ -1108,7 +1113,13 @@ export class TuiApp {
       const viewH = Math.max(1, height - bottom.length - 1);
       const chat = this.scroll.visible(viewH);
       const status = this.panelStatus();
-      const panel = renderSidePanel({ ...status, todos: this.todos, plan: this.plan, agents: this.agents, roster: this.restingTeam() }, pw, viewH, this.animTick, { reducedMotion: isReducedMotion() });
+      const panel = renderSidePanel(
+        { ...status, todos: this.todos, plan: this.plan, agents: this.agents, roster: this.restingTeam(), workingFor: this.busy ? Date.now() - this.turnStart : undefined },
+        pw,
+        viewH,
+        this.animTick,
+        { reducedMotion: isReducedMotion() }
+      );
       const composed = new ScrollRegion();
       for (let r = 0; r < viewH; r++) {
         composed.append(line(...fitSpans(chat[r]?.spans ?? [], chatW), ...panel.rows[r].spans));
@@ -1476,6 +1487,7 @@ export class TuiApp {
     const tok = this.tokenStats;
     const right: StyledSpan[] = [
       ...(tok && tok.total > 0 ? [span(`${fmtTok(tok.total)} tokens`, { fg: dim }), span("  ·  ", { fg: tint(t.textMuted, 0.5) }), span(tok.cost, { fg: dim }), span("    ")] : []),
+      ...(this.busy ? [span(this.stopping ? "stopping…" : "esc stop", { fg: this.stopping ? t.warning : dim }), span("  ")] : []),
       ...(this.linkedPeers ? [span(`${this.linkedPeers} linked`, { fg: BRAND.ramp[0], bold: true }), span("  ")] : []),
       ...(this.updateInfo?.updateAvailable ? [span(`update v${this.updateInfo.latest}`, { fg: BRAND.lemon, bold: true }), span("  ")] : []),
       span(`v${this.version} `, { fg: tint(t.textMuted, 0.6) }),
@@ -1595,6 +1607,14 @@ export class TuiApp {
     // Escape: close any open modal or clear input
     if (key === "\u001b") {
       if (this.closeAnyOverlay()) return;
+      // While XYRO works, Esc stops the turn (the typed draft is kept)
+      if (this.busy) {
+        if (!this.stopping && this.onStopCb?.()) {
+          this.stopping = true;
+          if (this.thinkingAt < 0) this.addNotice("Stopping…", "warn");
+        }
+        return;
+      }
       if (this.selection.hasSelection() || this.selection.isSelecting()) {
         this.selection.clear();
         this.render();

@@ -1,3 +1,4 @@
+import { beginTurn, cancelTurn, isStopped } from "./cancel.js";
 import { recordEvent, classifyMessage, reflect, reflectionDue, formatReflection } from "./learning.js";
 import { pickExpert } from "../agents/router.js";
 import { listIntents, runIntents, formatIntentResults } from "./intents.js";
@@ -427,7 +428,9 @@ export class Agent {
     this.output?.onUserMessage?.(input);
     this.observeUserMessage(input);
 
+    beginTurn(); // Esc stops everything this turn starts
     let toolCallCount = 0;
+    let partial = ""; // text streamed so far in the current model call (kept if the user stops)
     let lastToolRun: { sig: string; run: number } | null = null;
     let doomDetected = false;
     // Intent guard: re-check saved requirements once per turn after file changes
@@ -439,6 +442,10 @@ export class Agent {
     const turnStart = Date.now();
 
     while (true) {
+      if (isStopped()) {
+        this.finishStopped("", turnStart);
+        break;
+      }
       // Auto-compact: check if context is getting too large
       const msgs = this.history.getAll();
       const estimatedTokens = estimateTokens(msgs);
@@ -474,6 +481,7 @@ export class Agent {
             this.model,
             msgs,
             (chunk) => {
+              partial += chunk;
               this.output?.onAssistantText?.(chunk);
             },
             this.history.isPlanMode() ? getPlanModeToolDefinitions() : undefined,
@@ -496,12 +504,17 @@ export class Agent {
           );
         }
       } catch (err) {
+        if (isStopped()) {
+          this.finishStopped(partial, turnStart);
+          break;
+        }
         if (this.output?.onError) {
           this.output.onError(err instanceof Error ? err.message : String(err));
           break;
         }
         throw err;
       }
+      partial = "";
       const llmElapsed = ((performance.now() - llmStart) / 1000).toFixed(1);
 
       this.history.emitResponse(response);
@@ -573,6 +586,11 @@ export class Agent {
       }
 
       for (const tc of response.tool_calls) {
+        // Stopped mid-way: every remaining call still gets a result, so the conversation stays valid
+        if (isStopped()) {
+          this.history.add({ role: "tool", tool_call_id: tc.id, content: "⛔ Not run: the user stopped this turn." });
+          continue;
+        }
         toolCallCount++;
         const name = tc.function.name;
         let args: Record<string, unknown>;
@@ -639,6 +657,11 @@ export class Agent {
         });
       }
 
+      if (isStopped()) {
+        this.finishStopped("", turnStart);
+        break;
+      }
+
       // The model explicitly ended its turn
       if (response.tool_calls.some((tc) => END_TURN_TOOL_NAMES.has(tc.function.name))) {
         this.output?.onAssistantDone?.((Date.now() - turnStart) / 1000);
@@ -673,6 +696,18 @@ export class Agent {
   }
 
   private lastTurn: { request: string; tools: string[]; changedFiles: boolean } | null = null;
+
+  /** Esc: stop whatever this turn is doing. Returns false if nothing was running. */
+  stop(): boolean {
+    return cancelTurn();
+  }
+
+  /** Close a stopped turn: keep what was said, mark it stopped, hand control back. */
+  private finishStopped(partial: string, turnStart: number): void {
+    this.history.add({ role: "assistant", content: `${partial ? `${partial}\n\n` : ""}(stopped by the user)` });
+    this.output?.onNotice?.("Stopped. Tell XYRO how to continue.", "warn");
+    this.output?.onAssistantDone?.((Date.now() - turnStart) / 1000);
+  }
   private reflecting: Promise<string> | null = null;
 
   /** Learning: what the user asks for, and how they react to the previous turn. */

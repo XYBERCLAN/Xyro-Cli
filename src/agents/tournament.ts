@@ -15,6 +15,7 @@
 //     they can iterate until it passes; file edits stay inside their worktree
 //   - results are remembered: models that win get picked first next time
 
+import { isStopped } from "../agent/cancel.js";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { execa } from "execa";
@@ -212,6 +213,11 @@ export async function tournament(args: TournamentArgs): Promise<string> {
       )
     )
   );
+
+  if (isStopped()) {
+    for (const t of trees) await removeWorktree(t, root);
+    return "⛔ Tournament stopped by the user. No changes were merged.";
+  }
 
   // Judge one at a time: checks may be heavy and share caches
   const scores: Score[] = [];

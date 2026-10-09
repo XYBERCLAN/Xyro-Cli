@@ -1,3 +1,4 @@
+import { turnSignal } from "../agent/cancel.js";
 import { execa } from "execa";
 import { SHELL_TIMEOUT_MS } from "../config/constants.js";
 import { getDangerousPatterns } from "../config/platform.js";
@@ -75,6 +76,7 @@ export async function runCommand(args: { command: string }): Promise<string> {
       shell: true,
       cwd: workspaceRoot(),
       timeout: SHELL_TIMEOUT_MS,
+      cancelSignal: turnSignal(),
       reject: false,
       maxBuffer: 10 * 1024 * 1024,
     })(cmd);

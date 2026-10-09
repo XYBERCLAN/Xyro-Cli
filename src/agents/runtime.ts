@@ -1,6 +1,7 @@
 // Expert runtime — runs one specialist on one task with its own context,
 // tools, skills and plugins, under the same approval rules as XYRO itself.
 
+import { isStopped } from "../agent/cancel.js";
 import OpenAI from "openai";
 import { createClient, callLLMStream } from "../providers/llm.js";
 import { executeTool, getAllToolDefinitions } from "../tools/registry.js";
@@ -234,6 +235,10 @@ export async function runExpert(expert: Expert, task: string, opts: RunExpertOpt
   let error = "";
 
   while (activity.step < expert.maxSteps && Date.now() < deadline) {
+    if (isStopped()) {
+      error = "stopped by the user";
+      break;
+    }
     if (base.tokens >= budget) {
       base.budgetHit = true;
       break;
@@ -263,6 +268,10 @@ export async function runExpert(expert: Expert, task: string, opts: RunExpertOpt
     }
 
     for (const tc of response.tool_calls) {
+      if (isStopped()) {
+        messages.push({ role: "tool", content: "⛔ Not run: the user stopped this turn.", tool_call_id: tc.id } as never);
+        continue;
+      }
       base.toolCalls++;
       activity.tool = tc.function.name;
       emitAgentActivity(activity);

@@ -1,3 +1,4 @@
+import { turnSignal, StoppedByUser } from "../agent/cancel.js";
 import type { Candidate } from "./pool.js";
 import { shouldShield, redactMessages, restoreResponse, restoreText, restoringStream } from "./privacy.js";
 import OpenAI from "openai";
@@ -182,6 +183,8 @@ export async function withRetry<T>(fn: () => Promise<T>, maxRetries = 4, opts: {
     try {
       return await fn();
     } catch (err: unknown) {
+      // The user pressed Esc: never retry, never wait
+      if (turnSignal().aborted) throw new StoppedByUser();
       lastError = err;
       const isRateLimit = isRateLimitError(err);
       const isNetwork = isTransientNetworkError(err);
@@ -192,7 +195,8 @@ export async function withRetry<T>(fn: () => Promise<T>, maxRetries = 4, opts: {
         const waitMs = extractRetryDelay(err, attempt);
         const reason = isRateLimit ? "rate limited" : "connection issue";
         retryReporter(`${reason}, waiting ${(waitMs / 1000).toFixed(1)}s (retry ${attempt + 1}/${maxRetries})...`);
-        await sleep(waitMs);
+        await stoppableSleep(waitMs);
+        if (turnSignal().aborted) throw new StoppedByUser();
         continue;
       }
       throw err;
@@ -200,6 +204,21 @@ export async function withRetry<T>(fn: () => Promise<T>, maxRetries = 4, opts: {
   }
 
   throw lastError;
+}
+
+/** A wait that ends early when the user stops the turn. */
+function stoppableSleep(ms: number): Promise<void> {
+  const signal = turnSignal();
+  return new Promise((resolve) => {
+    if (signal.aborted) return resolve();
+    const timer = setTimeout(done, ms);
+    function done() {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    }
+    signal.addEventListener("abort", done, { once: true });
+  });
 }
 
 export function isAnthropicModel(model: string): boolean {
@@ -347,6 +366,7 @@ export async function callLLM(
       const out = { content: msg.content, tool_calls: msg.tool_calls || [], usage: response.usage || null, actualModel: c.model, providerId: c.providerId };
       return shield ? restoreResponse(out) : out;
     } catch (err: unknown) {
+      if (turnSignal().aborted) throw new StoppedByUser();
       lastError = err;
       if (isRateLimitError(err)) {
         noteRateLimit(c.providerId, err);
@@ -431,6 +451,7 @@ export async function callLLMStream(
       noteSuccess(c.providerId, u?.total_tokens ?? 0);
       return { ...res, actualModel: c.model, providerId: c.providerId };
     } catch (err: unknown) {
+      if (turnSignal().aborted) throw new StoppedByUser();
       lastError = err;
       if (isRateLimitError(err)) {
         noteRateLimit(c.providerId, err);
@@ -581,8 +602,11 @@ async function streamOnce(
   // An explicit empty list means "no tools" (some providers reject `tools: []`)
   const tools = toolsOverride ?? getToolDefinitions();
   const started = Date.now();
+  // Stop when the user presses Esc, or when another hedged request won
+  const signal = ctl.signal ? AbortSignal.any([ctl.signal, turnSignal()]) : turnSignal();
   const stream = await withRetry(
     () => {
+      if (turnSignal().aborted) throw new StoppedByUser();
       if (ctl.signal?.aborted) throw new Error("aborted: another provider answered first");
       return client.chat.completions.create(
         {
@@ -592,7 +616,7 @@ async function streamOnce(
           stream: true,
           max_tokens: 4096,
         },
-        ctl.signal ? { signal: ctl.signal } : undefined
+        { signal }
       );
     },
     4,
@@ -652,6 +676,10 @@ async function streamOnce(
     }
 
   }
+
+  // An aborted stream can end quietly: it is a stop, not a complete answer
+  if (turnSignal().aborted) throw new StoppedByUser();
+  if (ctl.signal?.aborted) throw new Error("aborted: another provider answered first");
 
   const toolCalls = Array.from(toolCallsMap.values());
 

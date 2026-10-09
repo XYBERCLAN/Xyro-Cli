@@ -34,6 +34,28 @@ export interface MascotRenderOptions {
   reveal?: number;
   /** Force the blink frame (intro "smile at the user" beat) */
   blink?: boolean;
+  /** 0..1 progress of waking up (eyes closed → flash open → settle); undefined = awake */
+  wake?: number;
+  /** While working: -1 looks left, 1 looks right (the other eye dims) */
+  glance?: -1 | 0 | 1;
+}
+
+/** Wake-up length for the main mascot, in ms. */
+export const MASCOT_WAKE_MS = 900;
+
+/** Where XYRO looks while it works: centre, left, centre, right, in ~1s steps. */
+export function workGlance(tick: number): -1 | 0 | 1 {
+  const g = Math.floor(tick / 12) % 4;
+  return g === 1 ? -1 : g === 3 ? 1 : 0;
+}
+
+/**
+ * Hop while waking (in the last part of the wake-up) and, while working, a
+ * short hop every few seconds. The panel moves the drawing up one row.
+ */
+export function mascotHop(tick: number, mood: MascotMood, wake?: number): boolean {
+  if (wake !== undefined && wake < 1) return wake > 0.6 && wake < 0.85;
+  return mood === "thinking" && tick % 40 < 3;
 }
 
 /** Render one frame of the mascot at a given traced size. */
@@ -44,7 +66,9 @@ export function mascotRows(
   reducedMotion = false,
   opts: MascotRenderOptions = {}
 ): RenderLine[] {
-  const blink = opts.blink ?? (!reducedMotion && isBlinking(tick, mood));
+  const waking = !reducedMotion && opts.wake !== undefined && opts.wake < 1;
+  // Waking: eyes shut at first, then they open with a bright flash
+  const blink = waking ? opts.wake! < 0.35 : opts.blink ?? (!reducedMotion && isBlinking(tick, mood));
   const reveal = opts.reveal ?? 1;
   const frame = blink ? art.blink : art.open;
   const mask = blink ? art.blinkMask : art.mask;
@@ -62,6 +86,16 @@ export function mascotRows(
         ? COLORS.glowHi
         : COLORS.glowLo;
 
+  // The lowest glowing row is the mouth: glances move the eyes only
+  const mouthRow = mask.reduce((last, row, i) => (row.includes("b") ? i : last), -1);
+  const glowFor = (c: number, r: number): string => {
+    if (waking) return opts.wake! < 0.35 ? COLORS.glowLo : opts.wake! < 0.6 ? "#FFFFFF" : glow;
+    const g = reducedMotion ? 0 : opts.glance ?? 0;
+    if (!g || r === mouthRow) return glow;
+    const left = c < art.cols / 2;
+    return (g < 0) === left ? COLORS.glowHi : COLORS.glowLo; // the eye on the side it looks at stays bright
+  };
+
   // Emblem light: a 3-column band gliding left → right across the X and ring
   const step = mood === "thinking" ? 1 : 3;
   const lightCol = reducedMotion ? -99 : Math.floor(tick / step) % (art.cols + 20);
@@ -72,7 +106,7 @@ export function mascotRows(
     Array.from(row).forEach((raw, c) => {
       const ch = reveal >= 1 ? raw : revealDots(raw, r, c, reveal);
       const kind = kinds[c];
-      const fg = kind === "b" ? glow : kind === "x" && Math.abs(c - lightCol) <= 1 ? COLORS.emblemLight : COLORS.outline;
+      const fg = kind === "b" ? glowFor(c, r) : kind === "x" && Math.abs(c - lightCol) <= 1 ? COLORS.emblemLight : COLORS.outline;
       const bold = kind === "b";
       const prev = spans[spans.length - 1];
       if (prev && prev.fg === fg && prev.bold === bold) prev.text += ch;

@@ -3,7 +3,7 @@
 
 import { currentTheme, tint } from "../ui/theme.js";
 import { RenderLine, StyledSpan, span, line, wrapSpans, visualWidth } from "./core.js";
-import { mascotRows, pickMascot, MascotMood } from "./mascot.js";
+import { mascotRows, pickMascot, MascotMood, MASCOT_WAKE_MS, workGlance, mascotHop } from "./mascot.js";
 import { BRAND, shimmerSpans, spinnerGlyph } from "./components.js";
 import { botsFor, teamGrid } from "./expert-bots.js";
 import type { TodoView, PlanRequest, AgentActivity } from "../agent/ui-bridge.js";
@@ -25,6 +25,8 @@ export interface PanelState {
   agents?: AgentActivity[];
   /** Teammates who doze in the free space when nobody is working */
   roster?: { name: string; title: string }[];
+  /** ms since XYRO started working on this turn (drives its wake-up) */
+  workingFor?: number;
 }
 
 /** Clickable region, in panel-local coordinates (row, [col0, col1)). */
@@ -77,8 +79,13 @@ export function renderSidePanel(
   if (art) {
     const mood: MascotMood = state.mood;
     const pad = " ".repeat(Math.max(0, Math.floor((innerW - art.cols) / 2)));
-    blank();
-    for (const r of mascotRows(art, tick, mood)) body.push([span(pad), ...r.spans]);
+    const rm = Boolean(opts.reducedMotion);
+    const wake = mood === "thinking" && state.workingFor !== undefined && state.workingFor < MASCOT_WAKE_MS ? state.workingFor / MASCOT_WAKE_MS : undefined;
+    const hop = !rm && mascotHop(tick, mood, wake);
+    // A hop moves the drawing up one row; the spare row goes underneath, so the panel never jumps
+    if (!hop) blank();
+    for (const r of mascotRows(art, tick, mood, rm, { wake, glance: mood === "thinking" && wake === undefined ? workGlance(tick) : 0 })) body.push([span(pad), ...r.spans]);
+    if (hop) blank();
   }
   const color = moodColor(state.mood);
   const busy = state.mood === "thinking" || state.mood === "asking";

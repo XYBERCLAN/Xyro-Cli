@@ -18,6 +18,7 @@
 // Proposals and the decision are posted to the team board so everyone who
 // works on the request afterwards sees them.
 
+import { isStopped } from "../agent/cancel.js";
 import { getExpert, Expert } from "./experts.js";
 import { routeTask } from "./router.js";
 import { runExpert } from "./runtime.js";
@@ -100,6 +101,7 @@ export async function council(args: CouncilArgs): Promise<string> {
       )
     )
   );
+  if (isStopped()) return "⛔ Council stopped by the user during proposals.";
   proposals.forEach((p, i) => postNote(members[i].title, `Proposal: ${p.output.slice(0, 600)}`));
   const proposalText = proposals.map((p, i) => `### ${members[i].name} proposes\n${p.output.slice(0, 2500)}`).join("\n\n");
 
@@ -113,6 +115,7 @@ export async function council(args: CouncilArgs): Promise<string> {
       )
     )
   );
+  if (isStopped()) return "⛔ Council stopped by the user during the discussion.";
   const { winner, votes } = tallyVotes(
     members.map((m) => m.name),
     ballots.map((b) => b.output)
@@ -142,7 +145,8 @@ export async function council(args: CouncilArgs): Promise<string> {
   ];
 
   // 4. EXECUTE — the decided assignments, as one team, with the decision as context
-  if (args.execute) {
+  if (args.execute && isStopped()) sections.push("Not executed: stopped by the user.");
+  else if (args.execute) {
     if (!assignments.length) sections.push("Not executed: the decision had no ASSIGNMENTS lines.");
     else {
       const context = `The council decided:\n${decision.output.slice(0, 3000)}`;

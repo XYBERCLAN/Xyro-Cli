@@ -7,6 +7,7 @@
  * context, tools, skills and plugins, and returns one combined report.
  */
 
+import { isStopped } from "../agent/cancel.js";
 import { getExpert, getExperts } from "../agents/experts.js";
 import { pickExpert } from "../agents/router.js";
 import { runExpert, ExpertReport } from "../agents/runtime.js";
@@ -65,6 +66,8 @@ async function runOne(job: DelegateArgs, depth = 0, history: string[] = []): Pro
   const report = await runExpert(expert, task, { context, skills: job.skills });
   const lines = [`${header(report, expert.title, why)}\n${report.output}`];
   let ok = report.ok;
+
+  if (isStopped()) return `${lines.join("\n\n")}\n\n⛔ Stopped by the user.`;
 
   // Immune check: an independent verifier confirms work that actually changed files
   if (ok && report.writes > 0 && job.verify !== false) {
@@ -159,6 +162,7 @@ export async function heal(args: { command?: string; max_rounds?: number }): Pro
   const log: string[] = [];
   let result = await runTests({ command: args.command });
   for (let round = 1; round <= rounds; round++) {
+    if (isStopped()) return `⛔ Healing stopped by the user after ${round - 1} round${round === 2 ? "" : "s"}.\n${log.join("\n\n")}`;
     if (result.startsWith("✅")) {
       return `${round === 1 ? "Tests already pass." : `Healed in ${round - 1} round${round === 2 ? "" : "s"}.`}\n${result.split("\n").slice(0, 3).join("\n")}${log.length ? `\n\n${log.join("\n\n")}` : ""}`;
     }

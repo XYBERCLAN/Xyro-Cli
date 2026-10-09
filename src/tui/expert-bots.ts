@@ -22,6 +22,58 @@ export interface Bot {
   state: BotState;
   /** Workers show their lead's emblem in lower case */
   worker?: boolean;
+  /** ms since this expert was given its task (drives the wake-up) */
+  since?: number;
+}
+
+/** How long the wake-up takes before the work animation starts. */
+export const WAKE_MS = 1200;
+
+type WorkStyle = "build" | "inspect" | "hunt" | "write" | "plan" | "ship";
+
+const STYLE: Record<string, WorkStyle> = {
+  builder: "build", refactorer: "build", frontend: "build", api: "build", database: "build", migrator: "build",
+  designer: "build", performance: "build", healer: "build",
+  scout: "inspect", researcher: "inspect", reviewer: "inspect", security: "inspect", verifier: "inspect", sentinel: "inspect",
+  tester: "hunt", debugger: "hunt",
+  docs: "write", explainer: "write", "memory-keeper": "write",
+  architect: "plan", critic: "plan",
+  git: "ship", devops: "ship", dependencies: "ship",
+};
+
+export function workStyle(name: string): WorkStyle {
+  return STYLE[name.replace(/-worker$/, "")] ?? "build";
+}
+
+const pad7 = (s: string) => (s + "       ").slice(0, 7);
+
+/**
+ * One beat of the role's work animation: what floats above the head, and
+ * where the eyes look (they follow the action).
+ */
+export function workBeat(style: WorkStyle, beat: number): { top: string; eyes: string } {
+  const b = beat % 4;
+  const look = (p: number) => (p <= 1 ? "● ●  " : p >= 4 ? "  ● ●" : " ● ● ");
+  switch (style) {
+    case "build":
+      return { top: pad7(["  ·*·", " * · *", "·  *", " ·* ·"][b]), eyes: " ● ● " };
+    case "inspect": {
+      const p = [0, 2, 4, 2][b];
+      return { top: pad7(" ".repeat(p) + "o─"), eyes: look(p) };
+    }
+    case "hunt": {
+      const p = [1, 2, 3, 3][b];
+      return { top: pad7(" ".repeat(p) + (b === 3 ? "x" : "~")), eyes: b === 3 ? " ^ ^ " : look(p + 1) };
+    }
+    case "write":
+      return { top: pad7(" " + "─".repeat(b + 1)), eyes: " . . " };
+    case "plan":
+      return { top: pad7(["   ?", "   ?", "   !", "   ✦"][b]), eyes: b >= 2 ? " ● ● " : "● ●  " };
+    case "ship": {
+      const p = [0, 1, 2, 3][b];
+      return { top: pad7(" ".repeat(p) + "→"), eyes: look(p + 1) };
+    }
+  }
 }
 
 export const BOT_W = 9;
@@ -59,11 +111,17 @@ export function botFrame(bot: Bot, tick: number, seed = 0): StyledSpan[][] {
   const eyeColor = bot.state === "idle" ? tint(t.text, 0.5) : "#FFFFFF";
   const local = tick + seed * 7; // bots don't move in lockstep
 
+  // Waking up: dozing → eyes pop open "!" → a happy hop. Then work.
+  const since = bot.since ?? WAKE_MS;
+  const waking = bot.state === "running" && since < WAKE_MS;
+  const phase = since < WAKE_MS * 0.33 ? "doze" : since < WAKE_MS * 0.66 ? "pop" : "hop";
+  const work = workBeat(workStyle(bot.name), Math.floor(local / 4));
+
   // eyes (inner width 5)
   let eyes = " ● ● ";
-  if (bot.state === "running") {
-    const look = Math.floor(local / 9) % 4; // centre, left, centre, right
-    eyes = look === 1 ? "● ●  " : look === 3 ? "  ● ●" : " ● ● ";
+  if (waking) eyes = phase === "doze" ? " - - " : phase === "pop" ? " O O " : " ^ ^ ";
+  else if (bot.state === "running") {
+    eyes = work.eyes;
     if (local % 37 === 0 || local % 37 === 1) eyes = " ─ ─ ";
   } else if (bot.state === "done") eyes = " ^ ^ ";
   else if (bot.state === "failed") eyes = " x x ";
@@ -73,7 +131,8 @@ export function botFrame(bot: Bot, tick: number, seed = 0): StyledSpan[][] {
 
   // antenna / thought row
   let top = "       ";
-  if (bot.state === "running") top = `   ${["·", "•", "✦", "•"][Math.floor(local / 3) % 4]}   `;
+  if (waking) top = phase === "doze" ? "    z  " : phase === "pop" ? "   !   " : "   ✦   ";
+  else if (bot.state === "running") top = work.top;
   else if (bot.state === "done") top = "   ✓   ";
   else if (bot.state === "idle") {
     const z = Math.floor(local / 6) % 4;
@@ -87,8 +146,8 @@ export function botFrame(bot: Bot, tick: number, seed = 0): StyledSpan[][] {
     [span(mouth, { fg: color })],
   ];
 
-  // Bob: a working bot hops up every other beat, leaving a faint shadow
-  const up = bot.state === "running" && Math.floor(local / 5) % 2 === 0;
+  // Bob: a working bot hops up every other beat (and once when it wakes), leaving a faint shadow
+  const up = waking ? phase === "hop" : bot.state === "running" && Math.floor(local / 5) % 2 === 0;
   const area: StyledSpan[][] = up ? [...sprite, [span("  ───  ", { fg: tint(t.border, 0.5) })]] : [[span("       ")], ...sprite];
   const label = (bot.worker ? `·${bot.title.replace(/ worker.*$/i, "")}` : bot.title).toLowerCase().slice(0, BOT_W);
   const pad = Math.floor((BOT_W - label.length) / 2);
@@ -124,13 +183,13 @@ export function teamGrid(bots: Bot[], width: number, tick: number, maxRows: numb
 }
 
 /** Who to draw: this request's experts (working first), else a few dozing teammates. */
-export function botsFor(agents: { expert: string; title: string; status: "running" | "done" | "failed" }[], roster: { name: string; title: string }[]): Bot[] {
+export function botsFor(agents: { expert: string; title: string; status: "running" | "done" | "failed"; startedAt?: number }[], roster: { name: string; title: string }[], now = Date.now()): Bot[] {
   if (agents.length) {
     const latest = new Map<string, Bot>();
     for (const a of agents) {
       const worker = a.expert.endsWith("-worker");
       const key = worker ? `${a.expert}:${a.title}` : a.expert;
-      latest.set(key, { name: a.expert, title: worker ? a.title : a.expert, state: a.status, worker });
+      latest.set(key, { name: a.expert, title: worker ? a.title : a.expert, state: a.status, worker, since: a.startedAt !== undefined ? now - a.startedAt : undefined });
     }
     const order = { running: 0, failed: 1, done: 2, idle: 3 };
     return [...latest.values()].sort((x, y) => order[x.state] - order[y.state]);

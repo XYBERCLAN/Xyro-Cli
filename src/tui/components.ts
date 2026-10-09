@@ -143,14 +143,15 @@ export function assistantText(markdown: string, contentWidth = 70): RenderLine[]
 }
 
 /** "⠋ Thinking…" live row with a shimmer, shown until the first output. */
-export function thinkingRow(tick: number, elapsedSec: number): RenderLine {
+export function thinkingRow(tick: number, elapsedSec: number, stopping = false): RenderLine {
   const t = currentTheme();
   const spans: StyledSpan[] = [
     span("   "),
-    span(spinnerGlyph(tick) + " ", { fg: BRAND.ramp[0] }),
-    ...shimmerSpans("Thinking…", tick, tint(t.textMuted, 0.95), "#FFFFFF"),
+    span(spinnerGlyph(tick) + " ", { fg: stopping ? t.warning : BRAND.ramp[0] }),
+    ...shimmerSpans(stopping ? "Stopping…" : "Thinking…", tick, tint(stopping ? t.warning : t.textMuted, 0.95), "#FFFFFF"),
   ];
   if (elapsedSec >= 1) spans.push(span(`  ${formatDuration(elapsedSec)}`, { fg: tint(t.textMuted, 0.6) }));
+  if (!stopping) spans.push(span("  ·  esc to stop", { fg: tint(t.textMuted, 0.45) }));
   return line(...spans);
 }
 

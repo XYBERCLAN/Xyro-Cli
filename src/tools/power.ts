@@ -4,6 +4,7 @@
 //   run_tests   — detect the runner, run it, return structured pass/fail results
 //   diagnostics — typecheck / lint errors as a structured list
 
+import { turnSignal } from "../agent/cancel.js";
 import { readFileSync, writeFileSync, existsSync, statSync } from "node:fs";
 import { join, extname, relative } from "node:path";
 import fg from "fast-glob";
@@ -256,7 +257,7 @@ export async function runTests(args: { command?: string; filter?: string }): Pro
   if (isDangerousCommand(command)) return "❌ Refused to run a dangerous command";
 
   const started = Date.now();
-  const res = await execa(command, { shell: true, cwd: workspaceRoot(), reject: false, timeout: 10 * 60_000, all: true, env: { ...process.env, CI: "1", FORCE_COLOR: "0", NO_COLOR: "1" } });
+  const res = await execa(command, { shell: true, cwd: workspaceRoot(), reject: false, timeout: 10 * 60_000, all: true, cancelSignal: turnSignal(), env: { ...process.env, CI: "1", FORCE_COLOR: "0", NO_COLOR: "1" } });
   const out = String(res.all ?? "").replace(/\x1b\[[0-9;]*m/g, "");
   const s = parseTestOutput(out, detected?.runner ?? "");
   const secs = ((Date.now() - started) / 1000).toFixed(1);
