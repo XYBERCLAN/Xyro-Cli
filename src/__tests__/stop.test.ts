@@ -26,7 +26,7 @@ before(async () => {
         await new Promise((r) => setTimeout(r, 4000)); // the rest would take a while
         send({ content: " and the rest." });
       } else if (mode === "long-command" && last.role === "user") {
-        send({ role: "assistant", tool_calls: [{ index: 0, id: "c1", type: "function", function: { name: "run_command", arguments: JSON.stringify({ command: "sleep 30" }) } }, { index: 1, id: "c2", type: "function", function: { name: "read_file", arguments: JSON.stringify({ path: "a.txt" }) } }] });
+        send({ role: "assistant", tool_calls: [{ index: 0, id: "c1", type: "function", function: { name: "run_command", arguments: JSON.stringify({ command: "sleep 30; echo done" }) } }, { index: 1, id: "c2", type: "function", function: { name: "read_file", arguments: JSON.stringify({ path: "a.txt" }) } }] });
       } else {
         send({ role: "assistant", content: "Fresh answer." });
       }

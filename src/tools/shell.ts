@@ -1,4 +1,4 @@
-import { turnSignal } from "../agent/cancel.js";
+import { runShell } from "./proc.js";
 import { execa } from "execa";
 import { SHELL_TIMEOUT_MS } from "../config/constants.js";
 import { getDangerousPatterns } from "../config/platform.js";
@@ -72,14 +72,11 @@ export async function runCommand(args: { command: string }): Promise<string> {
   }
 
   try {
-    const res = await execa({
-      shell: true,
-      cwd: workspaceRoot(),
-      timeout: SHELL_TIMEOUT_MS,
-      cancelSignal: turnSignal(),
-      reject: false,
-      maxBuffer: 10 * 1024 * 1024,
-    })(cmd);
+    const res = await runShell(cmd, { cwd: workspaceRoot(), timeoutMs: SHELL_TIMEOUT_MS });
+
+    if (res.stopped) {
+      return "⛔ Command stopped by the user";
+    }
 
     if (res.timedOut) {
       return "❌ Command timed out after 30s";

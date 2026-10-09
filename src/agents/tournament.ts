@@ -27,6 +27,7 @@ import { runInWorkspace, workspaceRoot } from "../agent/workspace.js";
 import { listIntents, runIntents } from "../agent/intents.js";
 import { detectTestCommand, parseTestOutput, diagnostics } from "../tools/power.js";
 import { isDangerousCommand } from "../tools/shell.js";
+import { runShell } from "../tools/proc.js";
 import { recordSkillOutcome } from "./skill-stats.js";
 import { pickContestants, recordTournament, Contestant } from "../providers/pool.js";
 
@@ -117,7 +118,7 @@ async function judge(wt: Worktree, c: Contestant, root: string, check: string | 
   }
 
   if (check) {
-    const res = await execa(check, { shell: true, cwd: wt.path, reject: false, timeout: CHECK_TIMEOUT_MS, all: true, env: { ...process.env, CI: "1", FORCE_COLOR: "0", NO_COLOR: "1" } });
+    const res = await runShell(check, { cwd: wt.path, timeoutMs: CHECK_TIMEOUT_MS, env: { CI: "1", FORCE_COLOR: "0", NO_COLOR: "1" } });
     const out = String(res.all ?? "").replace(/\x1b\[[0-9;]*m/g, "");
     const t = parseTestOutput(out, detectTestCommand(wt.path)?.runner ?? "");
     score.checkPassed = res.exitCode === 0 && !res.timedOut;
