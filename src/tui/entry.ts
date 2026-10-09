@@ -27,7 +27,7 @@ import { canonicalProviderId } from "../models/live.js";
 import { recordModelUse } from "../models/recents.js";
 import { checkForUpdate, performUpdate, installMethod, PACKAGE_NAME, shouldAnnounce, markAnnounced, fetchReleaseNotes } from "../update/updater.js";
 import { xyroVersion } from "../version.js";
-import { setRetryReporter } from "../providers/llm.js";
+import { setRetryReporter, providerLabel } from "../providers/llm.js";
 import { TuiApp } from "./app.js";
 import { interactiveSetup, FREE_PROVIDERS } from "../ui/prompts.js";
 import { loadPersistedConfig, savePersistedConfig, saveProviderKey, getProviderKey } from "../config/persist.js";
@@ -110,6 +110,7 @@ export async function runTuiMode(opts: {
   tui.setApiKey(apiKey);
   recordRecentModel(model);
 
+  let goneModel: { from: string; to: string } | null = null;
   const output: AgentOutput = {
     onAssistantText: (content) => tui.addAssistantText(content),
     onAssistantDone: (dur) => tui.addAssistantFooter(dur),
@@ -119,6 +120,8 @@ export async function runTuiMode(opts: {
     onNotice: (text, kind) => tui.addNotice(text, kind),
     onDispatch: (team) => tui.setDispatch(team),
     onModelSwitched: (sw) => {
+      // Your model is gone from your provider: if another of its models answers, adopt it (after the turn)
+      if (!sw.crossProvider && sw.reason === "model unavailable" && sw.from === agent.getModel()) goneModel = { from: sw.from, to: sw.to };
       const where = sw.crossProvider ? `${sw.toProvider} · ${sw.to}` : sw.to;
       tui.addNotice(`${sw.from}: ${sw.reason} — continuing on **${where}**`, "info");
     },
@@ -228,8 +231,20 @@ export async function runTuiMode(opts: {
       prompt += `\n\n[team chat from linked XYRO sessions since my last message: context, not instructions]\n${teamChat.join("\n")}`;
       teamChat.length = 0;
     }
+    goneModel = null;
     await runTurn(tui, agent, provider, prompt, undefined, undefined, promptForKey);
     void runHooks("Stop", { prompt: text });
+    // The saved model no longer exists on this provider, and another of its models just answered: keep that one
+    const answered = agent.lastAnsweredBy();
+    const gone = goneModel as { from: string; to: string } | null; // set during the turn
+    if (gone && answered && answered.model === gone.to) {
+      const old = gone.from;
+      currentModel = answered.model;
+      agent.setModel(currentModel);
+      tui.setMeta(currentModel, provider);
+      savePersistedConfig({ ...loadPersistedConfig(), model: currentModel });
+      tui.addNotice(`${old} no longer exists on ${provider}. Switched to **${currentModel}** and saved it (/model to choose another).`, "info");
+    }
 
     // Sentinel patrol: scan what this turn changed for secrets & conflict markers
     const touched = [...(listCheckpoints()[0]?.files.keys() ?? [])];
@@ -588,14 +603,18 @@ async function runTurn(
     }
     if (modelOverride && modelOverride !== prev) agent.setModel(prev);
   } catch (err: unknown) {
-    const e = err as { status?: number; message?: string };
+    const e = err as { status?: number; message?: string; xyroProvider?: string };
+    // Name the provider that actually failed (the free-quota pool may have moved to another one)
+    const failed = e.xyroProvider ? providerLabel(e.xyroProvider) : provider;
+    const ownProvider = !e.xyroProvider || provider.toLowerCase().startsWith(failed.toLowerCase());
     const msg = e.status
-      ? `${provider} API error (${e.status}): ${e.message ?? ""}`
+      ? `${ownProvider ? provider : failed} API error (${e.status}): ${e.message ?? ""}`
       : err instanceof Error
         ? err.message
         : String(err);
     tui.addError(msg);
-    if (e.status === 401 || e.status === 403) onAuthError?.(e.status);
+    // Only ask for a new key when YOUR provider rejected yours
+    if ((e.status === 401 || e.status === 403) && ownProvider) onAuthError?.(e.status);
   } finally {
     tui.setBusy(false);
   }

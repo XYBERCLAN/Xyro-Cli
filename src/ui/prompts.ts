@@ -78,7 +78,7 @@ export const FREE_PROVIDERS: Provider[] = [
       "qwen/qwen-2.5-coder-32b-instruct:free",
       "mistralai/mistral-small-24b-instruct-2501:free",
     ],
-    defaultModel: "google/gemini-2.0-flash-exp:free",
+    defaultModel: "cohere/north-mini-code:free",
     baseURL: "https://openrouter.ai/api/v1",
     keyURL: "https://openrouter.ai/keys",
     steps: [

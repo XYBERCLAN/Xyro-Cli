@@ -529,6 +529,7 @@ export class Agent {
       const llmElapsed = ((performance.now() - llmStart) / 1000).toFixed(1);
 
       this.history.emitResponse(response);
+      if (response.actualModel) this.answeredBy = { model: response.actualModel, providerId: response.providerId ?? "" };
 
       const msg: Message = { role: "assistant", content: response.content || "" };
       if (response.tool_calls.length > 0) {
@@ -714,6 +715,12 @@ export class Agent {
   }
 
   private lastTurn: { request: string; tools: string[]; changedFiles: boolean } | null = null;
+  private answeredBy: { model: string; providerId: string } | null = null;
+
+  /** Which model actually answered last (the free-quota pool may have switched). */
+  lastAnsweredBy(): { model: string; providerId: string } | null {
+    return this.answeredBy;
+  }
 
   /** Esc: stop whatever this turn is doing. Returns false if nothing was running. */
   stop(): boolean {

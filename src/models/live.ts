@@ -75,6 +75,12 @@ function toEntries(p: Provider, models: DiscoveredModel[]): ModelEntry[] {
 }
 
 /** Register every cached model list (instant, no network). */
+/** Free models the provider itself listed most recently (newest truth; [] when never fetched). */
+export function liveFreeModels(providerId: string): string[] {
+  const entry = readCache()[canonicalProviderId(providerId)];
+  return (entry?.models ?? []).filter((m) => m.isFree).map((m) => m.id);
+}
+
 export function loadCachedModels(): void {
   const cache = readCache();
   for (const [pid, entry] of Object.entries(cache)) {

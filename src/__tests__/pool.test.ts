@@ -5,8 +5,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import OpenAI from "openai";
-import { callLLMStream, ModelSwitch } from "../providers/llm.js";
-import { poolStatus, isCoolingDown, _resetPool, buildCandidates, hedgeDelayMs } from "../providers/pool.js";
+import { callLLMStream, ModelSwitch, setRetryReporter } from "../providers/llm.js";
+import { poolStatus, isCoolingDown, _resetPool, buildCandidates, hedgeDelayMs, noteRateLimit, isKeyRejected } from "../providers/pool.js";
 import { FREE_PROVIDERS } from "../ui/prompts.js";
 
 type Behaviour = (model: string) => { status?: number; error?: string; text?: string; cutMidStream?: boolean; delayMs?: number };
@@ -225,5 +225,50 @@ describe("Hedged requests", () => {
     } finally {
       process.env.XYRO_HEDGE_MS = "150";
     }
+  });
+});
+
+describe("Bad keys elsewhere never block your provider", () => {
+  it("your provider is still tried while it rests, after the others", () => {
+    noteRateLimit("google", Object.assign(new Error("rate limit"), { status: 429 }));
+    const c = buildCandidates(urlA, "gemini-flash-latest");
+    assert.ok(c.some((x) => x.sameProvider), "the provider you chose is never dropped");
+    assert.equal(c[0].sameProvider, false, "while it rests, ready providers go first");
+  });
+
+  it("another provider's rejected key is skipped (and remembered) and your provider answers", async () => {
+    noteRateLimit("google", Object.assign(new Error("rate limit"), { status: 429 }));
+    behaviourB = () => ({ status: 401, error: "Invalid token" });
+    behaviourA = () => ({ text: "your provider answered" });
+    const notices: string[] = [];
+    setRetryReporter((m) => notices.push(m));
+    try {
+      const { text, r } = await ask();
+      assert.equal(text, "your provider answered");
+      assert.equal(r.providerId, "google");
+      assert.ok(notices.some((n) => /OpenRouter rejected its saved API key/.test(n)), notices.join("|"));
+      assert.equal(isKeyRejected("openrouter", "kb"), true);
+      assert.equal(isKeyRejected("openrouter", "a-brand-new-key"), false, "a newly saved key is tried again");
+      hits.b.length = 0;
+      await ask();
+      assert.equal(hits.b.length, 0, "the rejected key is not tried again");
+    } finally {
+      setRetryReporter(() => {});
+    }
+  });
+
+  it("a borrowed provider failing for any reason (a bare 400) doesn't end the chain", async () => {
+    noteRateLimit("google", Object.assign(new Error("rate limit"), { status: 429 }));
+    behaviourB = () => ({ status: 400, error: "" });
+    behaviourA = () => ({ text: "still fine" });
+    assert.equal((await ask()).text, "still fine");
+  });
+
+  it("when everything fails, the error is YOUR provider's, labelled with it", async () => {
+    behaviourA = () => ({ status: 404, error: "No endpoints found for this model" });
+    behaviourB = () => ({ status: 401, error: "Invalid token" });
+    const err = (await ask().catch((e) => e)) as { status?: number; xyroProvider?: string };
+    assert.equal(err.xyroProvider, "google");
+    assert.equal(err.status, 404, "not the other provider's 401, which would wrongly ask for a new key");
   });
 });

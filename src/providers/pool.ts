@@ -14,17 +14,14 @@ import { getConfigDir } from "../config/platform.js";
 import { getProviderKey } from "../config/persist.js";
 import { FREE_PROVIDERS } from "../ui/prompts.js";
 import { getAllModels } from "../models/catalog.js";
+import { liveFreeModels } from "../models/live.js";
+import { createHash } from "node:crypto";
 
 /** Same-provider backup models (kept in sync with the free tiers we know). */
 export const PROVIDER_FALLBACK_MODELS: Record<string, string[]> = {
   google: ["gemini-3.5-flash", "gemini-3.6-flash", "gemini-flash-latest", "gemini-3.8-flash", "gemini-flash-lite-latest"],
   groq: ["qwen/qwen3.8-27b", "qwen/qwen3.6-27b", "groq/compound"],
-  openrouter: [
-    "google/gemini-2.0-flash-exp:free",
-    "meta-llama/llama-3.3-70b-instruct:free",
-    "deepseek/deepseek-chat:free",
-    "qwen/qwen-2.5-coder-32b-instruct:free",
-  ],
+  // OpenRouter's free line-up changes every few weeks: its live list (models/live) is used instead
 };
 
 export interface Candidate {
@@ -44,6 +41,8 @@ interface ProviderUsage {
   cooldownUntil: number;
   /** Highest request count seen on a day that ended in a quota error */
   learnedDailyRequests?: number;
+  /** Fingerprint of a key the provider rejected (a newly saved key is tried again) */
+  badKey?: string;
   /** Typical time to first streamed token (moving average, ms) */
   ttftMs?: number;
 }
@@ -79,7 +78,7 @@ function usage(providerId: string): ProviderUsage {
   const all = load();
   const u = all[providerId];
   if (!u || u.day !== today()) {
-    all[providerId] = { day: today(), requests: 0, tokens: 0, rateLimits: 0, cooldownUntil: u?.cooldownUntil ?? 0, learnedDailyRequests: u?.learnedDailyRequests, ttftMs: u?.ttftMs };
+    all[providerId] = { day: today(), requests: 0, tokens: 0, rateLimits: 0, cooldownUntil: u?.cooldownUntil ?? 0, learnedDailyRequests: u?.learnedDailyRequests, ttftMs: u?.ttftMs, badKey: u?.badKey };
   }
   return all[providerId];
 }
@@ -107,14 +106,16 @@ export function getFallbackChain(baseURL: string | undefined, currentModel: stri
   const fromCatalog = getAllModels()
     .filter((m) => (m.providerId === pid || (pid === "local" && m.providerId === "ollama")) && (m.isFree || m.badge === "LOCAL"))
     .map((m) => m.id);
-  const list = [...(PROVIDER_FALLBACK_MODELS[pid] ?? []), ...fromCatalog];
+  // What the provider says it serves today comes first; known lists and the catalog after
+  const list = [...liveFreeModels(pid), ...(PROVIDER_FALLBACK_MODELS[pid] ?? []), ...fromCatalog];
   return [currentModel, ...[...new Set(list)].filter((m) => m !== currentModel)].slice(0, 6);
 }
 
 /** Best free model to borrow on another provider. */
 function freeModelFor(providerId: string): string | null {
   const p = FREE_PROVIDERS.find((x) => x.id === providerId);
-  const free = getAllModels().filter((m) => m.providerId === providerId && m.isFree).map((m) => m.id);
+  const live = liveFreeModels(providerId);
+  const free = live.length ? live : getAllModels().filter((m) => m.providerId === providerId && m.isFree).map((m) => m.id);
   if (p && free.includes(p.defaultModel)) return p.defaultModel;
   // Prefer coding-oriented free models
   return free.find((id) => /coder|code|qwen|deepseek|llama-3\.3|gemini/i.test(id)) ?? free[0] ?? PROVIDER_FALLBACK_MODELS[providerId]?.[0] ?? null;
@@ -133,7 +134,7 @@ export function buildCandidates(baseURL: string | undefined, model: string, opts
   for (const p of FREE_PROVIDERS) {
     if (p.id === pid || p.id === "local") continue;
     const key = getProviderKey(p.id);
-    if (!key) continue;
+    if (!key || isKeyRejected(p.id, key)) continue;
     const m = freeModelFor(p.id);
     if (m) cross.push({ model: m, providerId: p.id, baseURL: p.baseURL, apiKey: key, sameProvider: false });
     if (cross.length >= 4) break;
@@ -141,9 +142,32 @@ export function buildCandidates(baseURL: string | undefined, model: string, opts
   // Least-used providers first, so load spreads across free quotas
   cross.sort((a, b) => usage(a.providerId).requests - usage(b.providerId).requests);
 
-  const all = [...same, ...cross];
-  const ready = all.filter((c) => !isCoolingDown(c.providerId));
-  return ready.length ? ready : all;
+  // The provider the user chose is always tried: first, or after the others while it rests
+  const readyCross = cross.filter((c) => !isCoolingDown(c.providerId));
+  const ordered = pid && isCoolingDown(pid) ? [...readyCross, ...same] : [...same, ...readyCross];
+  return ordered.length ? ordered : [...same, ...cross];
+}
+
+const keyPrint = (key: string) => createHash("sha256").update(key).digest("hex").slice(0, 16);
+
+/** The provider rejected this exact key (a different, newly saved key is not affected). */
+export function isKeyRejected(providerId: string, key: string): boolean {
+  const u = load()[providerId];
+  return Boolean(u?.badKey && u.badKey === keyPrint(key));
+}
+
+/** Remember that a provider rejected a key, so the pool stops trying it until the key changes. */
+export function noteRejectedKey(providerId: string, key: string): void {
+  if (!providerId || !key) return;
+  usage(providerId).badKey = keyPrint(key);
+  save();
+}
+
+/** 401 / 403, or a 400 that is about the key (Google answers "Please pass a valid API key" with 400). */
+export function isAuthError(err: unknown): boolean {
+  const e = err as { status?: number; message?: string };
+  const msg = String(e?.message ?? err).toLowerCase();
+  return e?.status === 401 || e?.status === 403 || (e?.status === 400 && /api key|invalid key|invalid token|unauthori[sz]ed/.test(msg)) || /invalid (api )?key|invalid token|incorrect api key/.test(msg);
 }
 
 /** Errors worth moving on from (overloaded, missing model, rate limit, quota). */
@@ -193,6 +217,7 @@ export function noteRateLimit(providerId: string, err: unknown): void {
 export function noteSuccess(providerId: string, tokens = 0): void {
   if (!providerId) return;
   const u = usage(providerId);
+  u.badKey = undefined; // it works now
   u.requests++;
   u.tokens += tokens;
   save();

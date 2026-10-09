@@ -1,9 +1,10 @@
-import { turnSignal, StoppedByUser } from "../agent/cancel.js";
+import { FREE_PROVIDERS } from "../ui/prompts.js";
+import { turnSignal, StoppedByUser, isStopped } from "../agent/cancel.js";
 import type { Candidate } from "./pool.js";
 import { shouldShield, redactMessages, restoreResponse, restoreText, restoringStream } from "./privacy.js";
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
-import { buildCandidates, isFallbackableError, noteRateLimit, noteSuccess, noteFirstToken, hedgeDelayMs, providerIdForBaseURL } from "./pool.js";
+import { buildCandidates, isFallbackableError, isAuthError, noteRejectedKey, noteRateLimit, noteSuccess, noteFirstToken, hedgeDelayMs, providerIdForBaseURL } from "./pool.js";
 export { getFallbackChain, isFallbackableError } from "./pool.js";
 import { Message } from "../agent/types.js";
 import { getToolDefinitions } from "../tools/registry.js";
@@ -341,6 +342,7 @@ export async function callLLM(
   const toolDefs = tools ?? getToolDefinitions();
   const candidates = buildCandidates(client.baseURL, model);
   let lastError: unknown;
+  let sessionError: unknown;
   const skip = new Set<string>();
   for (let i = 0; i < candidates.length; i++) {
     const c = candidates[i];
@@ -367,16 +369,31 @@ export async function callLLM(
       return shield ? restoreResponse(out) : out;
     } catch (err: unknown) {
       if (turnSignal().aborted) throw new StoppedByUser();
-      lastError = err;
+      lastError = tagProvider(err, c.providerId);
+      if (c.sameProvider) sessionError = err;
       if (isRateLimitError(err)) {
         noteRateLimit(c.providerId, err);
         if (!PER_MODEL_LIMITS.has(c.providerId)) skip.add(c.providerId);
       }
+      // Another provider rejected its saved key: skip it (until the key changes) and keep going
+      if (!c.sameProvider && isAuthError(err)) {
+        noteRejectedKey(c.providerId, c.apiKey ?? "");
+        skip.add(c.providerId);
+        retryReporter(`${providerLabel(c.providerId)} rejected its saved API key, so XYRO skips it. Update it with /provider.`);
+        if (candidates.slice(i + 1).some((x) => !skip.has(x.providerId))) continue;
+        throw sessionError ?? err;
+      }
+      // Any other failure of a borrowed provider never ends the chain: move on to the next one
+      if (!c.sameProvider && !isStopped()) {
+        skip.add(c.providerId);
+        if (candidates.slice(i + 1).some((x) => !skip.has(x.providerId))) continue;
+      }
       if (candidates.slice(i + 1).some((x) => !skip.has(x.providerId)) && isFallbackableError(err)) continue;
-      throw err;
+      throw sessionError ?? err;
     }
   }
-  throw lastError;
+  // Everything failed: the user's own provider's error is the one that explains it
+  throw sessionError ?? lastError;
 }
 
 /**
@@ -403,6 +420,7 @@ export async function callLLMStream(
   }
   const candidates = buildCandidates(client.baseURL, model, { pool: opts.pool });
   let lastError: unknown;
+  let sessionError: unknown;
   let previous = { model, provider: providerIdForBaseURL(client.baseURL) };
   const skip = new Set<string>();
   for (let i = 0; i < candidates.length; i++) {
@@ -452,17 +470,32 @@ export async function callLLMStream(
       return { ...res, actualModel: c.model, providerId: c.providerId };
     } catch (err: unknown) {
       if (turnSignal().aborted) throw new StoppedByUser();
-      lastError = err;
+      lastError = tagProvider(err, c.providerId);
+      if (c.sameProvider) sessionError = err;
       if (isRateLimitError(err)) {
         noteRateLimit(c.providerId, err);
         if (!PER_MODEL_LIMITS.has(c.providerId)) skip.add(c.providerId);
       }
+      // Another provider rejected its saved key: skip it (until the key changes) and keep going
+      if (!c.sameProvider && isAuthError(err)) {
+        noteRejectedKey(c.providerId, c.apiKey ?? "");
+        skip.add(c.providerId);
+        retryReporter(`${providerLabel(c.providerId)} rejected its saved API key, so XYRO skips it. Update it with /provider.`);
+        if (candidates.slice(i + 1).some((x) => !skip.has(x.providerId))) continue;
+        throw sessionError ?? err;
+      }
+      // Any other failure of a borrowed provider never ends the chain: move on to the next one
+      if (!c.sameProvider && !isStopped()) {
+        skip.add(c.providerId);
+        if (candidates.slice(i + 1).some((x) => !skip.has(x.providerId))) continue;
+      }
       previous = { model: c.model, provider: c.providerId };
       if (!emitted && candidates.slice(i + 1).some((x) => !skip.has(x.providerId)) && isFallbackableError(err)) continue;
-      throw err;
+      throw emitted ? err : sessionError ?? err;
     }
   }
-  throw lastError;
+  // Everything failed: the user's own provider's error is the one that explains it
+  throw sessionError ?? lastError;
 }
 
 interface AttemptControl {
@@ -573,6 +606,16 @@ export function hedgedAttempt(
       if (winner === null && !done) start(1);
     }, delayMs);
   });
+}
+
+/** Remember which provider an error came from (the UI names it, and asks for the right key). */
+function tagProvider(err: unknown, providerId: string): unknown {
+  if (err && typeof err === "object" && !("xyroProvider" in err)) (err as { xyroProvider?: string }).xyroProvider = providerId;
+  return err;
+}
+
+export function providerLabel(providerId: string): string {
+  return FREE_PROVIDERS.find((p) => p.id === providerId)?.name.replace(/\s*\(.*\)$/, "") ?? providerId;
 }
 
 /** Providers whose rate limits are per model (others limit per key: skip them entirely). */
