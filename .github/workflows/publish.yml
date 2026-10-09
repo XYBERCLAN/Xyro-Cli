@@ -70,7 +70,9 @@ jobs:
         run: |
           # Tokens that require staged publishing (npm's 2FA-safe flow) are refused by a direct
           # publish: stage the release instead and let a human approve it on npmjs.com
-          if npm publish --provenance --access public --tag "$TAG" 2> publish.err; then exit 0; fi
+          # npm 12: uses Trusted Publishing (GitHub OIDC, no token) when it is enabled for this
+          # repository on npmjs.com, and falls back to NPM_TOKEN otherwise
+          if npx -y npm@12 publish --provenance --access public --tag "$TAG" 2> publish.err; then exit 0; fi
           cat publish.err
           if grep -q "E_STAGE_REQUIRED" publish.err; then
             npx -y npm@12 stage publish . --provenance --access public --tag "$TAG"

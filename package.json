@@ -12,7 +12,7 @@
   ],
   "type": "module",
   "bin": {
-    "xyro": "./dist/index.js"
+    "xyro": "dist/index.js"
   },
   "files": [
     "dist",
