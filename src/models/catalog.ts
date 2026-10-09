@@ -459,16 +459,16 @@ export function buildModelSections(
 
 export function filterModelCatalog(query: string, models?: ModelEntry[]): ModelEntry[] {
   const source = models || getAllModels();
-  const q = query.trim().toLowerCase();
-  if (!q) return source;
-  return source.filter(
-    (m) =>
-      m.id.toLowerCase().includes(q) ||
-      m.name.toLowerCase().includes(q) ||
-      m.provider.toLowerCase().includes(q) ||
-      m.desc.toLowerCase().includes(q) ||
-      (q === "free" && m.isFree) ||
-      (q === "paid" && !m.isFree) ||
-      (q === "local" && m.badge === "LOCAL")
-  );
+  // Every word must match; "free" / "paid" / "local" act as tier filters
+  const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  if (!words.length) return source;
+  return source.filter((m) => {
+    const hay = `${m.id} ${m.name} ${m.provider} ${m.providerId} ${m.desc}`.toLowerCase();
+    return words.every((w) => {
+      if (w === "free") return m.isFree || m.badge === "LOCAL";
+      if (w === "paid") return !m.isFree && m.badge !== "LOCAL";
+      if (w === "local") return m.badge === "LOCAL";
+      return hay.includes(w);
+    });
+  });
 }

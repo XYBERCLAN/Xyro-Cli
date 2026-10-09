@@ -5,10 +5,11 @@
 // and configure API keys with live validation in a cyberpunk modal.
 
 import { currentTheme, tint } from "../ui/theme.js";
-import { RenderLine, StyledSpan, span, line, visualWidth } from "./core.js";
+import { RenderLine, StyledSpan, span, line, visualWidth, wrapSpans } from "./core.js";
 import { FREE_PROVIDERS, Provider } from "../ui/prompts.js";
-import { renderModalTopBorder, renderModalBottomBorder } from "./overlays.js";
-import { fetchLiveProviderModels, DiscoveredModel } from "../models/fetcher.js";
+import { modalFrame } from "./overlays.js";
+import { spinnerGlyph, shimmerSpans } from "./components.js";
+import { fetchLiveProviderModels, DiscoveredModel, KeyRejectedError } from "../models/fetcher.js";
 import { registerDiscoveredModels, ModelEntry } from "../models/catalog.js";
 
 const BRAND_BLUE  = "#38BDF8";
@@ -23,24 +24,6 @@ export type ProviderSelectCallback = (
   model: string,
   baseURL: string
 ) => void;
-
-function getProviderRegion(p: Provider): { tag: string; color: string } {
-  const n = p.name.toLowerCase();
-  if (p.id === "local" || n.includes("local")) return { tag: "LOCAL", color: BRAND_LEMON };
-  if (p.id === "tokenrouter" || n.includes("tokenrouter")) return { tag: "ROUTER", color: BRAND_BLUE };
-  if (n.includes("usa") || n.includes("google") || n.includes("groq") || n.includes("openrouter") || n.includes("github")) {
-    return { tag: "USA", color: BRAND_BLUE };
-  }
-  if (n.includes("france") || n.includes("eu") || n.includes("mistral") || n.includes("ovhcloud") || n.includes("nebius")) {
-    return { tag: "EU", color: "#A78BFA" };
-  }
-  if (n.includes("china") || n.includes("alibaba") || n.includes("deepseek") || n.includes("qwen") || n.includes("zhipu")) {
-    return { tag: "ASIA", color: BRAND_GREEN };
-  }
-  if (n.includes("israel") || n.includes("ai21")) return { tag: "MIDEAST", color: BRAND_AMBER };
-  if (n.includes("canada") || n.includes("cohere")) return { tag: "CAN", color: "#38BDF8" };
-  return { tag: "GLOBAL", color: "#94A3B8" };
-}
 
 export class ProviderPicker {
   private visible = false;
@@ -57,6 +40,10 @@ export class ProviderPicker {
   private selectedProvider: Provider | null = null;
   private keyInput = "";
   private errorMsg = "";
+  /** Why the key screen was opened directly (missing / rejected key). */
+  private notice = "";
+  /** Model the user already picked; skip the model list once the key works. */
+  private pendingModel = "";
   private effectiveKey = "";
 
   // Live model discovery state
@@ -82,6 +69,8 @@ export class ProviderPicker {
     this.selectedProvider = null;
     this.keyInput = "";
     this.errorMsg = "";
+    this.notice = "";
+    this.pendingModel = "";
     this.discoveredModels = [];
     this.filteredModels = [];
     this.modelQuery = "";
@@ -94,6 +83,22 @@ export class ProviderPicker {
     );
     this.cursor = idx >= 0 ? idx : 0;
     this.scrollOff = Math.max(0, this.cursor - Math.floor(this.maxVisible / 2));
+  }
+
+  /**
+   * Jump straight to the key screen for one provider, e.g. when its key is
+   * missing or was rejected. If `model` is given, it is used as soon as the
+   * key is accepted (no model list).
+   */
+  openForKey(providerId: string, opts: { model?: string; reason?: string } = {}): boolean {
+    const p = FREE_PROVIDERS.find((x) => x.id === providerId);
+    if (!p) return false;
+    this.open(p.name, "");
+    this.selectedProvider = p;
+    this.mode = "configure";
+    this.notice = opts.reason ?? "";
+    this.pendingModel = opts.model ?? "";
+    return true;
   }
 
   close(): void {
@@ -129,23 +134,7 @@ export class ProviderPicker {
       // Enter: confirm chosen model and activate provider
       if (cp === 13) {
         const chosen = this.filteredModels[this.modelCursor] || this.discoveredModels[0];
-        const chosenModelId = chosen ? chosen.id : p.defaultModel;
-
-        // Register all discovered models in global catalog for /model access
-        const catalogEntries: ModelEntry[] = this.discoveredModels.map((m) => ({
-          id: m.id,
-          name: m.name,
-          provider: p.name,
-          providerId: p.id,
-          isFree: m.isFree,
-          badge: m.badge,
-          desc: m.desc,
-          baseURL: p.baseURL,
-        }));
-        registerDiscoveredModels(catalogEntries);
-
-        this.visible = false;
-        this.onSelectCb?.(p, this.effectiveKey, chosenModelId, p.baseURL);
+        this.finish(p, chosen ? chosen.id : p.defaultModel);
         return true;
       }
 
@@ -332,11 +321,34 @@ export class ProviderPicker {
     return this.discoveryPromise || Promise.resolve();
   }
 
+  /** Register discovered models for /model, close, and report the choice. */
+  private finish(p: Provider, modelId: string): void {
+    const catalogEntries: ModelEntry[] = this.discoveredModels.map((m) => ({
+      id: m.id,
+      name: m.name,
+      provider: p.name,
+      providerId: p.id,
+      isFree: m.isFree,
+      badge: m.badge,
+      desc: m.desc,
+      baseURL: p.baseURL,
+    }));
+    registerDiscoveredModels(catalogEntries);
+    this.visible = false;
+    this.pendingModel = "";
+    this.onSelectCb?.(p, this.effectiveKey, modelId, p.baseURL);
+  }
+
   private _startLiveDiscovery(p: Provider, key: string): void {
     this.mode = "fetching";
     this.discoveryPromise = fetchLiveProviderModels(p.baseURL, key, p.id, p.models)
       .then((models) => {
         if (!this.visible || this.mode !== "fetching") return;
+        if (this.pendingModel) {
+          this.discoveredModels = models;
+          this.finish(p, this.pendingModel);
+          return;
+        }
         this.discoveredModels = models;
         this.filteredModels = models.slice();
         this.modelCursor = 0;
@@ -344,8 +356,19 @@ export class ProviderPicker {
         this.modelQuery = "";
         this.mode = "model-select";
       })
-      .catch(() => {
+      .catch((err) => {
         if (!this.visible || this.mode !== "fetching") return;
+        if (err instanceof KeyRejectedError) {
+          this.mode = "configure";
+          this.keyInput = "";
+          this.notice = "";
+          this.errorMsg = `${p.name} rejected that key (${err.status}). Check it and paste it again.`;
+          return;
+        }
+        if (this.pendingModel) {
+          this.finish(p, this.pendingModel);
+          return;
+        }
         const fallback = p.models.map((m) => ({
           id: m,
           name: m,
@@ -431,455 +454,174 @@ export class ProviderPicker {
     return this.renderList(termWidth);
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // 1. RENDER LIST VIEW
-  // ─────────────────────────────────────────────────────────────────────────
-  private renderList(termWidth: number): RenderLine[] {
+  private boxW(termWidth: number): number {
+    return Math.max(60, Math.min(84, termWidth - 6));
+  }
+
+  /** "provider › key › model" with the current step emphasised. */
+  private steps(active: 0 | 1 | 2): StyledSpan[] {
     const t = currentTheme();
-    const boxW = Math.max(64, Math.min(84, termWidth - 4));
-    const innerW = boxW - 2;
-    const leftM = Math.max(2, Math.floor((termWidth - boxW) / 2));
-    const margin = " ".repeat(leftM);
-    const borderCol = t.primary || BRAND_BLUE;
-    const out: RenderLine[] = [];
-
-    // 1. Top border
-    out.push(renderModalTopBorder("Provider Setup", innerW, margin, borderCol));
-
-    // 2. Search row
-    const searchLbl = "  🔍 Search: ";
-    const cursorStr = this.query + "▌";
-    const searchHint = "(↑↓ browse · Enter setup · Esc close)  ";
-    const usedSearch = visualWidth(searchLbl) + visualWidth(cursorStr) + visualWidth(searchHint);
-    const searchPad = Math.max(0, innerW - usedSearch);
-    out.push(
-      line(
-        span(margin),
-        span("│", { fg: borderCol }),
-        span(searchLbl, { fg: borderCol, bg: t.backgroundElement }),
-        span(cursorStr, { fg: "#F3F4F6", bg: t.backgroundElement }),
-        span(" ".repeat(searchPad), { bg: t.backgroundElement }),
-        span(searchHint, { fg: tint(t.textMuted, 0.65), bg: t.backgroundElement }),
-        span("│", { fg: borderCol })
-      )
-    );
-
-    // 3. Separator
-    out.push(
-      line(
-        span(margin),
-        span("├", { fg: borderCol }),
-        span("─".repeat(innerW), { fg: t.border }),
-        span("┤", { fg: borderCol })
-      )
-    );
-
-    // 4. Provider Rows
-    if (this.filtered.length === 0) {
-      const emptyMsg = "  No providers match your search query.";
-      const pad = Math.max(0, innerW - visualWidth(emptyMsg));
-      out.push(
-        line(
-          span(margin),
-          span("│", { fg: borderCol }),
-          span(emptyMsg, { fg: tint(t.textMuted, 0.7), bg: t.backgroundElement }),
-          span(" ".repeat(pad), { bg: t.backgroundElement }),
-          span("│", { fg: borderCol })
-        )
-      );
-    } else {
-      const visibleEnd = Math.min(this.scrollOff + this.maxVisible, this.filtered.length);
-      for (let i = this.scrollOff; i < visibleEnd; i++) {
-        const item = this.filtered[i];
-        const selected = i === this.cursor;
-        const isCurrent =
-          item.name.toLowerCase() === this.currentProviderName.toLowerCase() ||
-          item.id.toLowerCase() === this.currentProviderName.toLowerCase();
-        const bg = selected ? t.backgroundMenu : t.backgroundElement;
-        const pointer = selected ? "› " : "  ";
-
-        const reg = getProviderRegion(item);
-        const regTag = `[${reg.tag}]`.padEnd(9);
-
-        // Name column: fixed 28 chars
-        let rawName = item.name.length > 27 ? item.name.slice(0, 26) + "…" : item.name;
-        const nameCol = rawName.padEnd(28);
-
-        const activeTag = isCurrent ? "● ACTIVE" : "";
-
-        // Space budget for description
-        const fixedUsed = 2 + 28 + 9 + (activeTag ? 10 : 0);
-        const descW = Math.max(10, innerW - fixedUsed - 2);
-        let descText = item.limit || item.desc;
-        if (visualWidth(descText) > descW) {
-          descText = descText.slice(0, descW - 1) + "…";
-        }
-        const descCol = descText.padEnd(descW);
-
-        const usedW = 2 + visualWidth(nameCol) + visualWidth(regTag) + visualWidth(descCol) + (activeTag ? 10 : 0);
-        const pad = Math.max(0, innerW - usedW);
-
-        out.push(
-          line(
-            span(margin),
-            span("│", { fg: borderCol }),
-            span(pointer, { fg: selected ? BRAND_LEMON : tint(t.textMuted, 0.5), bg, bold: selected }),
-            span(nameCol, { fg: selected ? "#FFFFFF" : tint(t.text, 0.95), bg, bold: selected }),
-            span(regTag, { fg: reg.color, bg }),
-            span(descCol, { fg: selected ? "#F3F4F6" : tint(t.textMuted, 0.75), bg }),
-            ...(activeTag ? [span("  "), span(activeTag, { fg: BRAND_GREEN, bg, bold: true })] : []),
-            span(" ".repeat(pad), { bg }),
-            span("│", { fg: borderCol })
-          )
-        );
-      }
-    }
-
-    // 5. Scroll info
-    if (this.filtered.length > this.maxVisible) {
-      const shown = Math.min(this.scrollOff + this.maxVisible, this.filtered.length);
-      const scrollInfo = `  ${this.scrollOff + 1}–${shown} of ${this.filtered.length} free providers  `;
-      const scrollPad = Math.max(0, innerW - visualWidth(scrollInfo));
-      out.push(
-        line(
-          span(margin),
-          span("│", { fg: borderCol }),
-          span(scrollInfo, { fg: tint(t.textMuted, 0.6), bg: t.backgroundPanel }),
-          span(" ".repeat(scrollPad), { bg: t.backgroundPanel }),
-          span("│", { fg: borderCol })
-        )
-      );
-    }
-
-    // 6. Bottom border
-    out.push(renderModalBottomBorder("↑↓ Navigate · Enter Configure · Esc Close", innerW, margin, borderCol));
-
+    const names = ["provider", "key", "model"];
+    const out: StyledSpan[] = [span("   ")];
+    names.forEach((n, i) => {
+      if (i) out.push(span("  ›  ", { fg: tint(t.textMuted, 0.5) }));
+      out.push(span(n, i === active ? { fg: BRAND_LEMON, bold: true } : { fg: tint(t.textMuted, i < active ? 0.9 : 0.6) }));
+    });
     return out;
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // 2. RENDER CONFIGURE VIEW
-  // ─────────────────────────────────────────────────────────────────────────
+  private searchRow(query: string, placeholder: string): StyledSpan[] {
+    const t = currentTheme();
+    return [
+      span("  ❯ ", { fg: BRAND_LEMON, bold: true }),
+      ...(query ? [span(query, { fg: t.text, bold: true })] : [span(placeholder, { fg: tint(t.textMuted, 0.6), italic: true })]),
+      span("▌", { fg: BRAND_LEMON }),
+    ];
+  }
+
+  // 1. Choose a provider
+  private renderList(termWidth: number): RenderLine[] {
+    const t = currentTheme();
+    const boxW = this.boxW(termWidth);
+    const innerW = boxW - 2;
+    const body: (StyledSpan[] | { spans: StyledSpan[]; bg: string })[] = [this.steps(0), [], this.searchRow(this.query, "search providers"), []];
+    if (this.filtered.length === 0) {
+      body.push([span("   No provider matches ", { fg: tint(t.textMuted, 0.9) }), span(`"${this.query}"`, { fg: t.text })]);
+    } else {
+      const end = Math.min(this.scrollOff + this.maxVisible, this.filtered.length);
+      for (let i = this.scrollOff; i < end; i++) {
+        const item = this.filtered[i];
+        const selected = i === this.cursor;
+        const current = [item.name, item.id].some((x) => x.toLowerCase() === this.currentProviderName.toLowerCase());
+        const bg = selected ? t.backgroundMenu : t.backgroundPanel;
+        const nameW = 24;
+        const name = (item.name.length > nameW - 1 ? item.name.slice(0, nameW - 2) + "…" : item.name).padEnd(nameW);
+        const info = item.limit || item.desc;
+        const infoW = Math.max(8, innerW - 3 - nameW - 9);
+        body.push({
+          spans: [
+            span(selected ? " ▌ " : "   ", { fg: BRAND_LEMON, bold: true }),
+            span(name, { fg: selected || current ? t.text : tint(t.text, 0.88), bold: selected || current }),
+            span(info.length > infoW ? info.slice(0, infoW - 1) + "…" : info.padEnd(infoW), { fg: selected ? tint(t.text, 0.8) : tint(t.textMuted, 0.8) }),
+            span(current ? " current" : "", { fg: BRAND_GREEN, bold: true }),
+          ],
+          bg,
+        });
+      }
+      if (this.filtered.length > this.maxVisible) {
+        body.push([]);
+        body.push([span(`   ${this.cursor + 1} of ${this.filtered.length} providers`, { fg: tint(t.textMuted, 0.6) })]);
+      }
+    }
+    return modalFrame("Provider", boxW, body, "↑↓ move · enter connect · esc close");
+  }
+
+  // 2. Connect: steps + API key
   private renderConfigure(termWidth: number): RenderLine[] {
     const p = this.selectedProvider!;
     const t = currentTheme();
-    const boxW = Math.max(64, Math.min(84, termWidth - 4));
+    const boxW = this.boxW(termWidth);
     const innerW = boxW - 2;
-    const leftM = Math.max(2, Math.floor((termWidth - boxW) / 2));
-    const margin = " ".repeat(leftM);
-    const borderCol = t.primary || BRAND_BLUE;
-    const out: RenderLine[] = [];
-
-    const padRow = (contentSpans: StyledSpan[], rowBg = t.backgroundElement): RenderLine => {
-      const used = contentSpans.reduce((acc, s) => acc + visualWidth(s.text), 0);
-      const pad = Math.max(0, innerW - used);
-      return line(
-        span(margin),
-        span("│", { fg: borderCol }),
-        ...contentSpans,
-        span(" ".repeat(pad), { bg: rowBg }),
-        span("│", { fg: borderCol })
-      );
-    };
-
-    // 1. Top border
-    out.push(renderModalTopBorder(`Setup: ${p.name}`, innerW, margin, borderCol));
-
-    // 2. Summary & Rate limits
-    out.push(
-      padRow([
-        span("  ⚡ ", { fg: BRAND_LEMON }),
-        span(p.name, { fg: "#FFFFFF", bold: true }),
-        span(` · ${p.limit}`, { fg: BRAND_GREEN }),
-      ])
-    );
-
-    // 3. Key Portal link
-    out.push(
-      padRow([
-        span("  🔗 Key Portal: ", { fg: borderCol }),
-        span(p.keyURL, { fg: BRAND_BLUE }),
-      ])
-    );
-
-    // 4. Default Model & Endpoint
-    out.push(
-      padRow([
-        span("  ⚙ Default Model: ", { fg: tint(t.textMuted, 0.8) }),
-        span(p.defaultModel, { fg: BRAND_LEMON }),
-        span("  ·  Endpoint: ", { fg: tint(t.textMuted, 0.8) }),
-        span(p.baseURL.length > 30 ? p.baseURL.slice(0, 29) + "…" : p.baseURL, { fg: tint(t.textMuted, 0.9) }),
-      ])
-    );
-
-    // 5. Separator
-    out.push(
-      line(
-        span(margin),
-        span("├", { fg: borderCol }),
-        span("─".repeat(innerW), { fg: t.border }),
-        span("┤", { fg: borderCol })
-      )
-    );
-
-    // 6. Setup Steps (up to 3 concise steps)
-    const stepsToShow = p.steps.slice(0, 3);
-    for (let i = 0; i < stepsToShow.length; i++) {
-      const stepText = `  ${i + 1}. ${stepsToShow[i]}`;
-      const clipped = visualWidth(stepText) > innerW - 2 ? stepText.slice(0, innerW - 5) + "…" : stepText;
-      out.push(padRow([span(clipped, { fg: tint(t.textMuted, 0.85) })]));
+    const muted = tint(t.textMuted, 0.9);
+    const body: (StyledSpan[] | { spans: StyledSpan[]; bg: string })[] = [this.steps(p.id === "local" ? 2 : 1), []];
+    body.push([span("   " + p.name, { fg: t.text, bold: true }), span(`   ${p.limit}`, { fg: BRAND_GREEN })]);
+    body.push([span("   " + (this.pendingModel ? "model          " : "default model  "), { fg: muted }), span(this.pendingModel || p.defaultModel, { fg: BRAND_LEMON })]);
+    body.push([]);
+    if (this.notice) {
+      wrapSpans([span(this.notice, { fg: BRAND_AMBER })], innerW - 6).forEach((w) => body.push([span("   "), ...w.spans]));
+      body.push([]);
     }
-
-    // 7. Input Section
-    out.push(
-      line(
-        span(margin),
-        span("├", { fg: borderCol }),
-        span("─".repeat(innerW), { fg: t.border }),
-        span("┤", { fg: borderCol })
-      )
-    );
 
     if (p.id === "local") {
-      out.push(
-        padRow([
-          span("  💻 Local Mode: ", { fg: BRAND_LEMON, bold: true }),
-          span("Connects to local Ollama / vLLM. No API key needed.", { fg: tint(t.text, 0.95) }),
-        ])
-      );
-      out.push(
-        padRow([
-          span("  Press ", { fg: tint(t.textMuted, 0.75) }),
-          span("Enter", { fg: BRAND_LEMON, bold: true }),
-          span(" to curl local models, or ", { fg: tint(t.textMuted, 0.75) }),
-          span("Esc", { fg: borderCol, bold: true }),
-          span(" to go back.", { fg: tint(t.textMuted, 0.75) }),
-        ])
-      );
-    } else {
-      const hasExistingKey = Boolean(this.currentApiKey) && this.isCurrentSelected();
-      const maskedInput = "*".repeat(this.keyInput.length) + "▌";
-
-      out.push(
-        padRow([
-          span("  🔑 Paste / Type API Key: ", { fg: borderCol, bold: true }),
-          span(this.keyInput ? maskedInput : (hasExistingKey ? "•••••••••••••••• (saved)▌" : "▌"), {
-            fg: this.keyInput ? BRAND_LEMON : tint(t.textMuted, 0.7),
-            bg: t.backgroundMenu,
-          }),
-        ])
-      );
-
-      if (hasExistingKey && !this.keyInput) {
-        out.push(
-          padRow([
-            span("  ✓ Existing key saved. Press ", { fg: BRAND_GREEN }),
-            span("Enter", { fg: BRAND_GREEN, bold: true }),
-            span(" to discover models, or paste a new key.", { fg: BRAND_GREEN }),
-          ])
-        );
-      } else {
-        out.push(
-          padRow([
-            span("  Paste from clipboard or type · ", { fg: tint(t.textMuted, 0.75) }),
-            span("Enter", { fg: BRAND_LEMON, bold: true }),
-            span(" to fetch live models", { fg: tint(t.textMuted, 0.75) }),
-          ])
-        );
-      }
-
-      if (this.errorMsg) {
-        out.push(
-          padRow([
-            span("  ⚠ ", { fg: BRAND_RED, bold: true }),
-            span(this.errorMsg, { fg: BRAND_RED, bold: true }),
-          ])
-        );
-      }
+      body.push([span("   Runs on your machine through Ollama / vLLM. No key needed.", { fg: tint(t.text, 0.9) })]);
+      body.push([]);
+      body.push([span("   Press ", { fg: muted }), span("enter", { fg: t.text, bold: true }), span(" to look for local models.", { fg: muted })]);
+      return modalFrame(`Connect ${p.name}`, boxW, body, "enter find models · esc back");
     }
 
-    // 8. Bottom border
-    out.push(renderModalBottomBorder("Enter Fetch Models · Esc Back to Providers", innerW, margin, borderCol));
+    p.steps.slice(0, 3).forEach((step, i) => {
+      wrapSpans([span(step, { fg: tint(t.text, 0.88) })], innerW - 8).forEach((w, j) =>
+        body.push([span(j === 0 ? `   ${i + 1}  ` : "      ", { fg: BRAND_LEMON, bold: true }), ...w.spans])
+      );
+    });
+    if (!p.steps.slice(0, 3).some((st) => st.includes(p.keyURL))) body.push([span("      ", {}), span(p.keyURL, { fg: BRAND_BLUE })]);
+    body.push([]);
 
-    return out;
+    const hasSaved = Boolean(this.currentApiKey) && this.isCurrentSelected();
+    const fieldW = innerW - 6;
+    const shown = this.keyInput ? "•".repeat(Math.min(this.keyInput.length, fieldW - 2)) : hasSaved ? "•••••••••••• saved" : "";
+    body.push([span("   API key", { fg: t.text, bold: true })]);
+    body.push([
+      span("   "),
+      span(" " + shown, { fg: this.keyInput ? BRAND_LEMON : tint(t.textMuted, 0.8), bg: t.backgroundElement }),
+      span("▌", { fg: BRAND_LEMON, bg: t.backgroundElement }),
+      span(" ".repeat(Math.max(0, fieldW - 2 - shown.length)), { bg: t.backgroundElement }),
+    ]);
+    if (this.errorMsg) {
+      body.push([span("   ! ", { fg: BRAND_RED, bold: true }), span(this.errorMsg, { fg: BRAND_RED })]);
+    } else if (hasSaved && !this.keyInput) {
+      body.push([span("   A key is already saved. Press enter to keep it, or paste a new one.", { fg: muted })]);
+    } else {
+      body.push([span("   Paste or type your key, then press enter.", { fg: muted })]);
+    }
+    return modalFrame(`Connect ${p.name}`, boxW, body, "enter continue · esc back");
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // 3. RENDER FETCHING (Live Model Curl In Progress)
-  // ─────────────────────────────────────────────────────────────────────────
+  // 3. Discovering models
   private renderFetching(termWidth: number): RenderLine[] {
     const p = this.selectedProvider!;
     const t = currentTheme();
-    const boxW = Math.max(64, Math.min(84, termWidth - 4));
-    const innerW = boxW - 2;
-    const leftM = Math.max(2, Math.floor((termWidth - boxW) / 2));
-    const margin = " ".repeat(leftM);
-    const borderCol = t.primary || BRAND_BLUE;
-    const out: RenderLine[] = [];
-
-    const padRow = (contentSpans: StyledSpan[], rowBg = t.backgroundElement): RenderLine => {
-      const used = contentSpans.reduce((acc, s) => acc + visualWidth(s.text), 0);
-      const pad = Math.max(0, innerW - used);
-      return line(
-        span(margin),
-        span("│", { fg: borderCol }),
-        ...contentSpans,
-        span(" ".repeat(pad), { bg: rowBg }),
-        span("│", { fg: borderCol })
-      );
-    };
-
-    out.push(renderModalTopBorder(`Curling ${p.name}`, innerW, margin, borderCol));
-    out.push(
-      padRow([
-        span("  ⚡ ", { fg: BRAND_LEMON }),
-        span(`Contacting ${p.name}...`, { fg: "#FFFFFF", bold: true }),
-      ])
-    );
-    out.push(
-      padRow([
-        span("  GET ", { fg: BRAND_GREEN, bold: true }),
-        span(`${p.baseURL}/models`, { fg: tint(t.text, 0.9) }),
-      ])
-    );
-    out.push(
-      padRow([
-        span("  Discovering available models and prioritizing free & coding models...", {
-          fg: tint(t.textMuted, 0.8),
-        }),
-      ])
-    );
-    out.push(renderModalBottomBorder("Fetching Models... · Esc Cancel", innerW, margin, borderCol));
-
-    return out;
+    const tick = Math.floor(Date.now() / 80);
+    const body: StyledSpan[][] = [
+      this.steps(2),
+      [],
+      [span("   " + spinnerGlyph(tick) + "  ", { fg: BRAND_BLUE }), ...shimmerSpans(`Looking for models on ${p.name}…`, tick, t.text, BRAND_LEMON)],
+      [span("      GET ", { fg: BRAND_GREEN, bold: true }), span(`${p.baseURL}/models`, { fg: tint(t.textMuted, 0.9) })],
+    ];
+    return modalFrame(`Connect ${p.name}`, this.boxW(termWidth), body, "esc cancel");
   }
 
-  // ─────────────────────────────────────────────────────────────────────────
-  // 4. RENDER MODEL SELECTION VIEW (Free & Coding Models Prioritized)
-  // ─────────────────────────────────────────────────────────────────────────
+  // 4. Choose a model (free and coding models first)
   private renderModelSelect(termWidth: number): RenderLine[] {
     const p = this.selectedProvider!;
     const t = currentTheme();
-    const boxW = Math.max(64, Math.min(84, termWidth - 4));
+    const boxW = this.boxW(termWidth);
     const innerW = boxW - 2;
-    const leftM = Math.max(2, Math.floor((termWidth - boxW) / 2));
-    const margin = " ".repeat(leftM);
-    const borderCol = t.primary || BRAND_BLUE;
-    const out: RenderLine[] = [];
-
-    // 1. Top border
-    out.push(renderModalTopBorder(`Select Model: ${p.name}`, innerW, margin, borderCol));
-
-    // 2. Search row
-    const searchLbl = "  🔍 Model Filter: ";
-    const cursorStr = this.modelQuery + "▌";
-    const freeCount = this.discoveredModels.filter((m) => m.isFree).length;
-    const searchHint = `(${freeCount} Free on top · Enter Apply · Esc Back)  `;
-    const usedSearch = visualWidth(searchLbl) + visualWidth(cursorStr) + visualWidth(searchHint);
-    const searchPad = Math.max(0, innerW - usedSearch);
-    out.push(
-      line(
-        span(margin),
-        span("│", { fg: borderCol }),
-        span(searchLbl, { fg: borderCol, bg: t.backgroundElement }),
-        span(cursorStr, { fg: "#F3F4F6", bg: t.backgroundElement }),
-        span(" ".repeat(searchPad), { bg: t.backgroundElement }),
-        span(searchHint, { fg: BRAND_LEMON, bg: t.backgroundElement }),
-        span("│", { fg: borderCol })
-      )
-    );
-
-    // 3. Separator
-    out.push(
-      line(
-        span(margin),
-        span("├", { fg: borderCol }),
-        span("─".repeat(innerW), { fg: t.border }),
-        span("┤", { fg: borderCol })
-      )
-    );
-
-    // 4. Discovered Model Rows
+    const free = this.discoveredModels.filter((m) => m.isFree).length;
+    const body: (StyledSpan[] | { spans: StyledSpan[]; bg: string })[] = [
+      this.steps(2),
+      [],
+      this.searchRow(this.modelQuery, `filter ${this.discoveredModels.length} models (${free} free first)`),
+      [],
+    ];
     if (this.filteredModels.length === 0) {
-      const emptyMsg = "  No models matched your filter.";
-      const pad = Math.max(0, innerW - visualWidth(emptyMsg));
-      out.push(
-        line(
-          span(margin),
-          span("│", { fg: borderCol }),
-          span(emptyMsg, { fg: tint(t.textMuted, 0.7), bg: t.backgroundElement }),
-          span(" ".repeat(pad), { bg: t.backgroundElement }),
-          span("│", { fg: borderCol })
-        )
-      );
+      body.push([span("   No model matches ", { fg: tint(t.textMuted, 0.9) }), span(`"${this.modelQuery}"`, { fg: t.text })]);
     } else {
-      const visibleEnd = Math.min(this.modelScrollOff + this.modelMaxVisible, this.filteredModels.length);
-      for (let i = this.modelScrollOff; i < visibleEnd; i++) {
-        const item = this.filteredModels[i];
+      const end = Math.min(this.modelScrollOff + this.modelMaxVisible, this.filteredModels.length);
+      for (let i = this.modelScrollOff; i < end; i++) {
+        const m = this.filteredModels[i];
         const selected = i === this.modelCursor;
-        const bg = selected ? t.backgroundMenu : t.backgroundElement;
-        const pointer = selected ? "› " : "  ";
-
-        // Badges: [FREE] / [LOCAL] / [PAID], plus [CODE]
-        const freeBadge = item.badge === "LOCAL" ? "[LOCAL]" : item.isFree ? "[FREE]" : "[PRO]";
-        const freeColor = item.isFree || item.badge === "LOCAL" ? BRAND_LEMON : BRAND_BLUE;
-
-        const codeBadge = item.isCoding ? "[CODE]" : "";
-
-        // Model ID column: fixed 30 chars
-        let rawId = item.id.length > 29 ? item.id.slice(0, 28) + "…" : item.id;
-        const idCol = rawId.padEnd(30);
-
-        const badgesStr = `${freeBadge} ${codeBadge}`.trim().padEnd(14);
-
-        // Space budget for description
-        const fixedUsed = 2 + 30 + 14;
-        const descW = Math.max(10, innerW - fixedUsed - 2);
-        let descText = item.desc;
-        if (visualWidth(descText) > descW) {
-          descText = descText.slice(0, descW - 1) + "…";
-        }
-        const descCol = descText.padEnd(descW);
-
-        const usedW = 2 + visualWidth(idCol) + visualWidth(badgesStr) + visualWidth(descCol);
-        const pad = Math.max(0, innerW - usedW);
-
-        out.push(
-          line(
-            span(margin),
-            span("│", { fg: borderCol }),
-            span(pointer, { fg: selected ? BRAND_LEMON : tint(t.textMuted, 0.5), bg, bold: selected }),
-            span(idCol, { fg: selected ? "#FFFFFF" : tint(t.text, 0.95), bg, bold: selected }),
-            span(`${freeBadge} `, { fg: freeColor, bg, bold: item.isFree }),
-            ...(codeBadge ? [span(`${codeBadge} `, { fg: BRAND_GREEN, bg, bold: true })] : []),
-            span(" ".repeat(Math.max(0, 14 - visualWidth(`${freeBadge} ${codeBadge}`.trim()))), { bg }),
-            span(descCol, { fg: selected ? "#F3F4F6" : tint(t.textMuted, 0.75), bg }),
-            span(" ".repeat(pad), { bg }),
-            span("│", { fg: borderCol })
-          )
-        );
+        const bg = selected ? t.backgroundMenu : t.backgroundPanel;
+        const idW = 32;
+        const id = (m.id.length > idW - 1 ? m.id.slice(0, idW - 2) + "…" : m.id).padEnd(idW);
+        const tier = m.badge === "LOCAL" ? ["local", BRAND_LEMON] : m.isFree ? ["free", BRAND_GREEN] : ["pro", BRAND_AMBER];
+        const descW = Math.max(6, innerW - 3 - idW - 6 - 6);
+        body.push({
+          spans: [
+            span(selected ? " ▌ " : "   ", { fg: BRAND_LEMON, bold: true }),
+            span(id, { fg: selected ? t.text : tint(t.text, 0.88), bold: selected }),
+            span(tier[0].padEnd(6), { fg: tier[1] }),
+            span((m.isCoding ? "code" : "").padEnd(6), { fg: BRAND_BLUE }),
+            span(m.desc.length > descW ? m.desc.slice(0, descW - 1) + "…" : m.desc, { fg: selected ? tint(t.text, 0.8) : tint(t.textMuted, 0.8) }),
+          ],
+          bg,
+        });
+      }
+      if (this.filteredModels.length > this.modelMaxVisible) {
+        body.push([]);
+        body.push([span(`   ${this.modelCursor + 1} of ${this.filteredModels.length} models`, { fg: tint(t.textMuted, 0.6) })]);
       }
     }
-
-    // 5. Scroll info
-    if (this.filteredModels.length > this.modelMaxVisible) {
-      const shown = Math.min(this.modelScrollOff + this.modelMaxVisible, this.filteredModels.length);
-      const scrollInfo = `  ${this.modelScrollOff + 1}–${shown} of ${this.filteredModels.length} models discovered  `;
-      const scrollPad = Math.max(0, innerW - visualWidth(scrollInfo));
-      out.push(
-        line(
-          span(margin),
-          span("│", { fg: borderCol }),
-          span(scrollInfo, { fg: tint(t.textMuted, 0.6), bg: t.backgroundPanel }),
-          span(" ".repeat(scrollPad), { bg: t.backgroundPanel }),
-          span("│", { fg: borderCol })
-        )
-      );
-    }
-
-    // 6. Bottom border
-    out.push(renderModalBottomBorder("↑↓ Select Model · Enter Confirm & Save · Esc Back", innerW, margin, borderCol));
-
-    return out;
+    return modalFrame(`Connect ${p.name}`, boxW, body, "↑↓ move · enter use model · esc back");
   }
 }

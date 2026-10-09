@@ -1,4 +1,5 @@
 import { isAbsolute, resolve, relative } from "node:path";
+import { workspaceRoot } from "../agent/workspace.js";
 
 /**
  * Resolve a user-supplied path and ensure it stays inside the current working
@@ -13,7 +14,7 @@ export function resolveProjectPath(filePath: string): { ok: true; path: string }
     return { ok: false, message: `❌ Invalid path: "${filePath}"` };
   }
 
-  const cwd = process.cwd();
+  const cwd = workspaceRoot();
   const absPath = isAbsolute(filePath) ? filePath : resolve(cwd, filePath);
   const rel = relative(cwd, absPath);
 

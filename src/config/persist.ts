@@ -67,3 +67,47 @@ export function clearPersistedConfig(): void {
     // ignore
   }
 }
+
+function introMarkerPath(): string {
+  return join(getConfigDir(), ".intro-seen");
+}
+
+/** True once the first-launch intro animation has played. */
+export function hasSeenIntro(): boolean {
+  try {
+    return fs.existsSync(introMarkerPath());
+  } catch {
+    return true;
+  }
+}
+
+export function markIntroSeen(): void {
+  try {
+    fs.mkdirSync(getConfigDir(), { recursive: true });
+    fs.writeFileSync(introMarkerPath(), new Date().toISOString() + "\n");
+  } catch {
+    // Not fatal: the intro may simply play again next launch
+  }
+}
+
+function onboardedMarkerPath(): string {
+  return join(getConfigDir(), ".onboarded");
+}
+
+/** True once the first-launch "choose your look" step has been completed. */
+export function hasOnboarded(): boolean {
+  try {
+    return fs.existsSync(onboardedMarkerPath());
+  } catch {
+    return true;
+  }
+}
+
+export function markOnboarded(): void {
+  try {
+    fs.mkdirSync(getConfigDir(), { recursive: true });
+    fs.writeFileSync(onboardedMarkerPath(), new Date().toISOString() + "\n");
+  } catch {
+    // Not fatal: the welcome step may simply show again next launch
+  }
+}

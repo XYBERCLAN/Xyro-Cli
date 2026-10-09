@@ -32,20 +32,22 @@ function teardown() {
   rmSync(TEST_ROOT, { recursive: true, force: true });
 }
 
-describe("edit_file replaces ALL occurrences when asked", () => {
+describe("edit_file: exact, unambiguous edits", () => {
   beforeEach(setup);
   afterEach(teardown);
 
-  it("replaces every occurrence not just the first", async () => {
+  it("refuses an ambiguous edit instead of silently changing every match", async () => {
     writeFileSync(join(PROJECT_DIR, "multi.txt"), "foo foo foo\n", "utf-8");
-    const result = await editFile({
-      path: "multi.txt",
-      old_text: "foo",
-      new_text: "bar",
-    });
+    const result = await editFile({ path: "multi.txt", old_text: "foo", new_text: "bar" });
+    assert.ok(result.startsWith("❌") && result.includes("matches 3 places"), result);
+    assert.equal(readFileSync(join(PROJECT_DIR, "multi.txt"), "utf-8"), "foo foo foo\n");
+  });
+
+  it("replaces every occurrence when replace_all is set", async () => {
+    writeFileSync(join(PROJECT_DIR, "multi.txt"), "foo foo foo\n", "utf-8");
+    const result = await editFile({ path: "multi.txt", old_text: "foo", new_text: "bar", replace_all: true });
     assert.ok(result.includes("Edited"), result);
-    const content = readFileSync(join(PROJECT_DIR, "multi.txt"), "utf-8");
-    assert.equal(content, "bar bar bar\n");
+    assert.equal(readFileSync(join(PROJECT_DIR, "multi.txt"), "utf-8"), "bar bar bar\n");
   });
 
   it("reports error when target text not found", async () => {

@@ -1,16 +1,21 @@
-name: Publish to npm
+name: Publish to npm (tag push)
+
+# Fallback path for releases cut locally: `npm version <bump> && git push --follow-tags`.
+# The Release workflow (release.yml) is the recommended one-click path; tags it
+# pushes do not re-trigger this workflow (GITHUB_TOKEN events never do).
 
 on:
   push:
     tags:
       - "v*"
 
+permissions:
+  contents: write
+  id-token: write
+
 jobs:
   publish:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      id-token: write
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -19,15 +24,14 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "22"
+          cache: npm
           registry-url: https://registry.npmjs.org
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Build
-        run: npm run build
-
-      - name: Verify dist matches tag
+      - name: Verify tag matches package.json
+        id: meta
         run: |
           TAG_VERSION="${GITHUB_REF_NAME#v}"
           PKG_VERSION=$(node -p "require('./package.json').version")
@@ -35,8 +39,32 @@ jobs:
             echo "::error::Tag v${TAG_VERSION} does not match package.json version ${PKG_VERSION}"
             exit 1
           fi
+          if [[ "$PKG_VERSION" == *-* ]]; then echo "tag=next" >> "$GITHUB_OUTPUT"; else echo "tag=latest" >> "$GITHUB_OUTPUT"; fi
+          # Idempotent: skip if this exact version is already on npm
+          if npm view "xyro-cli@${PKG_VERSION}" version >/dev/null 2>&1; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Typecheck
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+      - name: Tests
+        run: npm test
 
       - name: Publish
-        run: npm publish --access public
+        if: steps.meta.outputs.published != 'true'
+        run: npm publish --provenance --access public --tag ${{ steps.meta.outputs.tag }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub Release
+        if: steps.meta.outputs.published != 'true'
+        run: |
+          FLAGS="--generate-notes"
+          if [ "${{ steps.meta.outputs.tag }}" = "next" ]; then FLAGS="$FLAGS --prerelease"; fi
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "XYRO $GITHUB_REF_NAME" $FLAGS
+        env:
+          GH_TOKEN: ${{ github.token }}

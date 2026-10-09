@@ -50,6 +50,8 @@ Commands:
   /resume            reload last saved session
   /clear             reset conversation history
   /init              scaffold an AGENTS.md project context file
+  /learn             save this session's lessons to XYRO.md (project memory)
+  /workflow <name> <goal>   run a team workflow (feature, bugfix, review, …)
   /exit              save and quit
 Bare words also work: help, status, model, cost, compact, history, export, save, resume, clear, exit, quit
 `.trim();
@@ -322,6 +324,25 @@ export async function handleCommand(
     case "init":
       renderAssistant(writeAgentsMd());
       return { action: "continue" };
+
+    case "workflow": {
+      const [wfName, ...goalWords] = arg.split(/\s+/).filter(Boolean);
+      if (!wfName) {
+        return { action: "agent", prompt: "Call run_workflow with name \"list\" and show me the available workflows." };
+      }
+      return {
+        action: "agent",
+        prompt: `Call run_workflow with name ${JSON.stringify(wfName)} and goal ${JSON.stringify(goalWords.join(" "))}, then summarise the outcome for me.`,
+      };
+    }
+
+    case "learn":
+      // The memory keeper records durable lessons from this session in XYRO.md
+      return {
+        action: "agent",
+        prompt:
+          "Use delegate with expert \"memory-keeper\" to record the durable lessons from this session in XYRO.md: conventions we followed, commands that worked, pitfalls we hit, and decisions with their reasons. Pass a concise summary of the session as context.",
+      };
 
     case "exit":
       agent.save();

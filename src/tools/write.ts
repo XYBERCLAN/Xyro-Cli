@@ -56,7 +56,10 @@ export async function editFile(args: {
   }
   backupFile(filePath); // snapshot for revert_file
   const occurrenceCount = content.split(args.old_text).length - 1;
-  const replaceAll = args.replace_all === true || occurrenceCount > 1;
+  if (occurrenceCount > 1 && args.replace_all !== true) {
+    return `❌ Target text matches ${occurrenceCount} places in ${normalizeForDisplay(filePath)} — include more surrounding context to make it unique, or set replace_all: true`;
+  }
+  const replaceAll = args.replace_all === true;
   const updated = replaceAll
     ? content.split(args.old_text).join(args.new_text)
     : content.replace(args.old_text, args.new_text);

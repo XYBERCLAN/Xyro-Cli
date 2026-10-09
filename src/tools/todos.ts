@@ -7,6 +7,7 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
+import { emitTodos, TodoStatus } from "../agent/ui-bridge.js";
 
 const TODOS_DIR = join(homedir(), ".xyro");
 const TODOS_FILE = join(TODOS_DIR, "todos.json");
@@ -15,6 +16,11 @@ export interface TodoItem {
   id: number;
   text: string;
   done: boolean;
+  status?: TodoStatus;
+}
+
+function statusOf(t: TodoItem): TodoStatus {
+  return t.done ? "done" : t.status ?? "pending";
 }
 
 function loadTodos(): TodoItem[] {
@@ -30,20 +36,30 @@ function loadTodos(): TodoItem[] {
 function saveTodos(todos: TodoItem[]): void {
   if (!existsSync(TODOS_DIR)) mkdirSync(TODOS_DIR, { recursive: true });
   writeFileSync(TODOS_FILE, JSON.stringify(todos, null, 2), "utf-8");
+  emitTodos(todos.map((t) => ({ text: t.text, status: statusOf(t) })));
 }
 
 function renderTodos(todos: TodoItem[]): string {
   if (todos.length === 0) return "No todos.";
-  const lines = todos.map((t) => `${t.done ? "[x]" : "[ ]"} ${t.id}. ${t.text}`);
+  const mark = { done: "[x]", in_progress: "[~]", pending: "[ ]" } as const;
+  const lines = todos.map((t) => `${mark[statusOf(t)]} ${t.id}. ${t.text}`);
   return `Todos:\n${lines.join("\n")}`;
 }
 
 export async function writeTodos(args: {
+  items?: { text: string; status: TodoStatus }[];
   todos?: string[];
   mark_done?: number[];
   clear?: boolean;
 }): Promise<string> {
   let todos = loadTodos();
+
+  // Replace the whole list (preferred: the model restates every item + status)
+  if (args.items) {
+    todos = args.items.map((it, i) => ({ id: i + 1, text: it.text, done: it.status === "done", status: it.status }));
+    saveTodos(todos);
+    return renderTodos(todos);
+  }
 
   if (args.clear) {
     todos = [];

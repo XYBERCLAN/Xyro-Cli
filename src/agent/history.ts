@@ -1,10 +1,13 @@
+import { intentsPrompt } from "./intents.js";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { Message } from "./types.js";
 import { SYSTEM_PROMPT, PLAN_MODE_INSTRUCTIONS } from "../config/constants.js";
 import { getHistoryDir, getEnvironmentContext } from "../config/platform.js";
 import { loadProjectContext } from "../config/loader.js";
+import { skillsIndex } from "../agents/skills-catalog.js";
 import { loadSkills } from "../config/skills.js";
+import { getExperts } from "../agents/experts.js";
 import { historyToMarkdown } from "./usage.js";
 
 type ResponseListener = (usage: unknown) => void;
@@ -47,7 +50,20 @@ export class HistoryManager {
     if (projectContext) {
       systemContent += `\n\n## Project Context\n${projectContext}`;
     }
-    const skills = loadSkills();
+    // Team roster: the experts XYRO can activate with delegate / delegate_team
+    const roster = getExperts()
+      .map((e) => `- ${e.name}: ${e.description}${e.source !== "builtin" ? ` (${e.source})` : ""}`)
+      .join("\n");
+    systemContent += `\n\n## Your team\n${roster}`;
+    // Loose SKILL.md files are project guidance: always in the prompt (small, capped)
+    const guidance = loadSkills();
+    if (guidance) {
+      systemContent += `\n\n${guidance}`;
+    }
+    // Intent guard: lasting requirements that must keep holding
+    systemContent += `\n\n${intentsPrompt()}`;
+    // Skill libraries: index only — experts load full skill text when their task needs it
+    const skills = skillsIndex();
     if (skills) {
       systemContent += `\n\n${skills}`;
     }
@@ -95,6 +111,11 @@ export class HistoryManager {
 
   getAll(): Message[] {
     return this.messages;
+  }
+
+  /** Cut the conversation back to `length` messages (the system message always stays). */
+  truncate(length: number): void {
+    this.messages.length = Math.max(1, Math.min(length, this.messages.length));
   }
 
   toMarkdown(): string {

@@ -211,6 +211,16 @@ export class ScrollRegion {
     for (const l of ls) this.lines.push(l);
   }
 
+  /** Replace one line in place (live rows: spinners, streaming text). */
+  setLine(index: number, l: RenderLine): void {
+    if (index >= 0 && index < this.lines.length) this.lines[index] = l;
+  }
+
+  /** Drop every line from `length` onward (re-render a streaming block). */
+  truncate(length: number): void {
+    if (length >= 0 && length < this.lines.length) this.lines.length = length;
+  }
+
   scrollBy(delta: number): void {
     this.offset = Math.max(0, Math.min(this.lines.length, this.offset + delta));
   }
@@ -278,17 +288,32 @@ function parseHex(h: string): [number, number, number] {
 
 // ---- frame painting ----
 
+/**
+ * Post-processor applied to every full frame before it is written, e.g. to
+ * dim the screen and composite a centred modal on top (see tui/modal.ts).
+ */
+export type FrameFilter = (rows: RenderLine[], width: number, height: number) => RenderLine[];
+let frameFilter: FrameFilter | null = null;
+
+export function setFrameFilter(fn: FrameFilter | null): void {
+  frameFilter = fn;
+}
+
 export function paintFrame(content: ScrollRegion, bottom: RenderLine[], top: RenderLine[], fromTop = false): void {
   const bottomH = bottom.length;
   const topH = top.length;
   const viewH = Math.max(1, height - bottomH - topH);
   const visible = fromTop ? content.visibleFromTop(viewH) : content.visible(viewH);
 
-  let buf = `${ESC}H`;
-  for (let i = 0; i < topH; i++) buf += rowToAnsi(top[i], width);
-  for (let i = 0; i < viewH; i++) buf += rowToAnsi(visible[i] ?? emptyLine(), width);
-  for (let i = 0; i < bottomH; i++) buf += rowToAnsi(bottom[i], width);
-  OUT.write(buf);
+  let rows: RenderLine[] = [...top];
+  for (let i = 0; i < viewH; i++) rows.push(visible[i] ?? emptyLine());
+  rows.push(...bottom);
+  if (frameFilter) rows = frameFilter(rows, width, height);
+
+  // Synchronized output (CSI ?2026) so terminals show the frame atomically
+  let buf = `${ESC}?2026h${ESC}H`;
+  for (const r of rows) buf += rowToAnsi(r, width);
+  OUT.write(buf + `${ESC}?2026l`);
 }
 
 function rowToAnsi(row: RenderLine, w: number): string {

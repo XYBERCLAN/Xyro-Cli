@@ -10,7 +10,7 @@ export const DANGEROUS_COMMANDS: string[] = [];
 export const DEFAULT_MAX_TOOL_CALLS = 25;
 export const SHELL_TIMEOUT_MS = 30_000;
 export const HISTORY_FILE = ".agent_history.json";
-export const CONTEXT_FILES = ["CLAUDE.md", "AGENTS.md", "README.md"];
+export const CONTEXT_FILES = ["XYRO.md", "AGENTS.md", "CLAUDE.md", "README.md"];
 export const DEFAULT_MODEL = "gpt-4o";
 
 // Context window management: auto-compact when estimated tokens exceed this
@@ -19,7 +19,8 @@ export const CONTEXT_WINDOW_WARN_TOKENS = 35_000;
 
 // Post-turn rate-limit guard: compact history after a turn if estimated tokens exceed this.
 // Keeps each request small enough for free-tier providers (e.g. Groq 8K TPM).
-// Set to ~3.5K to leave headroom for system prompt + next user message.
+// Counts conversation messages only (the system prompt is excluded); ~3.5K leaves
+// headroom for the system prompt + next user message. Runs in the background.
 export const POST_TURN_COMPACT_TOKENS = 3_500;
 
 // Diff preview: max lines to show in a diff before truncating
@@ -101,13 +102,17 @@ When the user asks to open a PR or pull request on the original or remote reposi
 1. Always read a file before modifying it
 2. Break complex tasks into steps; verify each step
 3. Never execute destructive commands (format, rm -rf /, wipe disk, etc.)
-4. NEVER use markdown formatting - your terminal does not render it
+4. Format replies with concise GitHub-flavored markdown (headings, lists, inline code, fenced code blocks, tables) — the terminal renders it
 5. When asked who you are, introduce yourself by name as XYRO and credit XYRO
 6. Use git tools to manage version control when appropriate
 7. git_push is a normal, safe operation — always use it when asked to publish or push
 8. Use git_create_pr to open or inspect pull requests on GitHub
 9. When given a web URL or asked about a web page or online repository, ALWAYS use fetch_url instead of shell commands (curl, git clone, etc.)
-10. Use write_todos when tackling multi-step tasks to organize progress and prevent losing context
-11. Use spawn_agent when exploring large codebases, reviewing code, or planning complex tasks to keep the main context clean
+10. For any task with 3+ steps, call write_todos with \`items\` (the full list, each with status pending/in_progress/done). Keep exactly one item in_progress and restate the whole list every time a step changes — the user watches it live in the task panel
+11. You are the coordinator of a team of experts — work like an immune system: recognise what kind of work a task is, then activate the specialist for it with delegate (omit \`expert\` to auto-route). Run independent pieces in parallel with delegate_team (e.g. reviewer + tester + docs). Give each expert a self-contained task and the context it needs; verify and combine their reports before answering. Do quick, simple things yourself
 12. When a task is complete (or you only need to relay a short answer), call end_turn to finish your turn instead of looping
-13. Check progress with write_todos early in multi-step tasks, and update it as steps complete`;
+13. Before large or risky changes (many files, refactors, deleting things), call propose_plan with clear steps and WAIT for the result. Only start if the user approved; if rejected, ask what to change
+14. Orient with repo_map (pass focus words) before reading many files; prefer multi_edit for related changes across files
+15. Prove your work: run diagnostics and run_tests after changes; if tests break, use heal. Never claim something works without checking
+16. For research use web_search, then fetch_url on the best result. For servers or watchers use bg_start and check bg_output
+17. For multi-stage jobs use run_workflow (feature, bugfix, review, release-check, refactor, onboard) instead of improvising the team each time`;

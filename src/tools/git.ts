@@ -3,10 +3,26 @@ import { execa } from "execa";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { workspaceRoot } from "../agent/workspace.js";
 
-const git: SimpleGit = simpleGit({
-  baseDir: process.cwd(),
-  timeout: { block: 30_000 },
+// One git client per workspace root: experts in their own worktree operate
+// on that worktree, everyone else on the project.
+const gitClients = new Map<string, SimpleGit>();
+function currentGit(): SimpleGit {
+  const root = workspaceRoot();
+  let c = gitClients.get(root);
+  if (!c) {
+    c = simpleGit({ baseDir: root, timeout: { block: 30_000 } });
+    gitClients.set(root, c);
+  }
+  return c;
+}
+const git = new Proxy({} as SimpleGit, {
+  get(_target, prop) {
+    const c = currentGit() as unknown as Record<string | symbol, unknown>;
+    const v = c[prop];
+    return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(c) : v;
+  },
 });
 
 const GIT_PUSH_TIMEOUT = 60_000;
@@ -210,7 +226,7 @@ export async function gitCreatePr(args?: {
 }): Promise<string> {
   // Check if gh CLI is available
   try {
-    await execa({ timeout: 5000, reject: true })`gh --version`;
+    await execa({ cwd: workspaceRoot(), timeout: 5000, reject: true })`gh --version`;
   } catch {
     const target = args?.repo || (await parseRepoFromRemote("upstream")) || (await parseRepoFromRemote("origin")) || "repository";
     const base = args?.base || "main";
@@ -244,7 +260,7 @@ export async function gitCreatePr(args?: {
 
   // Check if a PR already exists for this branch
   try {
-    const existingRes = await execa({ timeout: 15_000, reject: false })`gh pr view ${head} --repo ${targetRepo}`;
+    const existingRes = await execa({ cwd: workspaceRoot(), timeout: 15_000, reject: false })`gh pr view ${head} --repo ${targetRepo}`;
     const existingPrOutput = existingRes.stdout?.trim();
     if (existingPrOutput) {
       const urlMatch = existingPrOutput.match(/url:\s*(https:\/\/github\.com\/[^\s]+)/i);
@@ -279,7 +295,7 @@ export async function gitCreatePr(args?: {
     ];
     if (args?.draft) ghArgs.push("--draft");
 
-    const res = await execa({ timeout: 45_000, reject: false })("gh", ghArgs);
+    const res = await execa({ cwd: workspaceRoot(), timeout: 45_000, reject: false })("gh", ghArgs);
     if (res.failed) {
       const msg = res.stderr || res.stdout || "Unknown error";
       if (msg.includes("already exists")) {
@@ -310,7 +326,7 @@ export async function gitCreatePr(args?: {
  */
 export async function gitPrView(args?: { pr?: string; repo?: string }): Promise<string> {
   try {
-    await execa({ timeout: 5000, reject: true })`gh --version`;
+    await execa({ cwd: workspaceRoot(), timeout: 5000, reject: true })`gh --version`;
   } catch {
     return "❌ GitHub CLI ('gh') is not installed or not in PATH.";
   }
@@ -321,7 +337,7 @@ export async function gitPrView(args?: { pr?: string; repo?: string }): Promise<
   if (targetRepo) ghArgs.push("--repo", targetRepo);
 
   try {
-    const res = await execa({ timeout: 30_000, reject: false })("gh", ghArgs);
+    const res = await execa({ cwd: workspaceRoot(), timeout: 30_000, reject: false })("gh", ghArgs);
     if (res.failed) {
       const msg = res.stderr || res.stdout || "Error";
       return `❌ Failed to view PR: ${msg.slice(0, 300)}`;
@@ -439,11 +455,11 @@ export async function gitRebase(args: { branch: string }): Promise<string> {
 
 async function runGh(ghArgs: string[], emptyMsg: string, failMsg: string): Promise<string> {
   try {
-    await execa({ timeout: 5000, reject: true })`gh --version`;
+    await execa({ cwd: workspaceRoot(), timeout: 5000, reject: true })`gh --version`;
   } catch {
     return "❌ GitHub CLI ('gh') is not installed or not in PATH.";
   }
-  const res = await execa({ timeout: 30_000, reject: false })("gh", ghArgs);
+  const res = await execa({ cwd: workspaceRoot(), timeout: 30_000, reject: false })("gh", ghArgs);
   if (res.failed) {
     return `❌ ${failMsg}: ${(res.stderr || res.stdout || "Error").slice(0, 300)}`;
   }

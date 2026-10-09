@@ -469,7 +469,7 @@ export interface Config {
 
 async function showProviderInstructions(provider: Provider): Promise<void> {
   console.log();
-  console.log(`  ${pc.bold(pc.yellow("⚡ " + provider.name))}`);
+  console.log(`  ${pc.bold(pc.yellow("› " + provider.name))}`);
   console.log(`  ${pc.dim(provider.limit)}`);
   console.log();
 

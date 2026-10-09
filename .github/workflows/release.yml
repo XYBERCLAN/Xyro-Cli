@@ -1,0 +1,95 @@
+name: Release
+
+# One-click release: Actions → Release → Run workflow (or `npm run release`).
+# Runs the full quality gate, bumps the version, tags, publishes to npm with
+# provenance, and creates a GitHub Release with generated notes.
+# Users running an older XYRO see "update available" and can run /update.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump"
+        type: choice
+        options: [patch, minor, major, prerelease]
+        default: patch
+      preid:
+        description: "Pre-release id (only for prerelease), e.g. beta"
+        type: string
+        default: beta
+
+permissions:
+  contents: write # push the version commit + tag, create the GitHub Release
+  id-token: write # npm provenance
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Test, version, publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npm run lint
+
+      - name: Build
+        run: npm run build
+
+      - name: Tests
+        run: npm test
+
+      - name: Bump version (commit + tag)
+        id: version
+        env:
+          BUMP: ${{ inputs.bump }}
+          PREID: ${{ inputs.preid }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          case "$BUMP" in patch|minor|major|prerelease) ;; *) echo "::error::invalid bump: $BUMP"; exit 1 ;; esac
+          if [ "$BUMP" = "prerelease" ]; then
+            if ! [[ "$PREID" =~ ^[a-z0-9]+$ ]]; then echo "::error::preid must be lowercase letters/digits"; exit 1; fi
+            npm version prerelease --preid "$PREID" -m "chore(release): v%s"
+          else
+            npm version "$BUMP" -m "chore(release): v%s"
+          fi
+          VERSION=$(node -p "require('./package.json').version")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          # Pre-releases go to the "next" channel so `npm i -g xyro-cli` stays stable
+          if [[ "$VERSION" == *-* ]]; then echo "tag=next" >> "$GITHUB_OUTPUT"; else echo "tag=latest" >> "$GITHUB_OUTPUT"; fi
+
+      - name: Rebuild with the new version
+        run: npm run build
+
+      - name: Push version commit and tag
+        run: git push --follow-tags origin HEAD:${{ github.ref_name }}
+
+      - name: Publish to npm
+        run: npm publish --provenance --access public --tag ${{ steps.version.outputs.tag }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub Release
+        run: |
+          FLAGS="--generate-notes"
+          if [ "${{ steps.version.outputs.tag }}" = "next" ]; then FLAGS="$FLAGS --prerelease"; fi
+          gh release create "v${{ steps.version.outputs.version }}" --title "XYRO v${{ steps.version.outputs.version }}" $FLAGS
+        env:
+          GH_TOKEN: ${{ github.token }}

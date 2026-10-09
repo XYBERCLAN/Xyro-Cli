@@ -88,7 +88,7 @@ function startShimmer(options: {
 
   const shimmer: ActiveShimmer = {
     text: options.text,
-    prefix: options.prefix || pc.cyan("✨"),
+    prefix: options.prefix || pc.cyan("◆"),
     baseColor: options.baseColor || "cyan",
     startTime: performance.now(),
     frame: 0,
@@ -317,7 +317,7 @@ export function renderError(msg: string): void {
     return;
   }
   stopShimmer();
-  console.log(`  ${pc.red("✖")} ${pc.red(msg)}`);
+  console.log(`  ${pc.red("✗")} ${pc.red(msg)}`);
 }
 
 export function renderInfo(msg: string): void {

@@ -1,9 +1,11 @@
+import { listIntents, runIntents, formatIntentResults } from "./intents.js";
 import OpenAI from "openai";
 import pc from "picocolors";
 import { Message, AgentOptions } from "./types.js";
 import { HistoryManager } from "./history.js";
-import { createClient, callLLMStream, summarizeHistory, LLMResponse } from "../providers/llm.js";
-import { executeTool } from "../tools/registry.js";
+import { createClient, callLLMStream, summarizeHistory, LLMResponse, ModelSwitch } from "../providers/llm.js";
+import { executeTool, getPlanModeToolDefinitions } from "../tools/registry.js";
+import { END_TURN_TOOL_NAMES } from "../tools/end_turn.js";
 import { requestPermission, shouldAskPermission, describeToolCall, PERMISSION_DENIED_RESULT } from "../tools/permissions.js";
 import { DEFAULT_MODEL, DEFAULT_MAX_TOOL_CALLS, CONTEXT_WINDOW_WARN_TOKENS, POST_TURN_COMPACT_TOKENS } from "../config/constants.js";
 import {
@@ -32,8 +34,48 @@ export interface AgentOutput {
   onToolStart?(name: string, summary: string): void;
   onToolResult?(name: string, summary: string, elapsed: string, failed: boolean): void;
   onError?(message: string): void;
+  /** The free-quota pool moved this request to another model/provider. */
+  onModelSwitched?(s: ModelSwitch): void;
+  /** A short status line (intent guard, privacy shield…) */
+  onNotice?(text: string, kind: "info" | "warn"): void;
   /** Ask the user to approve a mutating/exec tool call (TUI modal). */
   requestPermission?(label: string): Promise<boolean>;
+}
+
+/** Human-readable target for a tool call: the path, command, pattern, … */
+export function summarizeToolArgs(args: Record<string, unknown>): string {
+  for (const key of ["path", "command", "pattern", "url", "symbol", "query", "revision", "branch", "message", "pr", "type"]) {
+    const v = args?.[key];
+    if (typeof v === "string" && v.trim()) return v.replace(/\s+/g, " ").trim().slice(0, 120);
+  }
+  if (Array.isArray(args?.files)) return (args.files as unknown[]).join(" ").slice(0, 120);
+  const json = JSON.stringify(args ?? {});
+  return json === "{}" ? "" : json.slice(0, 80);
+}
+
+/** Tools after which the intent guard re-checks saved requirements. */
+const FILE_CHANGING_TOOLS = new Set([
+  "write_file", "edit_file", "multi_edit", "propose_write_file", "revert_file", "run_command",
+  "delegate", "delegate_team", "spawn_agent", "spawn_agents", "run_workflow", "heal",
+]);
+
+/** Upper bound for a background history compaction (a slow model must never block the next turn). */
+const COMPACT_TIMEOUT_MS = 30_000;
+
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("timed out")), ms);
+    p.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(timer);
+        reject(e);
+      }
+    );
+  });
 }
 
 /** Max characters for tool results before truncation */
@@ -109,23 +151,166 @@ function groupIntoTurns(msgs: Message[]): Message[][] {
   return turns;
 }
 
-/** Trim history to fit within token limits while preserving schema validity */
-export function trimHistory(msgs: Message[]): Message[] {
-  if (msgs.length <= 2) return msgs;
+/**
+ * Doom-loop guard:
+ * if the exact same tool call (name + arguments) fires N times consecutively,
+ * we stop the turn instead of burning tokens indefinitely.
+ */
+export const DOOM_LOOP_THRESHOLD = 3;
 
-  let totalTokens = estimateTokens(msgs);
-  if (totalTokens <= MAX_HISTORY_TOKENS) return msgs;
+/** Max consecutive "thought-only" LLM rounds before forcing a stop. */
+export const MAX_THINK_ROUNDS = 5;
+
+/**
+ * Track a tool-call signature and detect a doom loop: the same signature
+ * repeated DOOM_LOOP_THRESHOLD times consecutively.
+ */
+export function isRepeatedToolCall(
+  signature: string,
+  lastRun: { sig: string; run: number } | null
+): { sig: string; run: number; isDoom: boolean } {
+  const run = lastRun && lastRun.sig === signature ? lastRun.run + 1 : 1;
+  return { sig: signature, run, isDoom: run >= DOOM_LOOP_THRESHOLD };
+}
+
+/**
+ * Detect a "thought-only" LLM response:
+ * the model only emitted reasoning/thinking text with no tool call and no
+ * real answer — we should keep going instead of ending the turn.
+ */
+export function isThinkOnlyResponse(content: string | null): boolean {
+  if (!content) return false;
+  const trimmed = content.trim();
+  if (!trimmed) return false;
+  if (/^<thinking>|^thinking[:\-]|^let me think|^i(n)? need to think/i.test(trimmed)) {
+    return true;
+  }
+  const withoutTags = trimmed.replace(/<thinking>[\s\S]*?<\/thinking>/g, "").trim();
+  return withoutTags === "";
+}
+
+/**
+ * Split history for compaction v2: isolate the previous system/user/assistant
+ * turns from the most recent (atomic) turn, which is kept verbatim so the
+ * model retains its immediate working state after compaction.
+ */
+export function splitForCompact(msgs: Message[]): { older: Message[]; recent: Message[] } | null {
+  if (msgs.length <= 2) return null;
+  const systemMsg = msgs[0];
+  const rest = msgs.slice(1);
+  const turns = groupIntoTurns(rest);
+  if (turns.length <= 1) return null;
+  const pruned = prunePastToolResults(turns);
+  const recentTurns = pruned[pruned.length - 1];
+  const olderTurns = pruned.slice(0, -1);
+  return {
+    older: [systemMsg as Message, ...olderTurns.flat()],
+    recent: recentTurns,
+  };
+}
+
+/** Canonical signpost prefix for compaction summaries. */
+export function canonicalSummaryHeader(): string {
+  return "What did we do so far?";
+}
+
+/**
+ * Prune verbose tool results from past completed turns to keep prompt payloads lean.
+ * The active turn (last turn) is kept completely intact so the assistant can read full outputs.
+ */
+export function prunePastToolResults(turns: Message[][]): Message[][] {
+  if (turns.length <= 1) return turns;
+
+  return turns.map((turn, index) => {
+    // Active turn: keep full output for current turn reasoning
+    if (index === turns.length - 1) return turn;
+
+    return turn.map((msg) => {
+      if (msg.role === "tool" && msg.content && msg.content.length > 120) {
+        const isErr = msg.content.startsWith("❌");
+        const brief = isErr
+          ? msg.content.slice(0, 100)
+          : `[output processed by assistant: ${msg.content.slice(0, 60).replace(/\s+/g, " ")}...]`;
+        return {
+          ...msg,
+          content: brief,
+        };
+      }
+      return msg;
+    });
+  });
+}
+
+/** Get safe max history tokens based on provider limits */
+export function getMaxHistoryTokens(baseURL?: string, model?: string): number {
+  const url = baseURL || "";
+  const m = (model || "").toLowerCase();
+  // Groq free tier has strict TPM limits (~6K-8K tokens/min)
+  if (url.includes("groq.com") || m.startsWith("qwen/")) {
+    return 3000;
+  }
+  return MAX_HISTORY_TOKENS;
+}
+
+/**
+ * Build a structured local context summary without making an LLM API call.
+ * Avoids burning tokens or triggering 429 rate limits during compact.
+ */
+export function buildLocalContextSummary(msgs: Message[]): string {
+  const userQueries: string[] = [];
+  const referencedItems = new Set<string>();
+  const actions: string[] = [];
+
+  for (const m of msgs) {
+    if (m.role === "user" && m.content) {
+      userQueries.push(m.content.trim().slice(0, 120));
+    }
+    if (m.role === "assistant" && m.tool_calls) {
+      for (const tc of m.tool_calls) {
+        const name = tc.function?.name;
+        if (name) actions.push(name);
+        try {
+          const args = JSON.parse(tc.function?.arguments || "{}");
+          if (args.path) referencedItems.add(String(args.path));
+          if (args.url) referencedItems.add(String(args.url));
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }
+
+  const sections: string[] = [];
+  if (userQueries.length > 0) {
+    sections.push(`User queries:\n${userQueries.map((q, i) => `${i + 1}. ${q}`).join("\n")}`);
+  }
+  if (referencedItems.size > 0) {
+    sections.push(`Referenced files/URLs:\n${Array.from(referencedItems).map((item) => `- ${item}`).join("\n")}`);
+  }
+  if (actions.length > 0) {
+    const unique = Array.from(new Set(actions));
+    sections.push(`Tools executed: ${unique.join(", ")}`);
+  }
+
+  const body = sections.join("\n\n") || "Previous conversation context retained.";
+  return `${canonicalSummaryHeader()}\n\n${body}`;
+}
+
+/** Trim history to fit within token limits while preserving schema validity and pruning old tool outputs */
+export function trimHistory(msgs: Message[], maxTokens: number = MAX_HISTORY_TOKENS): Message[] {
+  if (msgs.length <= 2) return msgs;
 
   // Always keep the first message (system context)
   const systemMsg = msgs[0];
   const rest = msgs.slice(1);
 
-  const turns = groupIntoTurns(rest);
+  // Group into atomic turns and prune verbose tool outputs from completed past turns
+  let turns = prunePastToolResults(groupIntoTurns(rest));
 
   // Keep dropping oldest turns until under token limit, leaving at least the last turn
   while (turns.length > 1) {
     const flattened = [systemMsg, ...turns.flat()];
-    if (estimateTokens(flattened) <= MAX_HISTORY_TOKENS) {
+    if (estimateTokens(flattened) <= maxTokens) {
       break;
     }
     turns.shift();
@@ -148,6 +333,9 @@ export class Agent {
   private history: HistoryManager;
   private maxToolCalls: number;
   private output: AgentOutput | null = null;
+  /** Background post-turn compaction; abandoned if the user sends a new message first. */
+  private pendingCompact: Promise<void> | null = null;
+  private compactGen = 0;
 
   setOutputAdapter(out: AgentOutput): void {
     this.output = out;
@@ -188,6 +376,30 @@ export class Agent {
     this.history.onResponse(handler);
   }
 
+  /** Plan mode: read-only tools only, and plan-first instructions in the system prompt. */
+  setPlanMode(enabled: boolean): void {
+    this.history.setPlanMode(enabled);
+    this.history.refreshSystemMessage();
+  }
+
+  /** Number of messages in the conversation (for checkpoints). */
+  /** Record a turn that was answered locally (instant commands) so follow-ups have the context. */
+  recordLocalExchange(user: string, result: string): void {
+    this.history.add({ role: "user", content: user });
+    this.history.add({ role: "assistant", content: `Ran locally, no model call:\n${result.slice(0, 12_000)}` });
+  }
+
+  historyLength(): number {
+    return this.history.getAll().length;
+  }
+
+  /** Rewind the conversation to `length` messages and drop any pending compaction. */
+  truncateHistory(length: number): void {
+    this.compactGen++;
+    this.pendingCompact = null;
+    this.history.truncate(length);
+  }
+
   async compact(): Promise<string | null> {
     const msgs = this.history.getAll();
     if (msgs.length <= 1) return null;
@@ -198,11 +410,22 @@ export class Agent {
   }
 
   async run(input: string): Promise<void> {
+    // Never make the user wait on a background compaction: abandon it
+    // (its summary would be stale now) and let a later turn compact again.
+    if (this.pendingCompact) {
+      this.compactGen++;
+      this.pendingCompact = null;
+    }
     this.history.add({ role: "user", content: input });
     if (!process.stdin.isTTY && !this.output) renderUserMessage(input);
     this.output?.onUserMessage?.(input);
 
     let toolCallCount = 0;
+    let lastToolRun: { sig: string; run: number } | null = null;
+    let doomDetected = false;
+    // Intent guard: re-check saved requirements once per turn after file changes
+    let changedFiles = false;
+    let intentsChecked = false;
     const turnStart = Date.now();
 
     while (true) {
@@ -210,7 +433,7 @@ export class Agent {
       const msgs = this.history.getAll();
       const estimatedTokens = estimateTokens(msgs);
       if (estimatedTokens > CONTEXT_WINDOW_WARN_TOKENS) {
-        if (!isJsonMode()) {
+        if (!isJsonMode() && !this.output) {
           console.log(`  ${pc.yellow("...")} context window large, summarizing...`);
           try {
             await this.compact();
@@ -234,11 +457,18 @@ export class Agent {
       const llmStart = performance.now();
       try {
         // Use streaming for real-time output
-        const msgs = trimHistory(this.history.getAll());
+        const msgs = trimHistory(this.history.getAll(), getMaxHistoryTokens(this.client.baseURL, this.model));
         if (this.output) {
-          response = await callLLMStream(this.client, this.model, msgs, (chunk) => {
-            this.output?.onAssistantText?.(chunk);
-          });
+          response = await callLLMStream(
+            this.client,
+            this.model,
+            msgs,
+            (chunk) => {
+              this.output?.onAssistantText?.(chunk);
+            },
+            this.history.isPlanMode() ? getPlanModeToolDefinitions() : undefined,
+            { onSwitch: (sw) => this.output?.onModelSwitched?.(sw), hedge: true }
+          );
         } else if (process.stdout.isTTY && !isJsonMode()) {
           renderThinkingDone();
           response = await callLLMStream(
@@ -284,22 +514,44 @@ export class Agent {
       }
 
       if (!response.tool_calls || response.tool_calls.length === 0) {
+        if (changedFiles && !intentsChecked && listIntents().length) {
+          intentsChecked = true;
+          const results = await runIntents();
+          const broken = results.filter((r) => !r.ok);
+          this.output?.onNotice?.(
+            broken.length ? `Intent guard: ${broken.length} requirement${broken.length === 1 ? "" : "s"} broke, fixing` : `Intent guard: all ${results.filter((r) => !r.skipped).length} requirements hold`,
+            broken.length ? "warn" : "info"
+          );
+          if (broken.length) {
+            this.history.add({
+              role: "user",
+              content: `[intent guard] Your changes broke requirements I asked for earlier. Fix them while keeping the current request working. Do not weaken or remove the checks.\n\n${formatIntentResults(broken)}`,
+            });
+            continue;
+          }
+        }
         this.output?.onAssistantDone?.((Date.now() - turnStart) / 1000);
         // Post-turn rate-limit guard: if history grew large during this turn,
-        // compact it now so the NEXT request starts lean and avoids TPM limits.
-        const postTurnTokens = estimateTokens(this.history.getAll());
+        // compact it so the NEXT request starts lean and avoids TPM limits.
+        // Runs in the background (bounded) so the turn ends right away.
+        // Count the conversation only — the fixed system prompt is not compactable
+        const postTurnTokens = estimateTokens(this.history.getAll().filter((m) => m.role !== "system"));
         if (postTurnTokens > POST_TURN_COMPACT_TOKENS) {
           if (!isJsonMode() && !this.output) {
-            console.log(`  ${pc.dim("...")} context grew to ~${postTurnTokens} tokens, compacting to avoid rate limits...`);
+            console.log(`  ${pc.dim("...")} context grew to ~${postTurnTokens} tokens, compacting in the background...`);
           }
-          try {
-            await this.compact();
-            if (!isJsonMode()) {
-              console.log(`  ${pc.green("OK")} context compacted — next turn starts fresh`);
-            }
-          } catch {
-            // non-critical: compact failed, continue without it
-          }
+          const gen = ++this.compactGen;
+          const snapshot = this.history.getAll();
+          const job: Promise<void> = withTimeout(summarizeHistory(this.client, this.model, snapshot), COMPACT_TIMEOUT_MS)
+            .then((summary) => {
+              // Apply only if nothing happened since (no newer turn, no newer job)
+              if (summary && gen === this.compactGen) this.history.resetWithSummary(summary);
+            })
+            .catch(() => undefined)
+            .finally(() => {
+              if (this.pendingCompact === job) this.pendingCompact = null;
+            });
+          this.pendingCompact = job;
         }
         break;
       }
@@ -313,7 +565,23 @@ export class Agent {
       for (const tc of response.tool_calls) {
         toolCallCount++;
         const name = tc.function.name;
-        const args = JSON.parse(tc.function.arguments);
+        let args: Record<string, unknown>;
+        try {
+          args = JSON.parse(tc.function.arguments || "{}");
+        } catch {
+          // Malformed arguments from the model: report it instead of crashing the turn
+          this.history.add({ role: "tool", tool_call_id: tc.id, content: `❌ Invalid JSON arguments for ${name}. Send valid JSON.` });
+          continue;
+        }
+
+        // Doom-loop guard: the exact same call repeated back-to-back means the model is stuck
+        const track = isRepeatedToolCall(`${name}(${JSON.stringify(args)})`, lastToolRun);
+        lastToolRun = track;
+        if (track.isDoom) {
+          doomDetected = true;
+          this.history.add({ role: "tool", tool_call_id: tc.id, content: `⛔ Stopped: ${name} was called with the same arguments ${DOOM_LOOP_THRESHOLD} times in a row. Change approach or explain what is blocking you.` });
+          break;
+        }
 
         // Permission gate: mutating/exec tools need user approval
         let allowed = true;
@@ -326,7 +594,7 @@ export class Agent {
         }
 
         const start = performance.now();
-        const argsSummary = JSON.stringify(args).slice(0, 60);
+        const argsSummary = summarizeToolArgs(args);
         if (this.output) {
           this.output.onToolStart?.(name, argsSummary);
         } else {
@@ -335,6 +603,7 @@ export class Agent {
         }
 
         const result = allowed ? await executeTool(name, args) : PERMISSION_DENIED_RESULT;
+        if (allowed && FILE_CHANGING_TOOLS.has(name) && !result.startsWith("❌")) changedFiles = true;
         const elapsed = ((performance.now() - start) / 1000).toFixed(1);
         if (this.output) {
           const failed = result.startsWith("❌") || result.includes("Error");
@@ -349,6 +618,20 @@ export class Agent {
           tool_call_id: tc.id,
           content: truncateToolResult(result),
         });
+      }
+
+      // The model explicitly ended its turn
+      if (response.tool_calls.some((tc) => END_TURN_TOOL_NAMES.has(tc.function.name))) {
+        this.output?.onAssistantDone?.((Date.now() - turnStart) / 1000);
+        break;
+      }
+
+      if (doomDetected) {
+        const note = `⚠️ Stopped a loop: the same tool call repeated ${DOOM_LOOP_THRESHOLD} times. Tell me how you'd like to proceed.`;
+        this.history.add({ role: "assistant", content: note });
+        this.output?.onAssistantText?.(note);
+        this.output?.onAssistantDone?.((Date.now() - turnStart) / 1000);
+        break;
       }
 
       if (toolCallCount >= this.maxToolCalls) {

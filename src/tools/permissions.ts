@@ -16,15 +16,33 @@
 
 import { confirmAction } from "../ui/prompts.js";
 import { isJsonMode } from "../ui/render.js";
+import { mcpNeedsApproval } from "../mcp/approvals.js";
 
 /** Tools that never prompt (pure reads, planning, bookkeeping). */
 const ALLOW_ALWAYS = new Set([
   "read_file",
+  "skill_search",
+  "intent_check",
   "list_files",
   "glob",
   "search_code",
   "find_files",
   "write_todos",
+  "propose_plan",
+  // Experts are gated per tool inside their own run
+  "delegate",
+  "delegate_team",
+  "spawn_agent",
+  "spawn_agents",
+  "run_workflow",
+  "team_note",
+  "team_notes",
+  "web_search",
+  "bg_output",
+  "bg_list",
+  "glob",
+  "find_files",
+  "repo_map",
   "end_turn",
   "task_completed",
   "git_status",
@@ -33,17 +51,26 @@ const ALLOW_ALWAYS = new Set([
   "git_branch",
   "git_init",
   "git_pr_view",
-  "revert_file",
 ]);
 
 /** Tools that prompt for approval in an interactive terminal. */
 const ASK_ALWAYS = new Set([
   "write_file",
+  "tournament",
+  "intent_save",
+  "intent_remove",
   "edit_file",
   "fetch_url",
   "run_command",
-  "spawn_agent",
-  "spawn_agents",
+  "revert_file",
+  "multi_edit",
+  "run_tests",
+  "propose_write_file",
+  // Runs the project's own tsc/eslint (eslint configs are code) — ask first
+  "diagnostics",
+  "bg_start",
+  "bg_stop",
+  "heal",
   "git_commit",
   "git_push",
   "git_create_pr",
@@ -61,6 +88,8 @@ const ASK_ALWAYS = new Set([
 export function shouldAskPermission(name: string): boolean {
   if (process.env.XYRO_NO_APPROVE) return false;
   if (ALLOW_ALWAYS.has(name)) return false;
+  // MCP tools can act on the outside world (push, write a DB…): ask unless auto-approved
+  if (name.startsWith("mcp__")) return mcpNeedsApproval(name);
   return ASK_ALWAYS.has(name);
 }
 

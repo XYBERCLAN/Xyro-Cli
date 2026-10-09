@@ -55,6 +55,9 @@ Unlike most AI coding tools that require a VS Code extension, a web dashboard, o
 | ❖ | **No-Banner Mode** | Headless/JSON output for CI pipelines and scripting |
 | ◈ | **Free-Tier Friendly** | Built-in provider presets for Groq, OpenRouter, DeepSeek free tiers |
 | ▣ | **Error Handling** | Granular API error formatting per provider (auth, rate-limit, model-not-found) |
+| ◆ | **Free-Quota Pool** | When a model is rate-limited or out of free quota, XYRO moves to another free model, then to another provider you have a key for. Limited providers rest until they recover. See `/quota` |
+| ▸ | **Intent Guard** | Lasting requirements you state ("login must reject empty passwords") are saved as checks in `.xyro/intents.json` and re-run after every change. Anything that broke is fixed before the turn ends. See `/intents` |
+| ● | **Privacy Shield** | API keys, tokens, passwords, private keys, card numbers and emails are replaced with placeholders before a request leaves your machine, then restored locally in replies and tool calls. Counts are logged to `privacy-audit.jsonl`, never values. See `/privacy`, or turn it off with `XYRO_PRIVACY=off` |
 
 ---
 
@@ -117,6 +120,9 @@ Options:
 | `exit` / `quit` | Save and exit |
 | `clear` | Reset conversation history |
 | `resume` | Reload last session |
+| `/quota` | Free-quota pool: requests, limits and resting providers |
+| `/intents` | Re-run saved requirement checks (`/intents trust`, `/intents remove <id>`) |
+| `/privacy` | What the privacy shield withheld this session (`/privacy on` / `off`) |
 
 ---
 
@@ -238,6 +244,28 @@ git push --follow-tags
 The workflow requires an `NPM_TOKEN` secret in the repo (Settings → Secrets → Actions). Use a **granular access token** with "Read and write" packages permission, and 2FA bypass enabled for automation.
 
 ---
+
+## ✦ Updating
+
+XYRO checks npm for a newer release in the background (at most every 12 hours, never blocking start-up). When one exists, the home screen and the status rail say so — type `/update` to install it without leaving XYRO, then restart.
+
+```bash
+/update                         # inside XYRO
+npm install -g xyro-cli@latest  # or from your shell
+XYRO_NO_UPDATE_CHECK=1 xyro     # opt out of the background check
+```
+
+## ✦ Releasing
+
+Releases are cut by CI — no local publishing needed.
+
+1. **Actions → Release → Run workflow**, pick `patch`, `minor`, `major` or `prerelease` (or run `npm run release`, `npm run release:minor`, `npm run release:major` with the GitHub CLI).
+2. The workflow typechecks, builds, runs the tests, bumps `package.json`, tags `vX.Y.Z`, publishes to npm **with provenance**, and creates a GitHub Release with generated notes.
+3. Pre-releases publish to the `next` dist-tag, so `npm install -g xyro-cli` stays on stable.
+
+Pushing a `v*` tag manually (`npm version patch && git push --follow-tags`) runs the same gate through `publish.yml`, and skips versions already on npm.
+
+**One-time setup:** add an npm automation token as the `NPM_TOKEN` repository secret, and allow GitHub Actions to push to `main` (or exempt `github-actions[bot]` from branch protection).
 
 ## ▸ License
 

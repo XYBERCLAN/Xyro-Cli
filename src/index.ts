@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 
+import { matchInstant } from "./agent/instant.js";
 import { program } from "commander";
+import { xyroVersion } from "./version.js";
+import { connectMcpServers } from "./mcp/manager.js";
 import pc from "picocolors";
 import OpenAI from "openai";
 import { readFileSync } from "node:fs";
@@ -22,9 +25,7 @@ process.on("warning", (warn) => {
 });
 
 function packageVersion(): string {
-  const pkgPath = join(dirname(fileURLToPath(import.meta.url)), "..", "package.json");
-  const pkg = JSON.parse(readFileSync(pkgPath, "utf-8"));
-  return pkg.version;
+  return xyroVersion();
 }
 
 program
@@ -106,6 +107,8 @@ function formatApiError(err: unknown, provider: string, model: string): string {
 async function main(): Promise<void> {
   // Initialize built-in + plugin tools
   await initializeTools();
+  // MCP servers connect in the background — never delays start-up
+  void connectMcpServers();
 
   // Priority: CLI arg > env var > saved config > default
   const saved = loadPersistedConfig();
@@ -222,6 +225,14 @@ async function main(): Promise<void> {
 
     if (cmdResult) {
       if (cmdResult.action === "exit") break;
+      continue;
+    }
+
+    const instant = matchInstant(trimmed);
+    if (instant) {
+      const result = await instant.run().catch((e: unknown) => `❌ ${e instanceof Error ? e.message : String(e)}`);
+      console.log(`\n${pc.dim(`instant · ${instant.label} (no model call)`)}\n${result}\n`);
+      agent.recordLocalExchange(trimmed, result);
       continue;
     }
 

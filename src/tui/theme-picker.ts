@@ -1,40 +1,45 @@
-// XYRO Theme Gallery Pop-Out Overlay
-// Browse, filter, live-preview, and select themes with real-time swatch rendering.
-// Follows universal TUI design guidelines from tui-design and impeccable craft.
+// XYRO theme gallery — two panes: themes grouped Dark / Light on the left, a
+// live preview of a real XYRO session (message, tools, diff, code) on the right.
+// Moving the cursor previews a theme without saving; Enter saves; Esc reverts.
+// The same gallery runs as the first-launch "Welcome" step.
 
-import { currentTheme, setTheme, tint, THEME_CATALOG, ThemeInfo, Theme } from "../ui/theme.js";
-import { RenderLine, StyledSpan, span, line, visualWidth } from "./core.js";
+import { currentTheme, setTheme, previewTheme, tint, THEME_CATALOG, THEMES, ThemeInfo } from "../ui/theme.js";
+import { RenderLine, StyledSpan, span, line, visualWidth, wrapSpans } from "./core.js";
+import { renderModalTopBorder, renderModalBottomBorder } from "./overlays.js";
 
-const BRAND_BLUE = "#38BDF8";
-const BRAND_LEMON = "#C6F135";
-const BRAND_GREEN = "#22C55E";
+const LIST_W = 40;
+const BODY_H = 18;
+
+type Row = { kind: "group"; label: string } | { kind: "item"; index: number };
 
 export class ThemePicker {
   private visible = false;
+  private welcome = false;
   private cursor = 0;
   private query = "";
   private filtered: ThemeInfo[] = THEME_CATALOG.slice();
   private originalThemeId = "xyro";
-  private scrollOff = 0;
-  private maxVisible = 8;
   private onSelectCb: ((theme: ThemeInfo) => void) | null = null;
   private onCloseCb: (() => void) | null = null;
 
   isOpen(): boolean { return this.visible; }
+  isWelcome(): boolean { return this.visible && this.welcome; }
 
-  open(currentThemeId: string): void {
+  open(currentThemeId: string, welcome = false): void {
     this.visible = true;
-    this.originalThemeId = currentThemeId;
+    this.welcome = welcome;
+    // First launch starts on the recommended default (XYRO Cyber, dark)
+    this.originalThemeId = welcome ? "xyro" : currentThemeId;
+    if (welcome) previewTheme("xyro");
     this.query = "";
-    this.filtered = THEME_CATALOG.slice();
-    const idx = this.filtered.findIndex((t) => t.id === currentThemeId);
+    this.filtered = ordered(THEME_CATALOG);
+    const idx = this.filtered.findIndex((t) => t.id === this.originalThemeId);
     this.cursor = idx >= 0 ? idx : 0;
-    this.scrollOff = Math.max(0, this.cursor - Math.floor(this.maxVisible / 2));
   }
 
   close(): void {
     if (this.visible) {
-      setTheme(this.originalThemeId);
+      previewTheme(this.originalThemeId);
       this.visible = false;
     }
   }
@@ -45,16 +50,17 @@ export class ThemePicker {
   handleKey(key: string): boolean {
     if (!this.visible) return false;
     const cp = key.codePointAt(0) ?? 0;
+    const n = this.filtered.length;
 
-    // Esc: revert preview and close
     if (key === "\u001b") {
-      setTheme(this.originalThemeId);
+      // Revert the preview. In welcome mode this means "keep the default".
+      if (this.welcome) setTheme(this.originalThemeId);
+      else previewTheme(this.originalThemeId);
       this.visible = false;
       this.onCloseCb?.();
       return true;
     }
 
-    // Enter: commit selection
     if (cp === 13) {
       const chosen = this.filtered[this.cursor];
       if (chosen) {
@@ -66,219 +72,198 @@ export class ThemePicker {
       return true;
     }
 
-    // Up Arrow
-    if (key === "\u001b[A") {
-      this.cursor = Math.max(0, this.cursor - 1);
-      this._clampScroll();
-      this._livePreview();
+    if (key === "\u001b[A" || cp === 16) {
+      if (n) this.cursor = (this.cursor - 1 + n) % n;
+      this.preview();
+      return true;
+    }
+    if (key === "\u001b[B" || cp === 14 || cp === 9) {
+      if (n) this.cursor = (this.cursor + 1) % n;
+      this.preview();
       return true;
     }
 
-    // Down Arrow
-    if (key === "\u001b[B") {
-      this.cursor = Math.min(this.filtered.length - 1, this.cursor + 1);
-      this._clampScroll();
-      this._livePreview();
-      return true;
-    }
-
-    // Backspace
     if (cp === 127 || cp === 8) {
       this.query = this.query.slice(0, -1);
-      this._refilter();
+      this.refilter();
       return true;
     }
-
-    // Ctrl+U
     if (cp === 21) {
       this.query = "";
-      this._refilter();
+      this.refilter();
       return true;
     }
-
-    // Filter typing
     if (cp >= 32 && !key.startsWith("\u001b")) {
       this.query += key;
-      this._refilter();
+      this.refilter();
       return true;
     }
-
     return true;
   }
 
-  private _livePreview(): void {
+  private preview(): void {
     const item = this.filtered[this.cursor];
-    if (item) {
-      setTheme(item.id);
-    }
+    if (item) previewTheme(item.id);
   }
 
-  private _refilter(): void {
+  private refilter(): void {
     const q = this.query.trim().toLowerCase();
-    if (!q) {
-      this.filtered = THEME_CATALOG.slice();
-    } else {
-      this.filtered = THEME_CATALOG.filter(
-        (t) =>
-          t.id.toLowerCase().includes(q) ||
-          t.name.toLowerCase().includes(q) ||
-          t.category.toLowerCase().includes(q) ||
-          t.desc.toLowerCase().includes(q)
-      );
-    }
+    const all = ordered(THEME_CATALOG);
+    this.filtered = q
+      ? all.filter((t) => [t.id, t.name, t.category, t.desc].some((f) => f.toLowerCase().includes(q)))
+      : all;
     this.cursor = 0;
-    this.scrollOff = 0;
-    this._livePreview();
-  }
-
-  private _clampScroll(): void {
-    if (this.cursor < this.scrollOff) {
-      this.scrollOff = this.cursor;
-    } else if (this.cursor >= this.scrollOff + this.maxVisible) {
-      this.scrollOff = this.cursor - this.maxVisible + 1;
-    }
+    this.preview();
   }
 
   render(termWidth: number): RenderLine[] {
     if (!this.visible) return [];
     const t = currentTheme();
-    const boxW = Math.max(60, Math.min(78, termWidth - 4));
+    const boxW = Math.max(52, Math.min(termWidth - 6, 104));
     const innerW = boxW - 2;
-    const leftM = Math.max(2, Math.floor((termWidth - boxW) / 2));
-    const margin = " ".repeat(leftM);
-    const out: RenderLine[] = [];
+    const withPreview = innerW >= LIST_W + 34;
+    const listW = withPreview ? LIST_W : innerW;
+    const prevW = withPreview ? innerW - listW - 1 : 0;
+    const panel = t.backgroundPanel;
+    const frame = tint(t.border, 1);
+    const muted = tint(t.textMuted, 0.9);
 
-    const borderCol = t.primary || BRAND_BLUE;
+    // ── left pane: intro, filter, grouped list ───────────────────────────
+    const left: StyledSpan[][] = [];
+    left.push([]);
+    if (this.welcome) {
+      left.push([span("  Pick a look for your terminal.", { fg: t.text, bold: true })]);
+      left.push([span("  Change it anytime with ", { fg: muted }), span("/theme", { fg: t.accent, bold: true })]);
+      left.push([]);
+    }
+    left.push([
+      span("  ❯ ", { fg: t.accent, bold: true }),
+      ...(this.query ? [span(this.query, { fg: t.text, bold: true })] : [span("filter themes", { fg: tint(t.textMuted, 0.6), italic: true })]),
+      span("▌", { fg: t.accent }),
+    ]);
+    left.push([]);
 
-    // 1. Top border
-    const titleStr = " Theme Gallery ";
-    const badge = " [XYRO] ";
-    const topDash = Math.max(1, innerW - visualWidth(titleStr) - visualWidth(badge) - 1);
-    out.push(
-      line(
-        span(margin),
-        span("╭─", { fg: borderCol }),
-        span(titleStr, { fg: "#F3F4F6", bold: true }),
-        span("─".repeat(topDash), { fg: borderCol }),
-        span(badge, { fg: BRAND_LEMON, bold: true }),
-        span("╮", { fg: borderCol })
-      )
-    );
-
-    // 2. Search row
-    const searchLbl = "  🔍 Search: ";
-    const cursorStr = this.query + "▌";
-    const searchHint = "(↑↓ live preview · Enter apply · Esc revert)  ";
-    const usedSearch = visualWidth(searchLbl) + visualWidth(cursorStr) + visualWidth(searchHint);
-    const searchPad = Math.max(0, innerW - usedSearch);
-    out.push(
-      line(
-        span(margin),
-        span("│", { fg: borderCol }),
-        span(searchLbl, { fg: borderCol, bg: t.backgroundElement }),
-        span(cursorStr, { fg: "#F3F4F6", bg: t.backgroundElement }),
-        span(" ".repeat(searchPad), { bg: t.backgroundElement }),
-        span(searchHint, { fg: tint(t.textMuted, 0.65), bg: t.backgroundElement }),
-        span("│", { fg: borderCol })
-      )
-    );
-
-    // 3. Separator
-    out.push(
-      line(
-        span(margin),
-        span("├", { fg: borderCol }),
-        span("─".repeat(innerW), { fg: t.border }),
-        span("┤", { fg: borderCol })
-      )
-    );
-
-    // 4. Rows
-    if (this.filtered.length === 0) {
-      const noMatch = "  No themes match your search query.";
-      const pad = Math.max(0, innerW - visualWidth(noMatch));
-      out.push(
-        line(
-          span(margin),
-          span("│", { fg: borderCol }),
-          span(noMatch, { fg: tint(t.textMuted, 0.7), bg: t.backgroundElement }),
-          span(" ".repeat(pad), { bg: t.backgroundElement }),
-          span("│", { fg: borderCol })
-        )
-      );
-    } else {
-      const visibleEnd = Math.min(this.scrollOff + this.maxVisible, this.filtered.length);
-      for (let i = this.scrollOff; i < visibleEnd; i++) {
-        const item = this.filtered[i];
-        const selected = i === this.cursor;
-        const isCurrent = item.id === this.originalThemeId;
-        const bg = selected ? t.backgroundMenu : t.backgroundElement;
-        const pointer = selected ? "› " : "  ";
-
-        const nameCol = item.name.padEnd(17);
-        const catCol = `[${item.category}]`.padEnd(9);
-
-        // Color swatches: ● ■ ▲ in primary, secondary, and accent colors
-        const swatch1 = span("●", { fg: item.primary, bg });
-        const swatch2 = span("■", { fg: item.secondary, bg });
-        const swatch3 = span("▲ ", { fg: item.accent, bg });
-
-        const activeTag = isCurrent ? "● CURRENT" : "";
-        const fixedUsed = 2 + 17 + 9 + 4 + (activeTag ? 10 : 0);
-        const descW = Math.max(8, innerW - fixedUsed - 2);
-        const descCol = item.desc.length > descW ? item.desc.slice(0, descW - 1) + "…" : item.desc.padEnd(descW);
-
-        const usedW = 2 + visualWidth(nameCol) + visualWidth(catCol) + 4 + visualWidth(descCol) + (activeTag ? 10 : 0);
-        const pad = Math.max(0, innerW - usedW);
-
-        out.push(
-          line(
-            span(margin),
-            span("│", { fg: borderCol }),
-            span(pointer, { fg: selected ? BRAND_LEMON : tint(t.textMuted, 0.5), bg, bold: selected }),
-            span(nameCol, { fg: selected ? "#FFFFFF" : tint(t.text, 0.95), bg, bold: selected }),
-            span(catCol, { fg: item.primary, bg }),
-            swatch1,
-            swatch2,
-            swatch3,
-            span(descCol, { fg: selected ? "#F3F4F6" : tint(t.textMuted, 0.8), bg }),
-            ...(activeTag ? [span("  "), span(activeTag, { fg: BRAND_GREEN, bg, bold: true })] : []),
-            span(" ".repeat(pad), { bg }),
-            span("│", { fg: borderCol })
-          )
-        );
+    const rows: Row[] = [];
+    let lastGroup = "";
+    this.filtered.forEach((th, i) => {
+      const group = THEMES[th.id]?.light ? "Light" : "Dark";
+      if (group !== lastGroup) {
+        rows.push({ kind: "group", label: group });
+        lastGroup = group;
       }
+      rows.push({ kind: "item", index: i });
+    });
+
+    const listH = BODY_H - left.length;
+    const cursorRow = rows.findIndex((r) => r.kind === "item" && r.index === this.cursor);
+    const start = Math.max(0, Math.min(cursorRow - Math.floor(listH / 2), rows.length - listH));
+    const windowRows = rows.slice(start, start + listH);
+
+    if (this.filtered.length === 0) {
+      left.push([span("  No theme matches ", { fg: muted }), span(`"${this.query}"`, { fg: t.text })]);
+    }
+    for (const r of windowRows) {
+      if (r.kind === "group") {
+        left.push([span("  " + r.label, { fg: tint(t.textMuted, 0.75), bold: true })]);
+        continue;
+      }
+      const th = this.filtered[r.index];
+      const sel = r.index === this.cursor;
+      const bg = sel ? t.backgroundMenu : undefined;
+      const tag = th.id === this.originalThemeId ? (this.welcome ? "default" : "current") : "";
+      const nameW = listW - 2 - 2 - 10 - 1 - 8;
+      const name = th.name.length > nameW ? th.name.slice(0, nameW - 1) + "…" : th.name.padEnd(nameW);
+      left.push([
+        span(sel ? " ▌" : "  ", { fg: t.accent, bold: true, bg }),
+        span(" ", { bg }),
+        span(name, { fg: sel ? t.text : tint(t.text, 0.85), bold: sel, bg }),
+        ...swatch(th.id, bg),
+        span(" " + tag.padEnd(8), { fg: tint(t.textMuted, 0.7), bg }),
+      ]);
+    }
+    if (rows.length > listH) {
+      left.push([span(`  ${this.cursor + 1} of ${this.filtered.length}`, { fg: tint(t.textMuted, 0.6) })]);
     }
 
-    // 5. Scroll info
-    if (this.filtered.length > this.maxVisible) {
-      const shown = Math.min(this.scrollOff + this.maxVisible, this.filtered.length);
-      const scrollInfo = `  ${this.scrollOff + 1}–${shown} of ${this.filtered.length} themes  `;
-      const scrollPad = Math.max(0, innerW - visualWidth(scrollInfo));
-      out.push(
-        line(
-          span(margin),
-          span("│", { fg: borderCol }),
-          span(scrollInfo, { fg: tint(t.textMuted, 0.6), bg: t.backgroundPanel }),
-          span(" ".repeat(scrollPad), { bg: t.backgroundPanel }),
-          span("│", { fg: borderCol })
-        )
-      );
-    }
+    // ── right pane: live sample of the session in this theme ─────────────
+    const right = withPreview ? previewPane(prevW, this.filtered[this.cursor]) : [];
 
-    // 6. Bottom border
-    const btmHint = " ↑↓ Preview · Enter Apply · Esc Cancel ";
-    const btmDash = Math.max(1, innerW - visualWidth(btmHint) - 1);
+    // ── assemble ──────────────────────────────────────────────────────────
+    const out: RenderLine[] = [];
+    out.push(renderModalTopBorder(this.welcome ? "Welcome to XYRO" : "Theme", innerW, ""));
+    for (let r = 0; r < BODY_H; r++) {
+      const l = fit(left[r] ?? [], listW, panel);
+      const spans: StyledSpan[] = [span("│", { fg: frame, bg: panel }), ...l];
+      if (withPreview) spans.push(span("│", { fg: tint(t.border, 0.6), bg: panel }), ...(right[r] ?? fit([], prevW, panel)));
+      spans.push(span("│", { fg: frame, bg: panel }));
+      out.push(line(...spans));
+    }
     out.push(
-      line(
-        span(margin),
-        span("╰─", { fg: borderCol }),
-        span(btmHint, { fg: tint(t.textMuted, 0.75) }),
-        span("─".repeat(btmDash), { fg: borderCol }),
-        span("╯", { fg: borderCol })
-      )
+      renderModalBottomBorder(this.welcome ? "↑↓ preview · enter choose · esc keep default" : "↑↓ preview · enter apply · esc cancel", innerW, "")
     );
-
     return out;
   }
+}
+
+/** Dark themes first (XYRO first of all), then light ones. */
+function ordered(list: ThemeInfo[]): ThemeInfo[] {
+  const rank = (t: ThemeInfo) => (THEMES[t.id]?.light ? 1 : 0) * 100 + (t.id.startsWith("xyro") ? 0 : 1);
+  return list.slice().sort((a, b) => rank(a) - rank(b));
+}
+
+/** Five real colours from the theme: primary, secondary, accent, success, error. */
+function swatch(id: string, bg?: string): StyledSpan[] {
+  const th = THEMES[id];
+  if (!th) return [span(" ".repeat(10), { bg })];
+  return [th.primary, th.secondary, th.accent, th.success, th.error].map((c) => span("██", { fg: c, bg }));
+}
+
+/** Clip/pad spans to exactly w cells, filling with `bg` where spans have none. */
+function fit(spans: StyledSpan[], w: number, bg: string): StyledSpan[] {
+  const out: StyledSpan[] = [];
+  let used = 0;
+  for (const s of spans) {
+    let text = "";
+    for (const ch of Array.from(s.text)) {
+      const cw = visualWidth(ch);
+      if (used + cw > w) break;
+      text += ch;
+      used += cw;
+    }
+    if (text) out.push({ ...s, text, bg: s.bg ?? bg });
+    if (used >= w) break;
+  }
+  if (used < w) out.push(span(" ".repeat(w - used), { bg }));
+  return out;
+}
+
+/** A miniature XYRO session rendered in the active (previewed) theme. */
+function previewPane(w: number, info: ThemeInfo | undefined): StyledSpan[][] {
+  const t = currentTheme();
+  const bg = t.background;
+  const inner = w - 4;
+  const rows: StyledSpan[][] = [];
+  const add = (spans: StyledSpan[], rowBg = bg) => rows.push(fit([span("  ", { bg: rowBg }), ...spans.map((s) => ({ ...s, bg: s.bg ?? rowBg }))], w, rowBg));
+  const dim = tint(t.textMuted, 0.65);
+
+  add([]);
+  add([span("▍ ", { fg: t.secondary, bg: t.backgroundPanel }), span("you", { fg: t.secondary, bold: true, bg: t.backgroundPanel }), span(" ".repeat(Math.max(1, inner - 5)), { bg: t.backgroundPanel })], bg);
+  add([span("▍ ", { fg: t.secondary, bg: t.backgroundPanel }), span("add retries to the API client".padEnd(inner - 2).slice(0, inner - 2), { fg: t.text, bg: t.backgroundPanel })], bg);
+  add([]);
+  add([span("◆ ", { fg: t.accent }), span("xyro", { fg: t.primary, bold: true })]);
+  add([span(" ✓ ", { fg: t.success, bold: true }), span("Read     ", { fg: t.primary, bold: true }), span("src/api.ts", { fg: tint(t.text, 0.8) }), span(" · 0.2s", { fg: dim })]);
+  add([span(" ⠹ ", { fg: t.warning }), span("Run      ", { fg: t.warning, bold: true }), span("npm test", { fg: t.text })]);
+  add([]);
+  add([span(" - return fetch(url)".padEnd(inner), { fg: t.diffRemoved, bg: t.diffRemovedBg })]);
+  add([span(" + return retry(() => fetch(url), 3)".padEnd(inner), { fg: t.diffAdded, bg: t.diffAddedBg })]);
+  add([]);
+  add([span(" const ", { fg: t.secondary }), span("delay", { fg: t.text }), span(" = ", { fg: t.textMuted }), span("250", { fg: t.warning }), span(" // ms", { fg: dim, italic: true })]);
+  add([span(" ✗ ", { fg: t.error, bold: true }), span("429 rate limited, retrying", { fg: tint(t.text, 0.85) })]);
+  add([]);
+  if (info) {
+    add([span(info.name, { fg: t.text, bold: true })]);
+    for (const wl of wrapSpans([span(info.desc, { fg: tint(t.textMuted, 0.95) })], inner).slice(0, 2)) add(wl.spans);
+  }
+  while (rows.length < BODY_H) add([]);
+  return rows.slice(0, BODY_H);
 }

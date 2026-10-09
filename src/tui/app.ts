@@ -1,4 +1,5 @@
 import { readFileSync, existsSync } from "node:fs";
+import { xyroVersion } from "../version.js";
 import { fileURLToPath } from "node:url";
 import { dirname, join, basename } from "node:path";
 import { execSync } from "node:child_process";
@@ -9,6 +10,7 @@ import {
   tuiSize,
   paintFrame,
   paintRowOverlay,
+  setFrameFilter,
   ScrollRegion,
   span,
   line,
@@ -19,18 +21,51 @@ import {
   MouseEvt,
 } from "./core.js";
 import { SelectionManager } from "./selection.js";
-import { userMessage, assistantText, assistantFooter, toolRunning, toolDone, errorMessage, agentColor } from "./components.js";
-import { logoRows } from "./logo.js";
+import {
+  userMessage,
+  assistantText,
+  assistantFooter,
+  assistantHeader,
+  thinkingRow,
+  toolRow,
+  noticeRow,
+  errorMessage,
+  agentColor,
+  shimmerSpans,
+  gradientSpans,
+  BRAND,
+} from "./components.js";
+import { logoRows, introRows, isReducedMotion } from "./logo.js";
+import { hasSeenIntro, markIntroSeen, hasOnboarded, markOnboarded } from "../config/persist.js";
+import { MascotMood } from "./mascot.js";
+import { composeModal, MODAL_OPEN_MS, MODAL_CLOSE_MS } from "./modal.js";
+import { renderSidePanel, panelVisible, panelWidth, PanelHit, PlanView } from "./side-panel.js";
+import type { TodoView, PlanRequest, PlanDecision, AgentActivity } from "../agent/ui-bridge.js";
+import { getExperts } from "../agents/experts.js";
+import { readMemory } from "../agents/router.js";
+import { expertModel, expertBudget, setExpertModel } from "../agents/team-config.js";
+import { canonicalProviderId } from "../models/live.js";
+import { poolStatus } from "../providers/pool.js";
 import { ModelPicker } from "./model-picker.js";
 import { ThemePicker } from "./theme-picker.js";
 import { ProviderPicker } from "./provider-picker.js";
-import { Provider } from "../ui/prompts.js";
+import { Provider, FREE_PROVIDERS } from "../ui/prompts.js";
 import {
   CommandPicker,
   AgentModePicker,
   StatusModal,
   CostModal,
   PermissionModal,
+  UpdateModal,
+  UpdateModalState,
+  ExpertsModal,
+  RewindModal,
+  RewindItem,
+  HooksModal,
+  HooksView,
+  McpModal,
+  McpView,
+  QuotaModal,
   AGENT_MODE_DEFS,
   AgentModeDef,
 } from "./overlays.js";
@@ -117,17 +152,6 @@ function detectGitBranch(): string {
   }
 }
 
-function getPackageVersion(): string {
-  try {
-    const pkgPath = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "package.json");
-    if (existsSync(pkgPath)) {
-      return JSON.parse(readFileSync(pkgPath, "utf-8")).version || "0.3.0";
-    }
-  } catch {
-    // fallback
-  }
-  return "0.3.0";
-}
 
 type View = { view: "home" } | { view: "session" };
 
@@ -145,21 +169,45 @@ export class TuiApp {
   private animTick = 0;
   private busy = false;
   private turnStart = 0;
+  private logoShownAt = 0;
+  private introStart = 0;
+  private introTimer: ReturnType<typeof setInterval> | null = null;
+  private flashMood: { mood: MascotMood; until: number } | null = null;
   private model = "";
   private provider = "";
   private agentModeIdx = 0;
   private agentName = "Build";
   private colorIdx = 1;
-  private mcpCount = 1;
+  private mcpCount = 0;
   private cwd = process.cwd();
   private gitBranch = detectGitBranch();
-  private version = getPackageVersion();
+  private version = xyroVersion();
   private modelPicker = new ModelPicker();
   private commandPicker = new CommandPicker();
   private agentPicker = new AgentModePicker();
   private statusModal = new StatusModal();
   private costModal = new CostModal();
   private permissionModal = new PermissionModal();
+  private permissionQueue: Promise<void> = Promise.resolve();
+  private expertsModal = new ExpertsModal();
+  private agents: AgentActivity[] = [];
+  private rewindModal = new RewindModal();
+  private hooksModal = new HooksModal();
+  private mcpModal = new McpModal();
+  private quotaModal = new QuotaModal();
+  private onMcpRequestCb: (() => void) | null = null;
+  private lastEscAt = 0;
+  /** checkpoint id → transcript length just before that user message */
+  private scrollMarks = new Map<number, number>();
+  private onRewindRequestCb: (() => void) | null = null;
+  private onHooksRequestCb: (() => void) | null = null;
+  private onIntentsRequestCb: ((arg: string) => void) | null = null;
+  private onPrivacyRequestCb: ((arg: string) => void) | null = null;
+  private homeNotice: { label: string; text: string } | null = null;
+  private updatePopup = new UpdateModal();
+  /** Result of the background npm check (null until known). */
+  private updateInfo: { current: string; latest: string; updateAvailable: boolean } | null = null;
+  private onUpdateCb: ((action: "check" | "install") => void) | null = null;
   private themePicker = new ThemePicker();
   private themeId = "xyro";
   private onThemeChangeCb: ((id: string) => void) | null = null;
@@ -169,7 +217,7 @@ export class TuiApp {
   private totalToolCalls = 0;
   private totalMessages = 0;
   private tokenStats = { prompt: 0, completion: 0, total: 0, cost: "$0.0000" };
-  private onModelChangeCb: ((id: string, baseURL?: string) => void) | null = null;
+  private onModelChangeCb: ((id: string, baseURL?: string, providerId?: string) => void) | null = null;
   private onAgentModeChangeCb: ((mode: AgentModeDef) => void) | null = null;
   private submitHandler: ((text: string) => Promise<void>) | null = null;
   private exitHandler: (() => void) | null = null;
@@ -183,13 +231,30 @@ export class TuiApp {
     this.agentPicker.onSelect((mode) => {
       this.setAgentMode(mode);
     });
-    this.modelPicker.onSelect((id, baseURL) => {
+    this.modelPicker.onSelect((id, baseURL, providerId) => {
+      // Assigning a model to one expert (from /experts) instead of switching XYRO's own
+      if (this.modelPickFor) {
+        setExpertModel(this.modelPickFor, { model: id, providerId: providerId ? canonicalProviderId(providerId) : undefined });
+        this.modelPickFor = null;
+        this.openExperts();
+        return;
+      }
       this.model = id;
-      this.onModelChangeCb?.(id, baseURL);
+      this.onModelChangeCb?.(id, baseURL, providerId);
+    });
+    this.modelPicker.onClose(() => {
+      if (this.modelPickFor) {
+        this.modelPickFor = null;
+        this.openExperts();
+      }
     });
     this.themePicker.onSelect((theme) => {
       this.themeId = theme.id;
-      this.onThemeChangeCb?.(theme.id);
+      if (this.welcomeOpen) this.completeOnboarding();
+      else this.onThemeChangeCb?.(theme.id);
+    });
+    this.themePicker.onClose(() => {
+      if (this.welcomeOpen) this.completeOnboarding();
     });
     this.providerPicker.onSelect((provider, apiKey, model, baseURL) => {
       this.provider = provider.name;
@@ -205,7 +270,7 @@ export class TuiApp {
   onExit(h: () => void): void {
     this.exitHandler = h;
   }
-  onModelChange(cb: (id: string, baseURL?: string) => void): void {
+  onModelChange(cb: (id: string, baseURL?: string, providerId?: string) => void): void {
     this.onModelChangeCb = cb;
   }
   onAgentModeChange(cb: (mode: AgentModeDef) => void): void {
@@ -227,6 +292,22 @@ export class TuiApp {
   private handleCommandSelect(cmd: string): void {
     if (cmd === "/model") {
       this.openModelPicker();
+    } else if (cmd === "/rewind") {
+      this.onRewindRequestCb?.();
+    } else if (cmd === "/hooks") {
+      this.onHooksRequestCb?.();
+    } else if (cmd === "/intents") {
+      this.onIntentsRequestCb?.("");
+    } else if (cmd === "/privacy") {
+      this.onPrivacyRequestCb?.("");
+    } else if (cmd === "/mcp") {
+      this.onMcpRequestCb?.();
+    } else if (cmd === "/quota") {
+      this.quotaModal.open(() => poolStatus());
+    } else if (cmd === "/experts") {
+      this.openExperts();
+    } else if (cmd === "/update") {
+      this.openUpdate();
     } else if (cmd === "/agent") {
       this.openAgentPicker();
     } else if (cmd === "/theme") {
@@ -248,7 +329,35 @@ export class TuiApp {
   }
 
   openThemePicker(): void {
-    this.themePicker.open(this.themeId);
+    this.themePicker.open(currentTheme().name);
+  }
+
+  // ---- updates ----
+
+  /** Store the background npm check result (drives the tip line and status rail). */
+  setUpdateInfo(info: { current: string; latest: string; updateAvailable: boolean } | null): void {
+    this.updateInfo = info;
+  }
+
+  onUpdate(cb: (action: "check" | "install") => void): void {
+    this.onUpdateCb = cb;
+    this.updatePopup.onConfirm(() => cb("install"));
+  }
+
+  /** Drive the /update pop-up from the entry layer. */
+  setUpdateState(state: UpdateModalState | null): void {
+    if (state) this.updatePopup.set(state);
+    else this.updatePopup.close();
+  }
+
+  private openUpdate(): void {
+    this.updatePopup.set({ kind: "checking" });
+    this.onUpdateCb?.("check");
+  }
+
+  /** Open the key screen for one provider (missing or rejected key). */
+  requestProviderKey(providerId: string, model?: string, reason?: string): void {
+    this.providerPicker.openForKey(providerId, { model, reason });
   }
 
   openProviderPicker(): void {
@@ -290,7 +399,8 @@ export class TuiApp {
   }
 
   openModelPicker(): void {
-    this.modelPicker.open(this.model);
+    const prov = FREE_PROVIDERS.find((p) => p.name === this.provider);
+    this.modelPicker.open(this.model, prov?.id ?? "");
   }
 
   openCommandPicker(): void {
@@ -302,7 +412,18 @@ export class TuiApp {
   }
 
   private getActiveOverlayRows(width: number): RenderLine[] {
+    if (this.plan?.state === "pending" && this.view.view === "session" && !panelVisible(tuiSize().width)) {
+      const w = Math.max(34, Math.min(width - 4, 72));
+      const p = renderSidePanel({ ...this.panelStatus(), todos: [], plan: this.plan }, w, 60, this.animTick, { mascot: false });
+      return p.rows.slice(0, p.used).map((r) => line(span("  "), ...r.spans));
+    }
     if (this.permissionModal.isOpen()) return this.permissionModal.render(width);
+    if (this.updatePopup.isOpen()) return this.updatePopup.render(width);
+    if (this.expertsModal.isOpen()) return this.expertsModal.render(width);
+    if (this.rewindModal.isOpen()) return this.rewindModal.render(width);
+    if (this.hooksModal.isOpen()) return this.hooksModal.render(width);
+    if (this.mcpModal.isOpen()) return this.mcpModal.render(width);
+    if (this.quotaModal.isOpen()) return this.quotaModal.render(width);
     if (this.modelPicker.isOpen()) return this.modelPicker.render(width);
     if (this.commandPicker.isOpen()) return this.commandPicker.render(width);
     if (this.agentPicker.isOpen()) return this.agentPicker.render(width);
@@ -316,7 +437,106 @@ export class TuiApp {
 
   /** Ask the user to approve a tool call; resolves true on "y". */
   askPermission(label: string): Promise<boolean> {
-    return this.permissionModal.ask(label);
+    // Parallel experts may ask at once: show one prompt at a time, in order
+    const turn = this.permissionQueue.then(() => this.permissionModal.ask(label));
+    this.permissionQueue = turn.then(
+      () => undefined,
+      () => undefined
+    );
+    return turn;
+  }
+
+  // ---- checkpoints & hooks ----
+
+  /** Remember where the transcript stood before a checkpointed message. */
+  markCheckpoint(id: number): void {
+    this.scrollMarks.set(id, this.scroll.length());
+  }
+
+  onRewindRequest(cb: () => void): void { this.onRewindRequestCb = cb; }
+  onHooksRequest(cb: () => void): void { this.onHooksRequestCb = cb; }
+  onIntentsRequest(cb: (arg: string) => void): void { this.onIntentsRequestCb = cb; }
+  onPrivacyRequest(cb: (arg: string) => void): void { this.onPrivacyRequestCb = cb; }
+  onMcpRequest(cb: () => void): void { this.onMcpRequestCb = cb; }
+
+  openMcp(view: () => McpView, onTrust: () => void): void {
+    this.mcpModal.open(view, onTrust);
+  }
+
+  openRewind(items: RewindItem[], onPick: (id: number) => void): void {
+    this.rewindModal.onPick(onPick);
+    this.rewindModal.open(items);
+  }
+
+  /** Cut the transcript back to just before checkpoint `id` and explain what happened. */
+  rewindTranscript(id: number, summary: string): void {
+    const mark = this.scrollMarks.get(id);
+    this.endStream();
+    this.clearThinking();
+    this.headerAt = -1;
+    this.liveTools = [];
+    this.agents = [];
+    if (mark !== undefined) this.scroll.truncate(mark);
+    for (const k of [...this.scrollMarks.keys()]) if (k >= id) this.scrollMarks.delete(k);
+    this.scroll.append(emptyLine());
+    this.scroll.appendAll(noticeRow(summary, "info"));
+    this.scroll.scrollToBottom();
+  }
+
+  openHooks(view: HooksView, onTrust: () => void): void {
+    this.hooksModal.onTrust(onTrust);
+    this.hooksModal.open(view);
+  }
+
+  /** A one-line message on the home screen (replaces the rotating tip). */
+  setHomeNotice(n: { label: string; text: string } | null): void {
+    this.homeNotice = n;
+  }
+
+  // ---- experts ----
+
+  /** Live expert activity (from the agent runtime). */
+  setAgentActivity(a: AgentActivity): void {
+    const i = this.agents.findIndex((x) => x.id === a.id);
+    if (i >= 0) this.agents[i] = a;
+    else this.agents.push(a);
+  }
+
+  private expertViews() {
+    const mem = readMemory();
+    return getExperts().map((e) => {
+      const m = expertModel(e.name);
+      return {
+        name: e.name,
+        title: e.title,
+        description: e.description,
+        tools: e.tools,
+        skills: e.skills,
+        plugins: e.plugins,
+        triggers: e.triggers,
+        maxSteps: e.maxSteps,
+        source: e.source,
+        runs: mem.experts[e.name]?.runs ?? 0,
+        ok: mem.experts[e.name]?.ok ?? 0,
+        model: m ? `${m.model}${m.providerId ? `  (${m.providerId})` : ""}` : e.model ?? "",
+        budget: expertBudget(e.name),
+      };
+    });
+  }
+
+  /** Expert whose model is being chosen in the model picker (null = normal switch). */
+  private modelPickFor: string | null = null;
+
+  openExperts(): void {
+    this.expertsModal.onAssignModel((name) => {
+      this.modelPickFor = name;
+      this.openModelPicker();
+    });
+    this.expertsModal.onResetModel((name) => {
+      setExpertModel(name, null);
+      this.expertsModal.refresh(this.expertViews());
+    });
+    this.expertsModal.open(this.expertViews());
   }
 
   setMeta(model: string, provider?: string, agentName?: string): void {
@@ -351,10 +571,47 @@ export class TuiApp {
       }
       this.render();
     }, SPINNER_MS);
+
+    // First launch: play the mascot intro at ~30fps (XYRO_INTRO=1 forces a replay)
+    const forceIntro = process.env.XYRO_INTRO === "1";
+    if (this.view.view === "home" && !isReducedMotion() && (forceIntro || !hasSeenIntro())) {
+      this.introStart = Date.now();
+      this.introTimer = setInterval(() => this.render(), 33);
+    } else {
+      this.maybeStartOnboarding();
+    }
     this.render();
   }
 
+  // ---- first launch: "Welcome to XYRO — pick a look" ----
+  private welcomeOpen = false;
+
+  private maybeStartOnboarding(): void {
+    const force = process.env.XYRO_ONBOARD === "1";
+    if (this.welcomeOpen || this.view.view !== "home" || (!force && hasOnboarded())) return;
+    this.welcomeOpen = true;
+    this.themePicker.open(currentTheme().name, true);
+  }
+
+  private completeOnboarding(): void {
+    this.welcomeOpen = false;
+    if (process.env.XYRO_ONBOARD !== "1") markOnboarded();
+  }
+
+  private finishIntro(): void {
+    if (!this.introStart) return;
+    this.introStart = 0;
+    if (this.introTimer) clearInterval(this.introTimer);
+    this.introTimer = null;
+    // The intro already revealed the brand; skip the per-launch sweep
+    this.logoShownAt = Date.now() - 10_000;
+    if (process.env.XYRO_INTRO !== "1") markIntroSeen();
+    this.maybeStartOnboarding();
+  }
+
   stop(): void {
+    if (this.introTimer) clearInterval(this.introTimer);
+    if (this.modalTimer) clearInterval(this.modalTimer);
     if (this.animTimer) clearInterval(this.animTimer);
     this.animTimer = null;
     tuiExit();
@@ -362,40 +619,215 @@ export class TuiApp {
 
   // ---- content events ----
 
+  // ---- side panel: tasks, plan approval, mini XYRO ----
+
+  private todos: TodoView[] = [];
+  private plan: (PlanView & { resolve?: (d: PlanDecision) => void }) | null = null;
+  /** Clickable plan buttons in absolute screen coordinates (1-based). */
+  private planHits: { action: "approve" | "reject"; y: number; x0: number; x1: number }[] = [];
+
+  setTodos(todos: TodoView[]): void {
+    this.todos = todos;
+  }
+
+  /** Show a plan with Approve / Revise and resolve once the user decides. */
+  requestPlan(plan: PlanRequest): Promise<PlanDecision> {
+    this.plan?.resolve?.({ approved: false, feedback: "superseded by a newer plan" });
+    return new Promise((resolve) => {
+      this.plan = { ...plan, state: "pending", focus: 0, resolve };
+    });
+  }
+
+  private decidePlan(approved: boolean): void {
+    if (!this.plan || this.plan.state !== "pending") return;
+    const resolve = this.plan.resolve;
+    this.plan = { ...this.plan, state: approved ? "approved" : "rejected", resolve: undefined };
+    resolve?.({ approved, feedback: approved ? undefined : "The user chose to revise the plan." });
+    this.render();
+  }
+
+  /** Width available to the chat column (the rest goes to the side panel). */
+  private chatWidth(): number {
+    const { width } = tuiSize();
+    return panelVisible(width) ? width - panelWidth(width) : width;
+  }
+
+  /** What the mini XYRO is feeling, and the caption under it. */
+  private panelStatus(): { mood: MascotMood; caption: string } {
+    if (this.plan?.state === "pending") return { mood: "asking", caption: "waiting for your OK" };
+    if (this.flashMood && Date.now() < this.flashMood.until) {
+      return this.flashMood.mood === "error"
+        ? { mood: "error", caption: "oops — something failed" }
+        : { mood: "happy", caption: "done ✓" };
+    }
+    if (this.busy) {
+      const working = this.agents.filter((a) => a.status === "running").length;
+      if (working) return { mood: "thinking", caption: working === 1 ? `${this.agents.find((a) => a.status === "running")!.title} is working` : `${working} experts working` };
+      const tool = this.liveTools[this.liveTools.length - 1];
+      if (tool) return { mood: "thinking", caption: `working · ${tool.name.replace(/_/g, " ")}` };
+      if (this.stream) return { mood: "thinking", caption: "writing…" };
+      return { mood: "thinking", caption: "thinking…" };
+    }
+    return { mood: "idle", caption: "ready when you are" };
+  }
+
+  // ---- chat transcript ----
+  // The transcript is append-only except for "live" rows that are refreshed
+  // every frame in renderSession(): the thinking row, running tool rows and
+  // the tail of the streaming reply (blinking cursor).
+
+  private headerAt = -1;
+  private thinkingAt = -1;
+  private thinkingSince = 0;
+  private stream: { start: number; text: string; lines: RenderLine[] } | null = null;
+  private liveTools: { at: number; name: string; target: string; start: number }[] = [];
+  private lastKind: "none" | "text" | "tool" = "none";
+
+  private contentWidth(): number {
+    return Math.max(30, Math.min(this.chatWidth() - 5, 110));
+  }
+
+  private ensureHeader(): void {
+    if (this.headerAt >= 0) return;
+    this.scroll.append(emptyLine());
+    this.headerAt = this.scroll.length();
+    this.scroll.appendAll(assistantHeader());
+    this.lastKind = "none";
+  }
+
+  private showThinking(): void {
+    if (this.thinkingAt >= 0) return;
+    this.thinkingAt = this.scroll.length();
+    this.thinkingSince = Date.now();
+    this.scroll.append(thinkingRow(this.animTick, 0));
+  }
+
+  private clearThinking(): void {
+    if (this.thinkingAt < 0) return;
+    if (this.thinkingAt === this.scroll.length() - 1) this.scroll.truncate(this.thinkingAt);
+    else this.scroll.setLine(this.thinkingAt, emptyLine());
+    this.thinkingAt = -1;
+  }
+
+  private endStream(): void {
+    if (!this.stream) return;
+    // Restore the tail line (the cursor is only painted on a copy)
+    const { start, lines } = this.stream;
+    if (lines.length) this.scroll.setLine(start + lines.length - 1, lines[lines.length - 1]);
+    this.stream = null;
+  }
+
   addUserMessage(text: string): void {
     this.totalMessages++;
     this.view = { view: "session" };
+    this.endStream();
+    this.clearThinking();
+    this.headerAt = -1;
+    this.liveTools = [];
+    this.agents = [];
     this.scroll.append(emptyLine());
-    this.scroll.appendAll(userMessage(text, this.colorIdx));
+    this.scroll.appendAll(userMessage(text, this.colorIdx, this.chatWidth()));
   }
 
-  addAssistantText(md: string): void {
-    const { width } = tuiSize();
-    this.scroll.appendAll(assistantText(md, Math.max(30, width - 5)));
+  addAssistantText(chunk: string): void {
+    this.clearThinking();
+    this.ensureHeader();
+    if (!this.stream) {
+      if (this.lastKind === "tool") this.scroll.append(emptyLine());
+      this.stream = { start: this.scroll.length(), text: "", lines: [] };
+    }
+    this.stream.text += chunk;
+    this.scroll.truncate(this.stream.start);
+    this.stream.lines = assistantText(this.stream.text.replace(/^\n+/, ""), this.contentWidth());
+    this.scroll.appendAll(this.stream.lines);
+    this.lastKind = "text";
+  }
+
+  /** One-line confirmation (model/theme/provider switched, …). */
+  addNotice(text: string, kind: "success" | "info" | "warn" = "success"): void {
+    this.endStream();
+    this.scroll.append(emptyLine());
+    this.scroll.appendAll(noticeRow(text, kind));
   }
 
   addAssistantFooter(dur: number): void {
     this.totalMessages++;
+    this.clearThinking();
+    this.endStream();
+    this.scroll.append(emptyLine());
     this.scroll.appendAll(assistantFooter(this.agentName, this.model, dur, this.colorIdx));
+    this.headerAt = -1;
+    this.lastKind = "none";
   }
 
   addToolRunning(name: string, summary: string): void {
     this.totalToolCalls++;
-    this.scroll.appendAll(toolRunning(name, summary));
+    this.clearThinking();
+    this.ensureHeader();
+    this.endStream();
+    if (this.lastKind === "text") this.scroll.append(emptyLine());
+    this.liveTools.push({ at: this.scroll.length(), name, target: summary, start: Date.now() });
+    this.scroll.append(toolRow(name, summary, "running", this.animTick, 0, "", this.chatWidth()));
+    this.lastKind = "tool";
   }
 
   addToolDone(name: string, summary: string, elapsed?: string, failed?: boolean): void {
-    this.scroll.appendAll(toolDone(name, summary, elapsed, failed));
+    const i = this.liveTools.findIndex((tl) => tl.name === name);
+    const secs = Number(elapsed ?? 0);
+    if (i >= 0) {
+      const tl = this.liveTools.splice(i, 1)[0];
+      this.scroll.setLine(tl.at, toolRow(name, tl.target, failed ? "failed" : "done", 0, secs, summary, this.chatWidth()));
+    } else {
+      this.scroll.append(toolRow(name, "", failed ? "failed" : "done", 0, secs, summary, this.chatWidth()));
+    }
+    // The model thinks again before its next step
+    if (this.busy && this.liveTools.length === 0) this.showThinking();
   }
 
   addError(text: string): void {
-    this.scroll.appendAll(errorMessage(text));
+    this.flashMood = { mood: "error", until: Date.now() + 3000 };
+    this.clearThinking();
+    this.endStream();
+    this.scroll.append(emptyLine());
+    this.scroll.appendAll(errorMessage(text, this.chatWidth()));
   }
 
   setBusy(b: boolean): void {
     this.busy = b;
-    if (b) this.turnStart = Date.now();
-    else this.scroll.scrollToBottom();
+    if (b) {
+      this.turnStart = Date.now();
+      if (this.view.view === "session") {
+        this.ensureHeader();
+        this.showThinking();
+      }
+    } else {
+      this.clearThinking();
+      this.endStream();
+      // A turn that produced nothing (e.g. a slash command): drop the bare header
+      if (this.headerAt >= 0 && this.headerAt === this.scroll.length() - 1) {
+        this.scroll.truncate(this.headerAt - 1);
+      }
+      this.headerAt = -1;
+      this.scroll.scrollToBottom();
+      if (this.flashMood?.mood !== "error") this.flashMood = { mood: "happy", until: Date.now() + 2000 };
+    }
+  }
+
+  /** Refresh live transcript rows for the current frame. */
+  private refreshLiveRows(): void {
+    const width = this.chatWidth();
+    if (this.thinkingAt >= 0) {
+      this.scroll.setLine(this.thinkingAt, thinkingRow(this.animTick, (Date.now() - this.thinkingSince) / 1000));
+    }
+    for (const tl of this.liveTools) {
+      this.scroll.setLine(tl.at, toolRow(tl.name, tl.target, "running", this.animTick, (Date.now() - tl.start) / 1000, "", width));
+    }
+    if (this.stream && this.busy && this.stream.lines.length) {
+      const { start, lines } = this.stream;
+      const tail = lines[lines.length - 1];
+      const on = Math.floor(this.animTick / 6) % 2 === 0;
+      this.scroll.setLine(start + lines.length - 1, on ? line(...tail.spans, span("▌", { fg: BRAND.lemon })) : tail);
+    }
   }
 
   // ---- render ----
@@ -403,6 +835,14 @@ export class TuiApp {
   // ---- mouse selection ----
 
   private handleMouse(e: MouseEvt): void {
+    // Plan buttons in the side panel
+    if (e.kind === "press" && e.button === 0 && this.plan?.state === "pending") {
+      const hit = this.planHits.find((h) => h.y === e.y && e.x >= h.x0 && e.x < h.x1);
+      if (hit) {
+        this.decidePlan(hit.action === "approve");
+        return;
+      }
+    }
     // Only left-button events select; wheel/middle/right are ignored
     if (e.button !== 0 && e.kind !== "wheel") return;
     if (e.kind === "wheel") return; // native scroll passthrough (future work)
@@ -417,7 +857,59 @@ export class TuiApp {
     this.render();
   }
 
+  private mascotMood(): MascotMood {
+    if (this.busy) return "thinking";
+    if (this.flashMood && Date.now() < this.flashMood.until) return this.flashMood.mood;
+    return "idle";
+  }
+
+  private modal: { rows: RenderLine[]; openedAt: number; closingAt: number } | null = null;
+  private modalTimer: ReturnType<typeof setInterval> | null = null;
+
+  /** Track the open menu and drive its open/close animation via the frame filter. */
+  private updateModal(): void {
+    const { width } = tuiSize();
+    const rows = this.getActiveOverlayRows(width);
+    const now = Date.now();
+    if (rows.length) {
+      if (!this.modal || this.modal.closingAt) this.modal = { rows, openedAt: now, closingAt: 0 };
+      else this.modal.rows = rows;
+    } else if (this.modal && !this.modal.closingAt) {
+      this.modal.closingAt = now;
+    }
+
+    let progress = 1;
+    let animating = false;
+    if (this.modal) {
+      if (this.modal.closingAt) {
+        progress = 1 - (now - this.modal.closingAt) / MODAL_CLOSE_MS;
+        animating = progress > 0;
+        if (!animating) this.modal = null;
+      } else {
+        progress = Math.min(1, (now - this.modal.openedAt) / MODAL_OPEN_MS);
+        animating = progress < 1;
+      }
+    }
+    if (isReducedMotion() && this.modal) {
+      progress = this.modal.closingAt ? 0 : 1;
+      if (this.modal.closingAt) this.modal = null;
+      animating = false;
+    }
+
+    // ~60fps only while a menu is moving
+    if (animating && !this.modalTimer) this.modalTimer = setInterval(() => this.render(), 16);
+    if (!animating && this.modalTimer) {
+      clearInterval(this.modalTimer);
+      this.modalTimer = null;
+    }
+
+    const modal = this.modal;
+    setFrameFilter(modal ? (frame, w, h) => composeModal(frame, modal.rows, w, h, progress) : null);
+  }
+
   private render(): void {
+    this.updateModal();
+    if (this.view.view !== "home") this.finishIntro();
     if (this.view.view === "home") this.renderHome();
     else this.renderSession();
   }
@@ -428,44 +920,47 @@ export class TuiApp {
     const { width, height } = tuiSize();
     const s = new ScrollRegion();
 
-    const logo = logoRows(width, height, 5);
+    let introPlaying = false;
+    let logo;
+    if (this.introStart) {
+      const frame = introRows(width, height, Date.now() - this.introStart, this.animTick);
+      if (frame.done) this.finishIntro();
+      else introPlaying = true;
+      logo = frame.rows;
+    } else {
+      if (!this.logoShownAt) this.logoShownAt = Date.now();
+      logo = logoRows(width, height, 5, {
+        tick: this.animTick,
+        mood: this.mascotMood(),
+        introElapsed: Date.now() - this.logoShownAt,
+      });
+    }
     const prompt = this.promptRows(true);
-    const hints = this.keyHintsRow(true);
+    const tagline = this.taglineRow();
+    const chips = this.quickChipsRow();
     const tip = this.tipRow();
 
-    const overlayRows = this.getActiveOverlayRows(width);
-    const hasOverlay = overlayRows.length > 0;
-
-    const fixed =
-      logo.length +
-      (hasOverlay
-        ? 2 + overlayRows.length
-        : 4 + prompt.length + 1 + 2 + 1);
-
+    // logo · tagline · prompt · quick actions · tip
+    const fixed = logo.length + 1 + 1 + 2 + prompt.length + 1 + 1 + 1 + 1;
     const free = Math.max(0, height - fixed - 2);
-    const topPad = hasOverlay ? 1 : Math.min(Math.max(2, Math.floor(free * 0.35)), 6);
+    const topPad = Math.min(Math.max(2, Math.floor(free * 0.35)), 6);
 
     const logoW = Math.max(...logo.map((r) => r.spans.reduce((w, sp) => w + visualWidth(sp.text), 0)));
     const leftPad = Math.max(0, Math.floor((width - logoW) / 2));
 
     for (let i = 0; i < topPad; i++) s.append(emptyLine());
-    for (const row of logo) {
-      s.append(line(span(" ".repeat(leftPad)), ...row.spans));
-    }
+    for (const row of logo) s.append(line(span(" ".repeat(leftPad)), ...row.spans));
     s.append(emptyLine());
-    if (!hasOverlay) {
-      s.append(emptyLine());
-      s.append(emptyLine());
-      s.append(emptyLine());
-    }
-
-    if (hasOverlay) {
-      for (const row of overlayRows) s.append(row);
-      s.append(emptyLine());
+    // During the intro keep the same rows reserved, so nothing shifts after it
+    if (introPlaying) {
+      for (let i = 0; i < prompt.length + 7; i++) s.append(emptyLine());
     } else {
-      for (const row of prompt) s.append(row);
-      s.append(hints);
+      s.append(tagline);
       s.append(emptyLine());
+      s.append(emptyLine());
+      for (const row of prompt) s.append(row);
+      s.append(emptyLine());
+      s.append(chips);
       s.append(emptyLine());
       s.append(tip);
     }
@@ -473,7 +968,39 @@ export class TuiApp {
     paintFrame(s, [this.footerLine()], [emptyLine()], true);
 
     // Selection + toast compositing on the home screen too
-    this.applyHomeSelectionOverlay(s, hasOverlay, overlayRows.length, prompt.length, logo.length);
+    this.applyHomeSelectionOverlay(s, false, 0, prompt.length, logo.length);
+  }
+
+  /** "terminal-native coding agent · v<version>", centred under the logo. */
+  private taglineRow(): RenderLine {
+    const t = currentTheme();
+    const { width } = tuiSize();
+    const text = "terminal-native coding agent";
+    const ver = `  ·  v${this.version}`;
+    const pad = Math.max(0, Math.floor((width - visualWidth(text) - visualWidth(ver)) / 2));
+    return line(span(" ".repeat(pad)), span(text, { fg: tint(t.text, 0.85) }), span(ver, { fg: tint(t.textMuted, 0.7) }));
+  }
+
+  /** Quick actions as key "chips", centred under the prompt. */
+  private quickChipsRow(): RenderLine {
+    const t = currentTheme();
+    const { width } = tuiSize();
+    const items: [string, string][] = [
+      ["/init", "set up project"],
+      ["/model", "switch model"],
+      ["ctrl+p", "commands"],
+      ["tab", "agent mode"],
+    ];
+    const chipW = ([k, l]: [string, string]) => k.length + 2 + 1 + l.length;
+    const gap = 4;
+    while (items.length > 1 && items.reduce((w, it) => w + chipW(it), 0) + gap * (items.length - 1) > width - 4) items.pop();
+    const total = items.reduce((w, it) => w + chipW(it), 0) + gap * (items.length - 1);
+    const spans: StyledSpan[] = [span(" ".repeat(Math.max(0, Math.floor((width - total) / 2))))];
+    items.forEach(([k, l], i) => {
+      if (i) spans.push(span(" ".repeat(gap)));
+      spans.push(span(` ${k} `, { fg: BRAND.lemon, bg: t.backgroundElement, bold: true }), span(" " + l, { fg: tint(t.textMuted, 0.9) }));
+    });
+    return line(...spans);
   }
 
   /** Home-screen variant of the selection/toast compositor */
@@ -533,18 +1060,31 @@ export class TuiApp {
   }
 
   private renderSession(): void {
+    this.refreshLiveRows();
     const bottom: RenderLine[] = [];
-    const overlayRows = this.getActiveOverlayRows(tuiSize().width);
-    if (overlayRows.length > 0) {
-      bottom.push(...overlayRows);
-      bottom.push(emptyLine());
-    } else {
-      if (this.busy) bottom.push(...this.busyPromptRows(false));
-      else bottom.push(...this.promptRows(false));
-      bottom.push(this.keyHintsRow(false));
-    }
+    if (this.busy) bottom.push(...this.busyPromptRows(false));
+    else bottom.push(...this.promptRows(false));
     bottom.push(this.footerLine());
-    paintFrame(this.scroll, bottom, [emptyLine()]);
+
+    const { width, height } = tuiSize();
+    this.planHits = [];
+    if (panelVisible(width)) {
+      // Chat on the left, panel on the right, sharing the transcript rows
+      const pw = panelWidth(width);
+      const chatW = width - pw;
+      const viewH = Math.max(1, height - bottom.length - 1);
+      const chat = this.scroll.visible(viewH);
+      const status = this.panelStatus();
+      const panel = renderSidePanel({ ...status, todos: this.todos, plan: this.plan, agents: this.agents }, pw, viewH, this.animTick);
+      const composed = new ScrollRegion();
+      for (let r = 0; r < viewH; r++) {
+        composed.append(line(...fitSpans(chat[r]?.spans ?? [], chatW), ...panel.rows[r].spans));
+      }
+      for (const h of panel.hits) this.planHits.push({ action: h.action, y: 2 + h.row, x0: chatW + 1 + h.col0, x1: chatW + 1 + h.col1 });
+      paintFrame(composed, bottom, [emptyLine()], true);
+    } else {
+      paintFrame(this.scroll, bottom, [emptyLine()]);
+    }
 
     // In-app selection highlight + copy toast are composited over the frame
     this.applySelectionOverlay();
@@ -562,16 +1102,9 @@ export class TuiApp {
     const viewH = Math.max(1, height - bottomH - topH);
 
     // Reconstruct the visible row list in screen order for the selection engine
-    const overlayRows = this.getActiveOverlayRows(width);
     const bottom: RenderLine[] = [];
-    if (overlayRows.length > 0) {
-      bottom.push(...overlayRows);
-      bottom.push(emptyLine());
-    } else {
-      if (this.busy) bottom.push(...this.busyPromptRows(false));
-      else bottom.push(...this.promptRows(false));
-      bottom.push(this.keyHintsRow(false));
-    }
+    if (this.busy) bottom.push(...this.busyPromptRows(false));
+    else bottom.push(...this.promptRows(false));
     bottom.push(this.footerLine());
 
     const rows: RenderLine[] = [emptyLine()];
@@ -642,34 +1175,29 @@ export class TuiApp {
 
   /** Height of the current bottom stack (mirrors renderSession construction) */
   private currentBottomHeight(): number {
-    const { width } = tuiSize();
-    const overlayRows = this.getActiveOverlayRows(width);
-    if (overlayRows.length > 0) {
-      return overlayRows.length + 1 + 1; // rows + spacer + footer
-    }
-    // busy/idle prompt = 5 rows, hints = 1, footer = 1
-    return 5 + 1 + 1;
+    // busy/idle prompt = 6 rows, status rail = 1
+    return 6 + 1;
   }
 
-  // Unified 5-row prompt container with rounded brand borders and background fill
+  /** Prompt card width: full chat column in a session, up to 96 on home. */
+  private promptBoxW(centered: boolean): number {
+    const { width } = tuiSize();
+    return centered ? Math.max(48, Math.min(96, width - 8)) : Math.max(40, this.chatWidth() - 4);
+  }
+
   private promptRows(centered = false): RenderLine[] {
     const t = currentTheme();
     const color = agentColor(this.colorIdx);
     const { width } = tuiSize();
-    const boxW = Math.max(48, Math.min(74, width - 6));
+    const boxW = this.promptBoxW(centered);
     const innerW = boxW - 2;
 
     const leftMargin = centered ? Math.max(2, Math.floor((width - boxW) / 2)) : 2;
 
-    // Row 1: Top border with styled XYRO brand badge
-    const badge = " XYRO ";
-    const remainingDash = Math.max(1, innerW - badge.length - 1);
+    // Row 1: plain rounded top border
     const topBorderLine = line(
       span(" ".repeat(leftMargin)),
-      span("╭─", { fg: color }),
-      span(badge, { fg: "#38BDF8", bold: true }),
-      span("─".repeat(remainingDash), { fg: color }),
-      span("╮", { fg: color })
+      span("╭" + "─".repeat(innerW) + "╮", { fg: color })
     );
 
     // Row 2: Top breathing / padding row inside the card
@@ -680,8 +1208,8 @@ export class TuiApp {
       span("│", { fg: color })
     );
 
-    // Row 3: Input text / placeholder with cyber cursor
-    const maxVisibleChars = Math.max(10, innerW - 4);
+    // Row 3: Input text / placeholder with cyber cursor, after a ❯ prompt glyph
+    const maxVisibleChars = Math.max(10, innerW - 6);
     let contentSpans: StyledSpan[];
     let usedW = 0;
     if (!this.input) {
@@ -691,10 +1219,11 @@ export class TuiApp {
           ? phFull.slice(0, maxVisibleChars - 4) + '..."'
           : phFull;
       contentSpans = [
+        span("❯ ", { fg: color, bold: true, bg: t.backgroundElement }),
         span("A", { fg: t.background, bg: color, bold: true }),
-        span(phText, { fg: tint(t.textMuted, 0.75), bg: t.backgroundElement }),
+        span(phText, { fg: tint(t.textMuted, 0.8), bg: t.backgroundElement }),
       ];
-      usedW = 1 + visualWidth(phText);
+      usedW = 3 + visualWidth(phText);
     } else {
       let visibleStart = 0;
       if (this.cursorPos > maxVisibleChars - 5) {
@@ -706,11 +1235,12 @@ export class TuiApp {
       const at = visibleInput[relCursor] || " ";
       const after = visibleInput.slice(relCursor + 1);
       contentSpans = [
-        span(before, { fg: t.text, bg: t.backgroundElement }),
+        span("❯ ", { fg: color, bold: true, bg: t.backgroundElement }),
+        span(before, { fg: t.text, bold: true, bg: t.backgroundElement }),
         span(at, { fg: t.background, bg: color, bold: true }),
-        span(after, { fg: t.text, bg: t.backgroundElement }),
+        span(after, { fg: t.text, bold: true, bg: t.backgroundElement }),
       ];
-      usedW = visualWidth(before) + visualWidth(at) + visualWidth(after);
+      usedW = 2 + visualWidth(before) + visualWidth(at) + visualWidth(after);
     }
     const pad1 = Math.max(0, innerW - 2 - usedW);
 
@@ -723,26 +1253,26 @@ export class TuiApp {
       span("│", { fg: color })
     );
 
-    // Row 4: Status line: Build · model · max
-    const provName = this.provider ? this.provider.split(" ")[0] : "";
-    const dotSpan = () => span(" · ", { fg: tint(t.textMuted, 0.85), bg: t.backgroundElement });
-    const line2Parts: StyledSpan[] = [
-      span(this.agentName, { fg: color, bold: true, bg: t.backgroundElement }),
-      dotSpan(),
-      span(this.model || "default", { fg: tint(t.text, 0.98), bg: t.backgroundElement }),
-      ...(provName ? [span(` ${provName}`, { fg: tint(t.textMuted, 0.8), bg: t.backgroundElement })] : []),
-      dotSpan(),
-      span("max", { fg: "#C6F135", bold: true, bg: t.backgroundElement }),
-    ];
-    const line2W = line2Parts.reduce((acc, s) => acc + visualWidth(s.text), 0);
-    const pad2 = Math.max(0, innerW - 2 - line2W);
-
+    // Row 4: contextual hint (model/provider now live in the status rail)
+    const hintParts: [string, string][] = this.input
+      ? [["enter", "send"], ["ctrl+u", "clear"], ["↑", "history"]]
+      : centered
+        ? [["enter", "send"], ["↑", "history"], ["ctrl+u", "clear"]] // home: the chips below cover commands
+        : centered
+        ? [["enter", "send"], ["↑", "history"]] // home: the chips below already show / and tab
+        : [["/", "commands"], ["tab", "mode"], ["↑", "history"], ["enter", "send"]];
+    const hintSpans: StyledSpan[] = [];
+    hintParts.forEach(([k, l], i) => {
+      if (i) hintSpans.push(span("   ", { bg: t.backgroundElement }));
+      hintSpans.push(span(k, { fg: tint(t.text, 0.9), bold: true, bg: t.backgroundElement }), span(" " + l, { fg: tint(t.textMuted, 0.8), bg: t.backgroundElement }));
+    });
+    const hintW = hintSpans.reduce((acc, sp) => acc + visualWidth(sp.text), 0);
     const metaLine = line(
       span(" ".repeat(leftMargin)),
       span("│", { fg: color }),
-      span("  ", { bg: t.backgroundElement }),
-      ...line2Parts,
-      span(" ".repeat(pad2), { bg: t.backgroundElement }),
+      span("    ", { bg: t.backgroundElement }),
+      ...hintSpans,
+      span(" ".repeat(Math.max(0, innerW - 4 - hintW)), { bg: t.backgroundElement }),
       span("│", { fg: color })
     );
 
@@ -754,7 +1284,7 @@ export class TuiApp {
       span("╯", { fg: color })
     );
 
-    return [topBorderLine, topPaddingLine, inputLine, metaLine, btmBorderLine];
+    return [topBorderLine, topPaddingLine, inputLine, topPaddingLine, metaLine, btmBorderLine];
   }
 
   // Busy state prompt rows: Knight-Rider brand scanner replaces input text
@@ -762,20 +1292,15 @@ export class TuiApp {
     const t = currentTheme();
     const color = agentColor(this.colorIdx);
     const { width } = tuiSize();
-    const boxW = Math.max(48, Math.min(74, width - 6));
+    const boxW = this.promptBoxW(centered);
     const innerW = boxW - 2;
 
     const leftMargin = centered ? Math.max(2, Math.floor((width - boxW) / 2)) : 2;
 
-    // Row 1: Top border with styled XYRO brand badge
-    const badge = " XYRO ";
-    const remainingDash = Math.max(1, innerW - badge.length - 1);
+    // Row 1: plain rounded top border
     const topBorderLine = line(
       span(" ".repeat(leftMargin)),
-      span("╭─", { fg: color }),
-      span(badge, { fg: "#C6F135", bold: true }),
-      span("─".repeat(remainingDash), { fg: color }),
-      span("╮", { fg: color })
+      span("╭" + "─".repeat(innerW) + "╮", { fg: color })
     );
 
     // Row 2: Top breathing / padding row inside the card
@@ -800,32 +1325,20 @@ export class TuiApp {
       span("  ", { bg: t.backgroundElement }),
       ...scanner.map((s) => ({ ...s, bg: t.backgroundElement })),
       span("  ", { bg: t.backgroundElement }),
-      span(statusText, { fg: "#38BDF8", bold: true, bg: t.backgroundElement }),
+      ...shimmerSpans(statusText, this.animTick, "#38BDF8", "#E0F2FE", { bold: true, bg: t.backgroundElement }),
       span(timeText, { fg: tint(t.textMuted, 0.9), bg: t.backgroundElement }),
       span(" ".repeat(pad1), { bg: t.backgroundElement }),
       span("│", { fg: color })
     );
 
-    // Row 4: Status line: Build · model · working…
-    const provName = this.provider ? this.provider.split(" ")[0] : "";
-    const dotSpan = () => span(" · ", { fg: tint(t.textMuted, 0.85), bg: t.backgroundElement });
-    const line2Parts: StyledSpan[] = [
-      span(this.agentName, { fg: color, bold: true, bg: t.backgroundElement }),
-      dotSpan(),
-      span(this.model || "default", { fg: tint(t.text, 0.98), bg: t.backgroundElement }),
-      ...(provName ? [span(` ${provName}`, { fg: tint(t.textMuted, 0.8), bg: t.backgroundElement })] : []),
-      dotSpan(),
-      span("working…", { fg: t.warning, bg: t.backgroundElement }),
-    ];
-    const line2W = line2Parts.reduce((acc, s) => acc + visualWidth(s.text), 0);
-    const pad2 = Math.max(0, innerW - 2 - line2W);
-
+    // Row 4: what XYRO is doing right now
+    const activity = this.panelStatus().caption;
     const metaLine = line(
       span(" ".repeat(leftMargin)),
       span("│", { fg: color }),
       span("  ", { bg: t.backgroundElement }),
-      ...line2Parts,
-      span(" ".repeat(pad2), { bg: t.backgroundElement }),
+      span(activity, { fg: tint(t.textMuted, 0.9), italic: true, bg: t.backgroundElement }),
+      span(" ".repeat(Math.max(0, innerW - 2 - visualWidth(activity))), { bg: t.backgroundElement }),
       span("│", { fg: color })
     );
 
@@ -837,47 +1350,55 @@ export class TuiApp {
       span("╯", { fg: color })
     );
 
-    return [topBorderLine, topPaddingLine, busyLine, metaLine, btmBorderLine];
+    return [topBorderLine, topPaddingLine, busyLine, topPaddingLine, metaLine, btmBorderLine];
   }
 
   // Key hints row: right-aligned with the prompt box
-  private keyHintsRow(centered = false): RenderLine {
-    const t = currentTheme();
-    const { width } = tuiSize();
-    const boxW = Math.max(48, Math.min(74, width - 6));
-    const hints = "tab agents   ctrl+p commands";
-    const hintsW = visualWidth(hints);
-
-    const leftMargin = centered ? Math.max(2, Math.floor((width - boxW) / 2)) : 2;
-    const indent = leftMargin + boxW - hintsW;
-
-    return line(
-      span(" ".repeat(Math.max(2, indent))),
-      span("tab", { fg: tint(t.text, 0.95), bold: true }),
-      span(" agents   ", { fg: tint(t.textMuted, 0.75) }),
-      span("ctrl+p", { fg: tint(t.text, 0.95), bold: true }),
-      span(" commands", { fg: tint(t.textMuted, 0.75) })
-    );
-  }
-
   // Rotating tip line centered below the prompt
   private tipRow(): RenderLine {
     const t = currentTheme();
     const { width } = tuiSize();
+    if (this.homeNotice && !this.updateInfo?.updateAvailable) {
+      const { label, text } = this.homeNotice;
+      const w = visualWidth(`${label}  ›  ${text}`);
+      return line(
+        span(" ".repeat(Math.max(0, Math.floor((width - w) / 2)))),
+        span(label, { fg: BRAND.lemon, bold: true }),
+        span("  ›  ", { fg: tint(t.textMuted, 0.5) }),
+        span(text, { fg: tint(t.text, 0.9) })
+      );
+    }
+    if (this.updateInfo?.updateAvailable) {
+      const msg = `XYRO v${this.updateInfo.latest} is available — type `;
+      const w = visualWidth("update  ›  " + msg + "/update");
+      return line(
+        span(" ".repeat(Math.max(0, Math.floor((width - w) / 2)))),
+        span("update", { fg: BRAND.lemon, bold: true }),
+        span("  ›  ", { fg: tint(t.textMuted, 0.5) }),
+        span(msg, { fg: tint(t.text, 0.9) }),
+        span("/update", { fg: BRAND.lemon, bold: true })
+      );
+    }
     const tipText = TIPS[this.tipIdx];
-    const fullTipW = 2 + visualWidth("Tip ") + visualWidth(tipText);
+    const fullTipW = visualWidth("tip  ›  ") + visualWidth(tipText);
     const leftPad = Math.max(0, Math.floor((width - fullTipW) / 2));
 
     return line(
       span(" ".repeat(leftPad)),
-      span("● ", { fg: t.warning }),
-      span("Tip ", { fg: t.warning, bold: true }),
-      span(tipText, { fg: tint(t.textMuted, 0.85) })
+      span("tip", { fg: BRAND.ramp[0], bold: true }),
+      span("  ›  ", { fg: tint(t.textMuted, 0.5) }),
+      span(tipText, { fg: tint(t.textMuted, 0.8), italic: true })
     );
   }
 
   private closeAnyOverlay(): boolean {
     if (this.permissionModal.isOpen()) { this.permissionModal.close(); return true; }
+    if (this.updatePopup.isOpen()) { this.updatePopup.close(); return !this.updatePopup.isOpen(); }
+    if (this.expertsModal.isOpen()) { this.expertsModal.close(); return true; }
+    if (this.rewindModal.isOpen()) { this.rewindModal.close(); return true; }
+    if (this.hooksModal.isOpen()) { this.hooksModal.close(); return true; }
+    if (this.mcpModal.isOpen()) { this.mcpModal.close(); return true; }
+    if (this.quotaModal.isOpen()) { this.quotaModal.close(); return true; }
     if (this.modelPicker.isOpen()) { this.modelPicker.close(); return true; }
     if (this.commandPicker.isOpen()) { this.commandPicker.close(); return true; }
     if (this.agentPicker.isOpen()) { this.agentPicker.close(); return true; }
@@ -889,37 +1410,49 @@ export class TuiApp {
   }
 
   // Footer: directory + branch, MCP counter, /status shortcut, version right-aligned
+  /**
+   * XYRO status rail: one tinted strip along the bottom edge.
+   * [ BUILD ] model · provider     folder on branch     tokens · cost   v<version>
+   */
   private footerLine(): RenderLine {
     const t = currentTheme();
     const { width } = tuiSize();
+    const bg = t.backgroundPanel;
+    const color = agentColor(this.colorIdx);
+    const dim = tint(t.textMuted, 0.85);
 
-    let dirLabel = "~";
+    let dir = "~";
     try {
-      const base = basename(this.cwd);
-      dirLabel = base ? base : "~";
+      dir = basename(this.cwd) || "~";
     } catch {
-      dirLabel = "~";
+      dir = "~";
     }
-    const branch = this.gitBranch ? `:${this.gitBranch}` : "";
-    const leftDir = `${dirLabel}${branch}`;
+    const fmtTok = (n: number) => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
 
-    const mcpText = this.mcpCount > 0 ? `⊙ ${this.mcpCount} MCP` : `⊙ 1 MCP`;
-    const statusText = "/status";
-
-    const leftPartW = visualWidth(leftDir) + 2 + visualWidth(mcpText) + 2 + visualWidth(statusText);
-    const verText = this.version || "0.3.0";
-    const verW = visualWidth(verText);
-    const gap = Math.max(1, width - leftPartW - verW - 1);
-
-    return line(
-      span(leftDir, { fg: tint(t.textMuted, 0.75) }),
+    const left: StyledSpan[] = [
+      span(" "),
+      span(` ${this.agentName.toUpperCase()} `, { fg: t.background, bg: color, bold: true }),
       span("  "),
-      span("⊙ ", { fg: t.success }),
-      span(`${this.mcpCount > 0 ? this.mcpCount : 1} MCP  `, { fg: tint(t.textMuted, 0.75) }),
-      span(statusText, { fg: tint(t.textMuted, 0.75) }),
-      span(" ".repeat(gap)),
-      span(verText, { fg: tint(t.textMuted, 0.6) })
-    );
+      span(this.model || "no model", { fg: t.text, bold: true }),
+      ...(this.provider ? [span("  " + this.provider.replace(/\s*\(.*\)$/, ""), { fg: dim })] : []),
+    ];
+    const middle: StyledSpan[] = [
+      span(dir, { fg: tint(t.text, 0.85) }),
+      ...(this.gitBranch ? [span(" on ", { fg: tint(t.textMuted, 0.6) }), span(this.gitBranch, { fg: t.success })] : []),
+    ];
+    const tok = this.tokenStats;
+    const right: StyledSpan[] = [
+      ...(tok && tok.total > 0 ? [span(`${fmtTok(tok.total)} tokens`, { fg: dim }), span("  ·  ", { fg: tint(t.textMuted, 0.5) }), span(tok.cost, { fg: dim }), span("    ")] : []),
+      ...(this.updateInfo?.updateAvailable ? [span(`update v${this.updateInfo.latest}`, { fg: BRAND.lemon, bold: true }), span("  ")] : []),
+      span(`v${this.version} `, { fg: tint(t.textMuted, 0.6) }),
+    ];
+    const w = (xs: StyledSpan[]) => xs.reduce((a, sp) => a + visualWidth(sp.text), 0);
+    const free = width - w(left) - w(middle) - w(right);
+    const showMiddle = free >= 6;
+    const gapL = showMiddle ? Math.max(3, Math.floor(free / 2)) : Math.max(1, width - w(left) - w(right));
+    const gapR = showMiddle ? Math.max(3, free - gapL) : 0;
+    const spans = [...left, span(" ".repeat(gapL)), ...(showMiddle ? [...middle, span(" ".repeat(gapR))] : []), ...right];
+    return line(...spans.map((sp) => ({ ...sp, bg: sp.bg ?? bg })));
   }
 
   // ---- keys ----
@@ -927,9 +1460,49 @@ export class TuiApp {
   private handleKey(key: string): void {
     const cp = key.codePointAt(0) || 0;
 
+    // Any key skips the first-launch intro
+    if (this.introStart) {
+      this.finishIntro();
+      return;
+    }
+
+    // A pending plan takes the keyboard: y / n, ← → or Tab to move, Enter to choose
+    if (this.plan?.state === "pending") {
+      const k = key.toLowerCase();
+      if (k === "y") this.decidePlan(true);
+      else if (k === "n" || key === "\u001b") this.decidePlan(false);
+      else if (key === "\u001b[D" || key === "\u001b[C" || cp === 9) this.plan.focus = this.plan.focus ? 0 : 1;
+      else if (cp === 13) this.decidePlan(this.plan.focus === 0);
+      return;
+    }
+
     // Active modals take exclusive keyboard focus
     if (this.permissionModal.isOpen()) {
       this.permissionModal.handleKey(key);
+      return;
+    }
+    if (this.updatePopup.isOpen()) {
+      this.updatePopup.handleKey(key);
+      return;
+    }
+    if (this.expertsModal.isOpen()) {
+      this.expertsModal.handleKey(key);
+      return;
+    }
+    if (this.rewindModal.isOpen()) {
+      this.rewindModal.handleKey(key);
+      return;
+    }
+    if (this.hooksModal.isOpen()) {
+      this.hooksModal.handleKey(key);
+      return;
+    }
+    if (this.mcpModal.isOpen()) {
+      this.mcpModal.handleKey(key);
+      return;
+    }
+    if (this.quotaModal.isOpen()) {
+      this.quotaModal.handleKey(key);
       return;
     }
     if (this.modelPicker.isOpen()) {
@@ -992,6 +1565,15 @@ export class TuiApp {
         this.selection.clear();
         this.render();
         return;
+      }
+      // Esc Esc on an empty prompt → rewind picker
+      if (!this.input && this.view.view === "session" && !this.busy) {
+        if (Date.now() - this.lastEscAt < 500) {
+          this.lastEscAt = 0;
+          this.onRewindRequestCb?.();
+          return;
+        }
+        this.lastEscAt = Date.now();
       }
       this.input = "";
       this.cursorPos = 0;
@@ -1075,6 +1657,38 @@ export class TuiApp {
       if (!text || this.busy) return;
 
       // Pop-out modal triggers
+      if (text === "/rewind" || text === "/undo") {
+        this.onRewindRequestCb?.();
+        return;
+      }
+      if (text === "/hooks") {
+        this.onHooksRequestCb?.();
+        return;
+      }
+      if (text === "/privacy" || text.startsWith("/privacy ")) {
+        this.onPrivacyRequestCb?.(text.slice("/privacy".length).trim());
+        return;
+      }
+      if (text === "/intents" || text.startsWith("/intents ")) {
+        this.onIntentsRequestCb?.(text.slice("/intents".length).trim());
+        return;
+      }
+      if (text === "/mcp") {
+        this.onMcpRequestCb?.();
+        return;
+      }
+      if (text === "/quota" || text === "/pool") {
+        this.quotaModal.open(() => poolStatus());
+        return;
+      }
+      if (text === "/experts" || text === "/agents" || text === "/team") {
+        this.openExperts();
+        return;
+      }
+      if (text === "/update" || text === "/upgrade") {
+        this.openUpdate();
+        return;
+      }
       if (text === "/model" || text === "model") {
         this.openModelPicker();
         return;
@@ -1138,6 +1752,12 @@ export class TuiApp {
     // Ignore other control characters
     if (cp < 32) return;
 
+    // "/" on an empty prompt opens the command palette, filtering as you type
+    if (key === "/" && this.input === "" && !this.busy) {
+      this.commandPicker.openWith("");
+      return;
+    }
+
     // Normal typing
     if (!this.busy) {
       this.input = this.input.slice(0, this.cursorPos) + key + this.input.slice(this.cursorPos);
@@ -1146,3 +1766,22 @@ export class TuiApp {
   }
 }
 
+
+/** Clip or pad a row of spans to exactly `w` cells. */
+function fitSpans(spans: StyledSpan[], w: number): StyledSpan[] {
+  const out: StyledSpan[] = [];
+  let used = 0;
+  for (const s of spans) {
+    if (used >= w) break;
+    let text = "";
+    for (const ch of Array.from(s.text)) {
+      const cw = visualWidth(ch);
+      if (used + cw > w) break;
+      text += ch;
+      used += cw;
+    }
+    out.push({ ...s, text });
+  }
+  if (used < w) out.push({ text: " ".repeat(w - used) });
+  return out;
+}

@@ -1,6 +1,7 @@
 import { execa } from "execa";
 import { SHELL_TIMEOUT_MS } from "../config/constants.js";
 import { getDangerousPatterns } from "../config/platform.js";
+import { workspaceRoot } from "../agent/workspace.js";
 
 /**
  * Normalize a shell command for safety inspection:
@@ -72,6 +73,7 @@ export async function runCommand(args: { command: string }): Promise<string> {
   try {
     const res = await execa({
       shell: true,
+      cwd: workspaceRoot(),
       timeout: SHELL_TIMEOUT_MS,
       reject: false,
       maxBuffer: 10 * 1024 * 1024,

@@ -109,7 +109,11 @@ describe("Paquet B — permission gate", () => {
     assert.equal(shouldAskPermission("write_todos"), false);
     assert.equal(shouldAskPermission("git_status"), false);
     assert.equal(shouldAskPermission("end_turn"), false);
-    assert.equal(shouldAskPermission("revert_file"), false);
+  });
+
+  it("asks before revert_file — restoring a backup overwrites any edits made since", () => {
+    delete process.env.XYRO_NO_APPROVE;
+    assert.equal(shouldAskPermission("revert_file"), true);
   });
 
   it("XYRO_NO_APPROVE disables prompting entirely", () => {

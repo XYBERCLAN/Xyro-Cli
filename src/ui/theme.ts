@@ -30,20 +30,22 @@ export interface Theme {
 }
 
 // XYRO core dark palette
+// Brand ramp cyan → deep blue, lemon accent, amber for warnings, layered navy
+// surfaces (each step ~6% lighter) so cards and panels read without borders.
 const XYRO_DARK = {
   primary: "#38BDF8", secondary: "#3B82F6", accent: "#C6F135",
-  error: "#e06c75", warning: "#C6F135", success: "#22C55E", info: "#38BDF8",
-  text: "#F3F4F6", textMuted: "#8892B0",
-  background: "#0D1117", backgroundPanel: "#131922", backgroundElement: "#1A2230",
-  backgroundMenu: "#202A3B",
-  borderSubtle: "#2A364A", border: "#3B4B64", borderActive: "#38BDF8",
-  diffAdded: "#22C55E", diffRemoved: "#c53b53",
+  error: "#F47174", warning: "#F59E0B", success: "#22C55E", info: "#4FC3E0",
+  text: "#E6EDF3", textMuted: "#8592AD",
+  background: "#0B1018", backgroundPanel: "#111823", backgroundElement: "#18212E",
+  backgroundMenu: "#1F2A3A",
+  borderSubtle: "#243145", border: "#33445C", borderActive: "#38BDF8",
+  diffAdded: "#22C55E", diffRemoved: "#E5534B",
 };
 
 // XYRO light palette
 const XYRO_LIGHT = {
-  primary: "#0284C7", secondary: "#2563EB", accent: "#65A30D",
-  error: "#d1383d", warning: "#D97706", success: "#16A34A", info: "#0284C7",
+  primary: "#0369A1", secondary: "#2563EB", accent: "#4D7C0F",
+  error: "#C8323A", warning: "#B45309", success: "#15803D", info: "#0369A1",
   text: "#0F172A", textMuted: "#64748B",
   background: "#FFFFFF", backgroundPanel: "#F8FAFC", backgroundElement: "#F1F5F9",
   backgroundMenu: "#E2E8F0",
@@ -80,7 +82,7 @@ export const THEMES: Record<string, Theme> = {
   "tokyo-night": mk("tokyo-night", {
     primary: "#7AA2F7", secondary: "#BB9AF7", accent: "#7DCFFF",
     error: "#F7768E", warning: "#E0AF68", success: "#9ECE6A", info: "#7DCFFF",
-    text: "#C0CAF5", textMuted: "#565F89",
+    text: "#C0CAF5", textMuted: "#7D85B3",
     background: "#1A1B26", backgroundPanel: "#16161E", backgroundElement: "#24283B",
     backgroundMenu: "#2F3549", borderSubtle: "#292E42", border: "#414868", borderActive: "#7AA2F7",
     diffAdded: "#9ECE6A", diffRemoved: "#F7768E",
@@ -96,23 +98,23 @@ export const THEMES: Record<string, Theme> = {
   monokai: mk("monokai", {
     primary: "#A9DC76", secondary: "#78DCE8", accent: "#FFD866",
     error: "#FF6188", warning: "#FC9867", success: "#A9DC76", info: "#78DCE8",
-    text: "#FCFCFA", textMuted: "#727072",
+    text: "#FCFCFA", textMuted: "#9A989B",
     background: "#221F22", backgroundPanel: "#19181A", backgroundElement: "#2D2A2E",
     backgroundMenu: "#3A363C", borderSubtle: "#403E41", border: "#5B595C", borderActive: "#A9DC76",
     diffAdded: "#A9DC76", diffRemoved: "#FF6188",
   }),
   catppuccin: mk("catppuccin", {
-    primary: "#f5c2e7", secondary: "#89b4fa", accent: "#cba6f7",
+    primary: "#89b4fa", secondary: "#cba6f7", accent: "#f5c2e7",
     error: "#f38ba8", warning: "#fab387", success: "#a6e3a1", info: "#89dceb",
-    text: "#cdd6f4", textMuted: "#6c7086",
-    background: "#1e1e2e", backgroundPanel: "#181825", backgroundElement: "#24243a",
-    backgroundMenu: "#313244", borderSubtle: "#45475a", border: "#585b70", borderActive: "#89b4fa",
+    text: "#cdd6f4", textMuted: "#9399b2",
+    background: "#1e1e2e", backgroundPanel: "#181825", backgroundElement: "#313244",
+    backgroundMenu: "#45475a", borderSubtle: "#45475a", border: "#585b70", borderActive: "#89b4fa",
     diffAdded: "#a6e3a1", diffRemoved: "#f38ba8",
   }),
   dracula: mk("dracula", {
     primary: "#ff79c6", secondary: "#bd93f9", accent: "#bd93f9",
     error: "#ff5555", warning: "#ffb86c", success: "#50fa7b", info: "#8be9fd",
-    text: "#f8f8f2", textMuted: "#6272a4",
+    text: "#f8f8f2", textMuted: "#929CCB",
     background: "#282a36", backgroundPanel: "#21222c", backgroundElement: "#343746",
     backgroundMenu: "#44475a", borderSubtle: "#44475a", border: "#6272a4", borderActive: "#bd93f9",
     diffAdded: "#50fa7b", diffRemoved: "#ff5555",
@@ -120,18 +122,26 @@ export const THEMES: Record<string, Theme> = {
   gruvbox: mk("gruvbox", {
     primary: "#fabd2f", secondary: "#83a598", accent: "#8ec07c",
     error: "#fb4934", warning: "#fe8019", success: "#b8bb26", info: "#83a598",
-    text: "#ebdbb2", textMuted: "#928374",
+    text: "#ebdbb2", textMuted: "#a89984",
     background: "#282828", backgroundPanel: "#1d2021", backgroundElement: "#32302f",
     backgroundMenu: "#3c3836", borderSubtle: "#504945", border: "#665c54", borderActive: "#fabd2f",
     diffAdded: "#b8bb26", diffRemoved: "#fb4934",
   }),
   nord: mk("nord", {
     primary: "#88c0d0", secondary: "#81a1c1", accent: "#b48ead",
-    error: "#bf616a", warning: "#ebcb8b", success: "#a3be8c", info: "#8fbcbb",
-    text: "#eceff4", textMuted: "#4c566a",
+    error: "#d57780", warning: "#ebcb8b", success: "#a3be8c", info: "#8fbcbb",
+    text: "#eceff4", textMuted: "#a3adc2",
     background: "#2e3440", backgroundPanel: "#292e39", backgroundElement: "#3b4252",
     backgroundMenu: "#434c5e", borderSubtle: "#434c5e", border: "#4c566a", borderActive: "#88c0d0",
     diffAdded: "#a3be8c", diffRemoved: "#bf616a",
+  }),
+  "rose-pine": mk("rose-pine", {
+    primary: "#9ccfd8", secondary: "#c4a7e7", accent: "#ebbcba",
+    error: "#eb6f92", warning: "#f6c177", success: "#9ccfd8", info: "#31748f",
+    text: "#e0def4", textMuted: "#908caa",
+    background: "#191724", backgroundPanel: "#1f1d2e", backgroundElement: "#26233a",
+    backgroundMenu: "#2a2740", borderSubtle: "#2a2740", border: "#403d52", borderActive: "#c4a7e7",
+    diffAdded: "#9ccfd8", diffRemoved: "#eb6f92",
   }),
   light: mk("light", XYRO_LIGHT, true),
 };
@@ -152,23 +162,41 @@ export const THEME_CATALOG: ThemeInfo[] = [
   { id: "tokyo-night", name: "Tokyo Night", category: "NEON", desc: "Tokyo storm indigo with vivid neon violet & cyan accents", primary: "#7AA2F7", secondary: "#BB9AF7", accent: "#7DCFFF" },
   { id: "synthwave", name: "Synthwave '84", category: "RETRO", desc: "80s neon magenta, cyberpunk yellow & electric cyan", primary: "#FF7EDB", secondary: "#36F9F6", accent: "#FEFF00" },
   { id: "monokai", name: "Monokai Pro", category: "PRO", desc: "Classic developer palette with acid green & warm gold", primary: "#A9DC76", secondary: "#78DCE8", accent: "#FFD866" },
-  { id: "catppuccin", name: "Catppuccin", category: "PASTEL", desc: "Soothing pastel lavender, warm peach & sky blue", primary: "#89B4FA", secondary: "#F5C2E7", accent: "#CBA6F7" },
+  { id: "catppuccin", name: "Catppuccin", category: "PASTEL", desc: "Soothing Mocha pastels: sky blue, mauve & soft pink", primary: "#89B4FA", secondary: "#CBA6F7", accent: "#F5C2E7" },
+  { id: "rose-pine", name: "Rosé Pine", category: "SOFT", desc: "Muted foam, iris & rose on a quiet violet night", primary: "#9CCFD8", secondary: "#C4A7E7", accent: "#EBBCBA" },
   { id: "dracula", name: "Dracula Dark", category: "GOTHIC", desc: "Vampire neon purple, bright pink & vibrant mint", primary: "#BD93F9", secondary: "#FF79C6", accent: "#50FA7B" },
   { id: "nord", name: "Nord Frost", category: "CALM", desc: "Arctic glacial blue, polar night slate & aurora teal", primary: "#88C0D0", secondary: "#81A1C1", accent: "#A3BE8C" },
   { id: "gruvbox", name: "Gruvbox Dark", category: "RETRO", desc: "Warm earthy forest tones with amber gold & terracotta", primary: "#FABD2F", secondary: "#83A598", accent: "#B8BB26" },
   { id: "midnight", name: "Midnight Void", category: "DARK", desc: "Ultra-deep OLED abyss black with luminous royal blue", primary: "#60A5FA", secondary: "#3B82F6", accent: "#93C5FD" },
-  { id: "xyro-light", name: "XYRO Daylight", category: "LIGHT", desc: "Crisp daylight slate canvas with cyber sky blue accents", primary: "#0284C7", secondary: "#2563EB", accent: "#65A30D" },
+  { id: "xyro-light", name: "XYRO Daylight", category: "LIGHT", desc: "Crisp daylight slate canvas with cyber sky blue accents", primary: "#0369A1", secondary: "#2563EB", accent: "#4D7C0F" },
 ];
 
 export const THEME_NAMES = Object.keys(THEMES);
 
 let activeTheme: Theme = THEMES.xyro;
 
+/** Apply and save a theme (an explicit user choice). */
 export function setTheme(name: string): boolean {
   if (!THEMES[name]) return false;
   activeTheme = THEMES[name];
   persistTheme(name);
   return true;
+}
+
+/** Apply a theme for live preview only — never written to disk. */
+export function previewTheme(name: string): boolean {
+  if (!THEMES[name]) return false;
+  activeTheme = THEMES[name];
+  return true;
+}
+
+/** True once the user has explicitly chosen a theme (saved preference exists). */
+export function hasSavedTheme(): boolean {
+  try {
+    return existsSync(themeFile());
+  } catch {
+    return false;
+  }
 }
 
 export function currentTheme(): Theme {

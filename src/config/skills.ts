@@ -15,6 +15,8 @@ import { IGNORED_DIRS } from "../config/constants.js";
 import { GitIgnoreMatcher } from "../tools/gitignore.js";
 
 const MAX_SKILL_FILES = 5;
+/** Folders holding skill libraries — excluded here, served by the skills catalog instead. */
+const SKILL_LIBRARY_DIRS = [".agents/skills", ".claude/skills", ".xyro/skills", "skills"];
 const MAX_SKILL_LINES = 150;
 const CACHE_TTL_MS = 5000;
 
@@ -39,6 +41,8 @@ function walkForSkills(dir: string, root: string, matcher: GitIgnoreMatcher, fou
     const full = join(dir, entry);
     const rel = relative(root, full).replace(/\\/g, "/");
     if (matcher.isIgnored(rel)) continue;
+    // Skill libraries are indexed and loaded on demand by experts (agents/skills-catalog.ts)
+    if (SKILL_LIBRARY_DIRS.some((d) => rel === d || rel.startsWith(d + "/"))) continue;
     let stat;
     try {
       stat = statSync(full);
@@ -47,7 +51,7 @@ function walkForSkills(dir: string, root: string, matcher: GitIgnoreMatcher, fou
     }
     if (stat.isDirectory()) {
       walkForSkills(full, root, matcher, found);
-    } else if (entry === "SKILL.md" || (rel.includes("/skills/") && entry.endsWith(".md"))) {
+    } else if (entry === "SKILL.md") {
       found.push(rel);
     }
   }

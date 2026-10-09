@@ -1,361 +1,343 @@
-// XYRO Model Picker Overlay
-// A full-screen-width pop-out panel that slides in over the prompt.
-// Models are grouped: RECENTLY USED → FREE providers → PAID providers,
-// each provider gets its own small title row, and big separators split
-// the free/paid tiers and the recently-used block.
-// Nav: ↑↓ to move (skips headers), type to filter, Enter to select, Esc to close.
+// XYRO model picker
+//
+//   Most used            your top models by number of uses
+//   <Provider>           one block per provider, connected providers first,
+//     model rows         free models first; big providers show 6 + "N more"
+//
+// Connected providers (saved key) are asked for their FULL live model list in
+// the background (cached for a day). Tab switches All / Free, typing filters,
+// Ctrl+R refreshes the live lists, Enter on "N more" expands a provider.
 
 import { currentTheme, tint } from "../ui/theme.js";
-import { RenderLine, StyledSpan, span, line, visualWidth } from "./core.js";
-import { getAllModels, filterModelCatalog, ModelEntry, buildModelSections, ModelSection, ProviderGroup } from "../models/catalog.js";
-import { getRecentModelIds } from "../models/recents.js";
+import { RenderLine, StyledSpan, span, visualWidth } from "./core.js";
+import { modalFrame } from "./overlays.js";
+import { spinnerGlyph } from "./components.js";
+import { getAllModels, filterModelCatalog, ModelEntry } from "../models/catalog.js";
+import { getMostUsedModels } from "../models/recents.js";
+import {
+  loadCachedModels,
+  refreshConnectedProviders,
+  providerLoadState,
+  isConnected,
+  canonicalProviderId,
+  providerById,
+} from "../models/live.js";
+import { FREE_PROVIDERS } from "../ui/prompts.js";
 
-// Brand colours used inside the picker
-const BRAND_BLUE      = "#38BDF8";
-const BRAND_GREEN     = "#22C55E";
-const BRAND_LEMON     = "#C6F135";
-const BRAND_AMBER     = "#F59E0B";
-const BRAND_RED       = "#EF4444";
-const BADGE_FREE_FG   = "#0D1117";
-const BADGE_PAID_FG   = "#0D1117";
-const BADGE_LOCAL_FG  = "#0D1117";
+const BRAND_BLUE = "#38BDF8";
+const BRAND_LEMON = "#C6F135";
+const BRAND_AMBER = "#F59E0B";
 
-// ── Row types used for grouped rendering & navigation ────────────────────────
+/** Models shown per provider before the "N more" row. */
+const COLLAPSED_LIMIT = 6;
+
 type Row =
-  | { kind: "section"; section: ModelSection }
-  | { kind: "provider"; group: ProviderGroup; sectionKind: ModelSection["kind"] }
-  | { kind: "model"; model: ModelEntry; index: number }; // index = position among selectable rows
+  | { kind: "heading"; title: string; note?: string }
+  | { kind: "provider"; providerId: string; name: string; total: number; free: number }
+  | { kind: "model"; model: ModelEntry; index: number; uses?: number }
+  | { kind: "more"; providerId: string; hidden: number; index: number }
+  | { kind: "gap" };
+
+type Selectable = { type: "model"; model: ModelEntry } | { type: "more"; providerId: string };
 
 export class ModelPicker {
-  private visible    = false;
-  private query      = "";
-  private rows       : Row[] = [];
-  private selectable : ModelEntry[] = [];
-  private cursor     = 0;          // index into selectable[]
-  private scrollOff  = 0;          // index of first visible row (across rows[])
-  private maxVisible = 14;         // max rows shown before scrolling (incl. headers)
+  private visible = false;
+  private query = "";
+  private freeOnly = false;
+  private expanded = new Set<string>();
+  private rows: Row[] = [];
+  private selectable: Selectable[] = [];
+  private cursor = 0;
+  private scrollOff = 0;
+  private maxVisible = 16;
 
-  /** Currently active model – used to mark CURRENT */
+  /** Currently active model – marked "current" */
   private currentModel = "";
+  private currentProviderId = "";
 
-  /** Callback invoked when user picks a model */
-  private onSelectCb: ((id: string, baseURL?: string) => void) | null = null;
-  /** Callback invoked when user closes without selecting */
+  private onSelectCb: ((id: string, baseURL?: string, providerId?: string) => void) | null = null;
   private onCloseCb: (() => void) | null = null;
 
   isOpen(): boolean { return this.visible; }
 
-  open(currentModel: string): void {
-    this.visible      = true;
+  onSelect(cb: (id: string, baseURL?: string, providerId?: string) => void): void { this.onSelectCb = cb; }
+  onClose(cb: () => void): void { this.onCloseCb = cb; }
+
+  open(currentModel: string, currentProviderId = ""): void {
+    this.visible = true;
     this.currentModel = currentModel;
-    this.query        = "";
-    this._rebuild();
-    // Start cursor on the currently selected model
-    const idx = this.selectable.findIndex(m => m.id === currentModel);
-    this.cursor   = idx >= 0 ? idx : 0;
-    this.scrollOff = Math.max(0, this._rowOfSelectable(this.cursor) - Math.floor(this.maxVisible / 2));
+    this.currentProviderId = canonicalProviderId(currentProviderId);
+    this.query = "";
+    this.freeOnly = false;
+    this.expanded.clear();
+    loadCachedModels();
+    this.rebuild();
+    this.focusModel(currentModel);
+    this.refresh(false);
   }
 
   close(): void { this.visible = false; }
 
-  onSelect(cb: (id: string, baseURL?: string) => void): void { this.onSelectCb = cb; }
-  onClose(cb: () => void): void  { this.onCloseCb = cb; }
+  /** Ask connected providers for their live lists; rebuild as each answers. */
+  private refresh(force: boolean): void {
+    void refreshConnectedProviders({
+      force,
+      onUpdate: () => {
+        if (this.visible) this.rebuild(true);
+      },
+    });
+  }
 
-  /** Feed a raw key press into the picker. Returns true if consumed. */
   handleKey(key: string): boolean {
     if (!this.visible) return false;
-
     const cp = key.codePointAt(0) ?? 0;
+    const n = this.selectable.length;
 
-    // Escape → close
     if (key === "\u001b") {
       this.visible = false;
       this.onCloseCb?.();
       return true;
     }
 
-    // Enter → select
     if (cp === 13) {
-      const entry = this.selectable[this.cursor];
-      if (entry) {
-        this.visible = false;
-        this.onSelectCb?.(entry.id, entry.baseURL);
+      const item = this.selectable[this.cursor];
+      if (!item) return true;
+      if (item.type === "more") {
+        this.expanded.add(item.providerId);
+        this.rebuild(true);
+        return true;
       }
+      this.visible = false;
+      this.onSelectCb?.(item.model.id, item.model.baseURL, item.model.providerId);
       return true;
     }
 
-    // Arrow up
-    if (key === "\u001b[A") {
-      this.cursor = Math.max(0, this.cursor - 1);
-      this._clampScroll();
+    if (key === "\u001b[A" || cp === 16) {
+      if (n) this.cursor = (this.cursor - 1 + n) % n;
+      this.clampScroll();
+      return true;
+    }
+    if (key === "\u001b[B" || cp === 14) {
+      if (n) this.cursor = (this.cursor + 1) % n;
+      this.clampScroll();
       return true;
     }
 
-    // Arrow down
-    if (key === "\u001b[B") {
-      this.cursor = Math.min(this.selectable.length - 1, this.cursor + 1);
-      this._clampScroll();
+    // Tab: All ⇄ Free
+    if (cp === 9) {
+      this.freeOnly = !this.freeOnly;
+      this.rebuild();
       return true;
     }
 
-    // Backspace
+    // Ctrl+R: refresh live model lists
+    if (cp === 18) {
+      this.refresh(true);
+      return true;
+    }
+
     if (cp === 127 || cp === 8) {
       this.query = this.query.slice(0, -1);
-      this._rebuild();
+      this.rebuild();
       return true;
     }
-
-    // Ctrl+U clear search
     if (cp === 21) {
       this.query = "";
-      this._rebuild();
+      this.rebuild();
       return true;
     }
-
-    // Printable characters → search filter
     if (cp >= 32 && !key.startsWith("\u001b")) {
       this.query += key;
-      this._rebuild();
+      this.rebuild();
       return true;
     }
-
-    return true; // consume all keys while open
+    return true;
   }
 
-  // ── Grouped list construction ──────────────────────────────────────────────
+  // ── list construction ──────────────────────────────────────────────────────
 
-  private _rebuild(): void {
-    const models = filterModelCatalog(this.query);
-    const sections = buildModelSections(models, getRecentModelIds());
+  private rebuild(keepSelection = false): void {
+    const prev = keepSelection ? this.selectable[this.cursor] : undefined;
+    let models = filterModelCatalog(this.query, getAllModels());
+    if (this.freeOnly) models = models.filter((m) => m.isFree || m.badge === "LOCAL");
 
     const rows: Row[] = [];
-    const selectable: ModelEntry[] = [];
+    const selectable: Selectable[] = [];
+    const addModel = (m: ModelEntry, uses?: number) => {
+      rows.push({ kind: "model", model: m, index: selectable.length, uses });
+      selectable.push({ type: "model", model: m });
+    };
 
-    for (const section of sections) {
-      rows.push({ kind: "section", section });
-      for (const group of section.groups) {
-        rows.push({ kind: "provider", group, sectionKind: section.kind });
-        for (const m of group.models) {
-          rows.push({ kind: "model", model: m, index: selectable.length });
-          selectable.push(m);
-        }
+    // 1. Most used (only on the unfiltered view)
+    if (!this.query) {
+      const all = getAllModels();
+      const used = getMostUsedModels(5)
+        .map((u) => ({
+          u,
+          m:
+            all.find((m) => m.id === u.id && (!u.providerId || canonicalProviderId(m.providerId) === canonicalProviderId(u.providerId))) ??
+            all.find((m) => m.id === u.id),
+        }))
+        .filter((x): x is { u: (typeof x)["u"]; m: ModelEntry } => Boolean(x.m))
+        .filter((x) => !this.freeOnly || x.m.isFree || x.m.badge === "LOCAL");
+      if (used.length) {
+        rows.push({ kind: "heading", title: "Most used" });
+        for (const { u, m } of used) addModel(m, u.count);
+        rows.push({ kind: "gap" });
       }
     }
+
+    // 2. One block per provider
+    const byProvider = new Map<string, ModelEntry[]>();
+    for (const m of models) {
+      const pid = canonicalProviderId(m.providerId);
+      if (!byProvider.has(pid)) byProvider.set(pid, []);
+      byProvider.get(pid)!.push(m);
+    }
+    const order = (pid: string) => {
+      if (pid === this.currentProviderId) return 0;
+      if (isConnected(pid)) return 1;
+      const i = FREE_PROVIDERS.findIndex((p) => p.id === pid);
+      return 2 + (i < 0 ? 999 : i) / 1000;
+    };
+    const providers = [...byProvider.keys()].sort((a, b) => order(a) - order(b) || a.localeCompare(b));
+
+    providers.forEach((pid, pi) => {
+      const list = byProvider.get(pid)!.sort(
+        (a, b) => Number(b.isFree || b.badge === "LOCAL") - Number(a.isFree || a.badge === "LOCAL") || a.id.localeCompare(b.id)
+      );
+      const name = providerById(pid)?.name ?? list[0].provider;
+      if (pi > 0) rows.push({ kind: "gap" });
+      rows.push({ kind: "provider", providerId: pid, name, total: list.length, free: list.filter((m) => m.isFree || m.badge === "LOCAL").length });
+      const showAll = Boolean(this.query) || this.expanded.has(pid) || list.length <= COLLAPSED_LIMIT + 1;
+      const shown = showAll ? list : list.slice(0, COLLAPSED_LIMIT);
+      for (const m of shown) addModel(m);
+      if (!showAll) {
+        rows.push({ kind: "more", providerId: pid, hidden: list.length - shown.length, index: selectable.length });
+        selectable.push({ type: "more", providerId: pid });
+      }
+    });
 
     this.rows = rows;
     this.selectable = selectable;
-    this.cursor = 0;
-    this.scrollOff = 0;
+
+    // Keep the cursor on the same item across live refreshes
+    let idx = -1;
+    if (prev?.type === "model") idx = selectable.findIndex((s) => s.type === "model" && s.model.id === prev.model.id && s.model.providerId === prev.model.providerId);
+    if (prev?.type === "more") idx = selectable.findIndex((s) => s.type === "model" && canonicalProviderId(s.model.providerId) === prev.providerId) + COLLAPSED_LIMIT;
+    this.cursor = idx >= 0 && idx < selectable.length ? idx : 0;
+    if (!keepSelection) this.scrollOff = 0;
+    this.clampScroll();
   }
 
-  /** Row-array index of the n-th selectable model */
-  private _rowOfSelectable(n: number): number {
-    for (let i = 0; i < this.rows.length; i++) {
-      const r = this.rows[i];
-      if (r.kind === "model" && r.index === n) return i;
-    }
-    return 0;
+  private focusModel(id: string): void {
+    const idx = this.selectable.findIndex((s) => s.type === "model" && s.model.id === id);
+    if (idx >= 0) this.cursor = idx;
+    this.scrollOff = Math.max(0, this.rowOf(this.cursor) - Math.floor(this.maxVisible / 2));
+    this.clampScroll();
   }
 
-  private _clampScroll(): void {
-    const curRow = this._rowOfSelectable(this.cursor);
-    // Keep the selected model's row inside the visible window
-    if (curRow < this.scrollOff) {
-      this.scrollOff = curRow;
-    } else if (curRow >= this.scrollOff + this.maxVisible) {
-      this.scrollOff = curRow - this.maxVisible + 1;
-    }
-    // Never scroll past the end
-    if (this.scrollOff > Math.max(0, this.rows.length - 1)) {
-      this.scrollOff = Math.max(0, this.rows.length - this.maxVisible);
-    }
+  private rowOf(n: number): number {
+    const i = this.rows.findIndex((r) => (r.kind === "model" || r.kind === "more") && r.index === n);
+    return i < 0 ? 0 : i;
   }
 
-  /** Render the picker overlay as a list of RenderLine rows. */
+  private clampScroll(): void {
+    const row = this.rowOf(this.cursor);
+    if (row < this.scrollOff) this.scrollOff = Math.max(0, row - 1);
+    else if (row >= this.scrollOff + this.maxVisible) this.scrollOff = row - this.maxVisible + 1;
+    this.scrollOff = Math.max(0, Math.min(this.scrollOff, Math.max(0, this.rows.length - this.maxVisible)));
+  }
+
+  // ── rendering ──────────────────────────────────────────────────────────────
+
   render(termWidth: number): RenderLine[] {
     if (!this.visible) return [];
     const t = currentTheme();
-    const out: RenderLine[] = [];
-
-    const boxW   = Math.max(60, Math.min(88, termWidth - 4));
+    const boxW = Math.max(60, Math.min(96, termWidth - 6));
     const innerW = boxW - 2;
-    const leftM  = Math.max(2, Math.floor((termWidth - boxW) / 2));
-    const margin  = " ".repeat(leftM);
+    const muted = tint(t.textMuted, 0.9);
+    const tick = Math.floor(Date.now() / 80);
+    const fit = (s: string, w: number) => (visualWidth(s) > w ? s.slice(0, Math.max(1, w - 1)) + "…" : s + " ".repeat(w - visualWidth(s)));
+    const body: (StyledSpan[] | { spans: StyledSpan[]; bg: string })[] = [];
 
-    // ── helpers ──────────────────────────────────────────────────────────────
-    const pad = (s: string, w: number) => {
-      const v = visualWidth(s);
-      return v >= w ? s.slice(0, w) : s + " ".repeat(w - v);
-    };
+    // Search + All / Free switch
+    const seg = (label: string, on: boolean) =>
+      span(` ${label} `, on ? { fg: t.background, bg: BRAND_LEMON, bold: true } : { fg: muted, bg: t.backgroundElement });
+    const search: StyledSpan[] = [
+      span("  ❯ ", { fg: BRAND_LEMON, bold: true }),
+      ...(this.query ? [span(this.query, { fg: t.text, bold: true })] : [span("search models or providers", { fg: tint(t.textMuted, 0.6), italic: true })]),
+      span("▌", { fg: BRAND_LEMON }),
+    ];
+    const used = search.reduce((w, s) => w + visualWidth(s.text), 0);
+    body.push([...search, span(" ".repeat(Math.max(1, innerW - used - 14))), seg("All", !this.freeOnly), seg("Free", this.freeOnly)]);
+    body.push([span("  " + "─".repeat(innerW - 4), { fg: tint(t.border, 0.6) })]);
 
-    // ── Row 1: Top border with XYRO branding ─────────────────────────────────
-    const title     = " Switch Model ";
-    const badge     = " [XYRO] ";
-    const dashCount = Math.max(1, innerW - title.length - badge.length - 1);
-    out.push(line(
-      span(margin),
-      span("╭─",            { fg: BRAND_BLUE }),
-      span(title,           { fg: "#F3F4F6", bold: true }),
-      span("─".repeat(dashCount), { fg: BRAND_BLUE }),
-      span(badge,           { fg: BRAND_LEMON, bold: true }),
-      span("╮",             { fg: BRAND_BLUE }),
-    ));
-
-    // ── Row 2: Search filter bar ──────────────────────────────────────────────
-    const searchLabel = "  🔍 Search: ";
-    const cursor      = this.query.length < innerW - 30
-      ? this.query + "▌"
-      : this.query.slice(-(innerW - 32)) + "▌";
-    const hint        = " (↑↓ nav · Esc close)  ";
-    const searchUsed  = visualWidth(searchLabel) + visualWidth(cursor) + visualWidth(hint);
-    const searchPad   = Math.max(0, innerW - searchUsed);
-    out.push(line(
-      span(margin),
-      span("│",            { fg: BRAND_BLUE }),
-      span(searchLabel,    { fg: BRAND_BLUE, bg: t.backgroundElement }),
-      span(cursor,         { fg: "#F3F4F6", bg: t.backgroundElement }),
-      span(" ".repeat(searchPad), { bg: t.backgroundElement }),
-      span(hint,           { fg: tint(t.textMuted, 0.65), bg: t.backgroundElement }),
-      span("│",            { fg: BRAND_BLUE }),
-    ));
-
-    // ── Row 3: Separator ─────────────────────────────────────────────────────
-    out.push(line(
-      span(margin),
-      span("├",           { fg: BRAND_BLUE }),
-      span("─".repeat(innerW), { fg: t.border }),
-      span("┤",           { fg: BRAND_BLUE }),
-    ));
-
-    // ── Rows 4…N: Grouped model list ──────────────────────────────────────────
     if (this.selectable.length === 0) {
-      const noMatch = "  No models match your search.";
-      const noPad   = Math.max(0, innerW - visualWidth(noMatch));
-      out.push(line(
-        span(margin),
-        span("│",          { fg: BRAND_BLUE }),
-        span(noMatch,      { fg: tint(t.textMuted, 0.7), bg: t.backgroundElement }),
-        span(" ".repeat(noPad), { bg: t.backgroundElement }),
-        span("│",          { fg: BRAND_BLUE }),
-      ));
+      body.push([span("  No model matches ", { fg: muted }), span(`"${this.query}"`, { fg: t.text })]);
+      if (this.freeOnly) body.push([span("  Press tab to include paid models.", { fg: tint(t.textMuted, 0.7) })]);
     } else {
-      const visibleEnd = Math.min(this.scrollOff + this.maxVisible, this.rows.length);
-      for (let i = this.scrollOff; i < visibleEnd; i++) {
+      const end = Math.min(this.scrollOff + this.maxVisible, this.rows.length);
+      for (let i = this.scrollOff; i < end; i++) {
         const row = this.rows[i];
-
-        if (row.kind === "section") {
-          // ── Big section separator: ═══ RECENTLY USED ═══ ──
-          const sec = row.section;
-          const label = ` ${sec.title} `;
-          const labelW = visualWidth(label);
-          const side = Math.max(1, Math.floor((innerW - labelW) / 2));
-
-          let fgCol = BRAND_AMBER;
-          if (sec.kind === "RECENT") fgCol = BRAND_LEMON;
-          else if (sec.kind === "FREE") fgCol = BRAND_GREEN;
-          else fgCol = BRAND_AMBER;
-
-          out.push(line(
-            span(margin),
-            span("│",                  { fg: BRAND_BLUE }),
-            span("═".repeat(side),     { fg: fgCol }),
-            span(label,                { fg: "#0D1117", bg: fgCol, bold: true }),
-            span("═".repeat(Math.max(1, innerW - side - labelW)), { fg: fgCol }),
-            span("│",                  { fg: BRAND_BLUE }),
-          ));
+        if (row.kind === "gap") {
+          body.push([]);
           continue;
         }
-
+        if (row.kind === "heading") {
+          body.push([span("  " + row.title, { fg: BRAND_LEMON, bold: true })]);
+          continue;
+        }
         if (row.kind === "provider") {
-          // ── Small provider title: ── Provider Name (N) ──
-          const g = row.group;
-          const gLabel = `${g.provider} (${g.models.length})`;
-          const smallTitle = `─ ${gLabel} `;
-          const rest = Math.max(1, innerW - visualWidth(smallTitle));
-          out.push(line(
-            span(margin),
-            span("│",              { fg: BRAND_BLUE }),
-            span(smallTitle,        { fg: BRAND_BLUE, bg: t.backgroundPanel, bold: true }),
-            span("─".repeat(rest),  { fg: tint(t.border, 0.8), bg: t.backgroundPanel }),
-            span("│",              { fg: BRAND_BLUE }),
-          ));
+          const st = providerLoadState(row.providerId);
+          const connected = isConnected(row.providerId);
+          const status: StyledSpan =
+            st === "loading"
+              ? span(`${spinnerGlyph(tick)} loading models`, { fg: BRAND_BLUE })
+              : st === "rejected"
+                ? span("key rejected", { fg: t.error })
+                : row.providerId === "local"
+                  ? span("on this machine", { fg: t.success })
+                  : connected
+                    ? span("connected", { fg: t.success })
+                    : span("needs a key", { fg: tint(t.textMuted, 0.75) });
+          const counts = `${row.total} model${row.total === 1 ? "" : "s"}${row.free ? ` · ${row.free} free` : ""}`;
+          const left = [span("  " + row.name, { fg: t.text, bold: true }), span("   "), status];
+          const lw = left.reduce((w, s) => w + visualWidth(s.text), 0);
+          body.push([...left, span(" ".repeat(Math.max(1, innerW - lw - counts.length - 2))), span(counts, { fg: tint(t.textMuted, 0.7) })]);
           continue;
         }
-
-        // ── Model row ────────────────────────────────────────────────────────
-        const m = row.model;
-        const selected   = row.index === this.cursor;
-        const isCurrent  = m.id === this.currentModel;
-        const bg         = selected ? t.backgroundMenu : t.backgroundElement;
-        const pointer    = selected ? "› " : "  ";
-
-        // Badge colours
-        let badgeSpan: StyledSpan;
-        if (m.badge === "FREE") {
-          badgeSpan = span("[FREE] ", { fg: BADGE_FREE_FG, bg: BRAND_GREEN, bold: true });
-        } else if (m.badge === "LOCAL") {
-          badgeSpan = span("[LCL]  ", { fg: BADGE_LOCAL_FG, bg: BRAND_LEMON, bold: true });
-        } else {
-          badgeSpan = span("[PAID] ", { fg: BADGE_PAID_FG, bg: "#F59E0B", bold: true });
+        const selected = row.index === this.cursor;
+        const bg = selected ? t.backgroundMenu : t.backgroundPanel;
+        const bar = span(selected ? " ▌ " : "   ", { fg: BRAND_LEMON, bold: true });
+        if (row.kind === "more") {
+          body.push({ spans: [bar, span(`+ ${row.hidden} more`, { fg: selected ? t.text : BRAND_BLUE, bold: selected }), span("   enter to show all", { fg: tint(t.textMuted, 0.6) })], bg });
+          continue;
         }
-
-        // Model id column — 24 chars
-        const modelCol    = pad(m.id, 24);
-        // Provider column — 17 chars
-        const providerCol = pad(m.provider, 17);
-        // Description — remaining space
-        const descRaw     = isCurrent ? "● CURRENT" : m.desc;
-        const fixedUsed   = 2 + 24 + 1 + 17 + 1 + 7 + 1;  // pointer + cols
-        const descW       = Math.max(8, innerW - fixedUsed - 1);
-        const descCol     = descRaw.length > descW ? descRaw.slice(0, descW - 1) + "…" : pad(descRaw, descW);
-        const usedRowW    = 2 + visualWidth(modelCol) + 1 + visualWidth(providerCol) + 1 + 7 + 1 + visualWidth(descCol);
-        const rowPad      = Math.max(0, innerW - usedRowW);
-
-        out.push(line(
-          span(margin),
-          span("│",          { fg: BRAND_BLUE }),
-          span(pointer,      { fg: selected ? BRAND_LEMON : tint(t.textMuted, 0.6), bg, bold: selected }),
-          span(modelCol,     { fg: selected ? "#F3F4F6" : tint(t.text, 0.9), bg, bold: selected }),
-          span(" ",          { bg }),
-          span(providerCol,  { fg: tint(t.textMuted, 0.85), bg }),
-          span(" ",          { bg }),
-          { ...badgeSpan, bg: m.badge === "FREE" ? BRAND_GREEN : m.badge === "LOCAL" ? BRAND_LEMON : "#F59E0B" },
-          span(" ",          { bg }),
-          span(descCol,      {
-            fg: isCurrent ? BRAND_BLUE : tint(t.textMuted, selected ? 0.95 : 0.75),
-            bg, bold: isCurrent,
-          }),
-          span(" ".repeat(rowPad), { bg }),
-          span("│",          { fg: BRAND_BLUE }),
-        ));
+        const m = row.model;
+        const current = m.id === this.currentModel && (!this.currentProviderId || canonicalProviderId(m.providerId) === this.currentProviderId);
+        const tier = m.badge === "LOCAL" ? ["local", BRAND_LEMON] : m.isFree ? ["free", t.success] : ["paid", BRAND_AMBER];
+        const idW = Math.min(36, Math.max(22, Math.floor(innerW * 0.4)));
+        const extra = row.uses !== undefined ? `${providerById(m.providerId)?.name ?? m.provider}` : m.desc;
+        const tail = current ? " current" : row.uses !== undefined ? ` ${row.uses}×` : "";
+        const descW = Math.max(6, innerW - 3 - idW - 6 - tail.length - 1);
+        body.push({
+          spans: [
+            bar,
+            span(fit(m.id, idW - 1) + " ", { fg: selected || current ? t.text : tint(t.text, 0.88), bold: selected || current }),
+            span(fit(tier[0], 6), { fg: tier[1] }),
+            span(fit(extra, descW), { fg: selected ? tint(t.text, 0.85) : tint(t.textMuted, 0.8) }),
+            span(tail, { fg: current ? BRAND_BLUE : tint(t.textMuted, 0.7), bold: current }),
+          ],
+          bg,
+        });
+      }
+      if (this.rows.length > this.maxVisible) {
+        const models = this.selectable.filter((s) => s.type === "model").length;
+        body.push([]);
+        body.push([span(`  ${models} models shown · ${this.freeOnly ? "free only" : "all tiers"}`, { fg: tint(t.textMuted, 0.6) })]);
       }
     }
-
-    // ── Scroll hint row if list is taller than maxVisible ────────────────────
-    if (this.rows.length > this.maxVisible) {
-      const shown = Math.min(this.scrollOff + this.maxVisible, this.rows.length);
-      const scrollInfo = `  ${this.selectable.length} models · rows ${this.scrollOff + 1}–${shown} of ${this.rows.length}  `;
-      const scrollPad  = Math.max(0, innerW - visualWidth(scrollInfo));
-      out.push(line(
-        span(margin),
-        span("│",             { fg: BRAND_BLUE }),
-        span(scrollInfo,      { fg: tint(t.textMuted, 0.6), bg: t.backgroundPanel }),
-        span(" ".repeat(scrollPad), { bg: t.backgroundPanel }),
-        span("│",             { fg: BRAND_BLUE }),
-      ));
-    }
-
-    // ── Bottom border ─────────────────────────────────────────────────────────
-    const btmHint  = " ↑↓ Navigate · Enter Select · Ctrl+U Clear ";
-    const btmDash  = Math.max(1, innerW - btmHint.length - 1);
-    out.push(line(
-      span(margin),
-      span("╰─",          { fg: BRAND_BLUE }),
-      span(btmHint,        { fg: tint(t.textMuted, 0.7) }),
-      span("─".repeat(btmDash), { fg: BRAND_BLUE }),
-      span("╯",            { fg: BRAND_BLUE }),
-    ));
-
-    return out;
+    return modalFrame("Model", boxW, body, "↑↓ move · enter select · tab all/free · ctrl+r refresh · esc close");
   }
 }

@@ -133,16 +133,66 @@ describe("ProviderPicker TUI Overlay", () => {
     assert.equal(picker.isOpen(), true);
     assert.equal(selectedProv, null, "should not select without an API key");
 
-    // Type a key and press Enter to trigger model discovery
-    "gsk_test123456789".split("").forEach((c) => picker.handleKey(c));
-    picker.handleKey("\r");
-    await picker.waitForDiscovery();
+    // Type a key and press Enter to trigger model discovery (provider stubbed: key accepted)
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ data: [{ id: "llama-3.3-70b-versatile" }] }), { status: 200 })) as typeof fetch;
+    try {
+      "gsk_test123456789".split("").forEach((c) => picker.handleKey(c));
+      picker.handleKey("\r");
+      await picker.waitForDiscovery();
+    } finally {
+      globalThis.fetch = realFetch;
+    }
 
     // In model-select mode: pressing Enter confirms top model and closes
     picker.handleKey("\r");
 
     assert.equal(picker.isOpen(), false);
     assert.ok(selectedProv !== null);
+  });
+
+  it("returns to the key screen with an error when the provider rejects the key", async () => {
+    picker.open("Groq (USA)");
+    picker.handleKey("\r"); // enter configure
+
+    let selectedProv: any = null;
+    picker.onSelect((p) => { selectedProv = p; });
+
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response("{}", { status: 401 })) as typeof fetch;
+    try {
+      "gsk_dead_key".split("").forEach((c) => picker.handleKey(c));
+      picker.handleKey("\r");
+      await picker.waitForDiscovery();
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+
+    assert.equal(picker.isOpen(), true, "picker stays open on the key screen");
+    assert.equal(selectedProv, null, "a rejected key must not be accepted");
+    const text = picker.render(100).map((r) => r.spans.map((s) => s.text).join("")).join("\n");
+    assert.ok(text.includes("rejected that key (401)"), "shows why the key failed");
+  });
+
+  it("openForKey jumps to the key screen and uses the pending model once the key works", async () => {
+    let chosen = "";
+    picker.onSelect((_p, _k, model) => { chosen = model; });
+    assert.ok(picker.openForKey("groq", { model: "qwen/qwen3-32b", reason: "Groq has no API key yet." }));
+    const screen = picker.render(100).map((r) => r.spans.map((s) => s.text).join("")).join("\n");
+    assert.ok(screen.includes("Groq has no API key yet."), "explains why it opened");
+
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response(JSON.stringify({ data: [{ id: "qwen/qwen3-32b" }] }), { status: 200 })) as typeof fetch;
+    try {
+      "gsk_good".split("").forEach((c) => picker.handleKey(c));
+      picker.handleKey("\r");
+      await picker.waitForDiscovery();
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    assert.equal(picker.isOpen(), false, "closes without showing the model list");
+    assert.equal(chosen, "qwen/qwen3-32b");
   });
 
   it("FREE_PROVIDERS has at least 20 entries with necessary fields", () => {

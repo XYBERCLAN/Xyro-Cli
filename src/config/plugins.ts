@@ -26,6 +26,19 @@ export interface PluginModule {
  * - Windows: %APPDATA%/xyro/plugins/
  * - macOS/Linux: ~/.config/xyro/plugins/
  */
+/** plugin name → the tool names it provides (filled by loadPlugins). */
+const pluginTools = new Map<string, string[]>();
+
+/** Tool names a loaded plugin provides (matched by manifest name or folder name). */
+export function getPluginToolNames(name: string): string[] {
+  return pluginTools.get(name.trim().toLowerCase()) ?? [];
+}
+
+/** Loaded plugins with their tools (for /experts and diagnostics). */
+export function listLoadedPlugins(): { name: string; tools: string[] }[] {
+  return [...pluginTools.entries()].map(([name, tools]) => ({ name, tools }));
+}
+
 function getPluginDir(): string {
   return join(getConfigDir(), PLUGIN_DIR_NAME);
 }
@@ -58,6 +71,9 @@ export async function loadPlugins(): Promise<Tool[]> {
         const plugin = await loadPlugin(pluginFile);
         if (plugin?.tools) {
           tools.push(...plugin.tools);
+          const names = plugin.tools.map((t) => t.definition.function.name);
+          pluginTools.set(entry.name.toLowerCase(), names);
+          if (plugin.manifest?.name) pluginTools.set(plugin.manifest.name.toLowerCase(), names);
         }
       } catch (err) {
         console.error(`  ⚠ Failed to load plugin "${entry.name}": ${err}`);
