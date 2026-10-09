@@ -1,6 +1,6 @@
 {
   "name": "xyro-cli",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "XYRO — a terminal-native AI coding agent built from scratch",
   "keywords": [
     "ai",
