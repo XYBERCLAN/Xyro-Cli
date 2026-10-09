@@ -26,9 +26,27 @@ import { runInWorkspace, workspaceRoot } from "../agent/workspace.js";
 import { listIntents, runIntents } from "../agent/intents.js";
 import { detectTestCommand, parseTestOutput, diagnostics } from "../tools/power.js";
 import { isDangerousCommand } from "../tools/shell.js";
+import { recordSkillOutcome } from "./skill-stats.js";
 import { pickContestants, recordTournament, Contestant } from "../providers/pool.js";
 
 const CHECK_TIMEOUT_MS = 10 * 60_000;
+
+/**
+ * Files that decide WHAT runs when tests run (scripts, runners, hooks). A
+ * contestant's edits are never reviewed by you, so once it touches one of
+ * these nothing is executed in its worktree automatically — not by the
+ * contestant, not by the judge.
+ */
+const CONTROL_FILE = /(^|\/)(package\.json|\.npmrc|[^/]*\.config\.[cm]?[jt]s|\.mocharc[^/]*|jest\.setup[^/]*|vitest\.setup[^/]*|pytest\.ini|pyproject\.toml|setup\.cfg|setup\.py|tox\.ini|conftest\.py|Makefile|Cargo\.toml|build\.rs|go\.mod|Rakefile|Gemfile|\.envrc)$|(^|\/)\.xyro\/|(^|\/)\.husky\//;
+
+export function touchesControlFiles(files: string[]): string[] {
+  return files.filter((f) => CONTROL_FILE.test(f));
+}
+
+async function changedFiles(wt: Worktree): Promise<string[]> {
+  await git(wt.path, ["add", "-A"]);
+  return String((await git(wt.path, ["diff", "--cached", "--name-only", wt.base])).stdout).split("\n").filter(Boolean);
+}
 const EDIT_TOOLS = new Set(["write_file", "edit_file", "multi_edit", "propose_write_file", "revert_file"]);
 
 export interface TournamentArgs {
@@ -90,6 +108,12 @@ async function judge(wt: Worktree, c: Contestant, root: string, check: string | 
     score.diffLines += (Number(a) || 0) + (Number(d) || 0);
   }
   if (!score.changed.length) return score;
+
+  const control = touchesControlFiles(score.changed);
+  if (control.length) {
+    score.error = `changed ${control.slice(0, 3).join(", ")}, which controls what runs; not executed automatically, review by hand`;
+    return score;
+  }
 
   if (check) {
     const res = await execa(check, { shell: true, cwd: wt.path, reject: false, timeout: CHECK_TIMEOUT_MS, all: true, env: { ...process.env, CI: "1", FORCE_COLOR: "0", NO_COLOR: "1" } });
@@ -165,18 +189,23 @@ export async function tournament(args: TournamentArgs): Promise<string> {
     check ? `Your work is judged by running: ${check}\nRun it yourself with run_tests (no command argument needed) and keep going until it passes.` : "",
     listIntents(root).length ? "The user's saved intents (requirements) must keep holding." : "",
     "Make the smallest correct change. Do not weaken, skip or delete tests.",
+    "Do not edit package.json, test or build configuration: an attempt that does is not run or judged automatically.",
   ]
     .filter(Boolean)
     .join("\n");
 
-  // Inside a contestant's worktree: edits are sandboxed, and running the judge's own check is safe
-  const autoApprove = (name: string, a: Record<string, unknown>) =>
-    EDIT_TOOLS.has(name) || (name === "run_tests" && (!a.command || a.command === check) && !a.filter);
+  // Inside a contestant's worktree, edits stay in the worktree (symlink escapes are refused).
+  // It may run the judge's own check without asking, only while it hasn't touched what that check runs.
+  const autoApprove = (i: number) => async (name: string, a: Record<string, unknown>) => {
+    if (EDIT_TOOLS.has(name)) return true;
+    if (name !== "run_tests" || (a.command && a.command !== check) || a.filter) return false;
+    return touchesControlFiles(await changedFiles(trees[i])).length === 0;
+  };
 
   const runs = await Promise.all(
     contestants.map((c, i) =>
       runInWorkspace(trees[i].path, () =>
-        runExpert(expert!, task, { context: brief, session: { baseURL: c.baseURL, apiKey: c.apiKey, model: c.model }, autoApprove, label: c.model })
+        runExpert(expert!, task, { context: brief, session: { baseURL: c.baseURL, apiKey: c.apiKey, model: c.model }, autoApprove: autoApprove(i), label: c.model })
       ).then(
         (report) => ({ report, error: report.output.startsWith("❌") ? report.output.slice(2) : undefined }),
         (e: unknown) => ({ report: undefined, error: e instanceof Error ? e.message : String(e) })
@@ -194,6 +223,8 @@ export async function tournament(args: TournamentArgs): Promise<string> {
   const passes = bestValid && best.checkPassed !== false && best.intentsBroken === 0;
   const winner = passes ? best : null;
   recordTournament(contestants.map((c) => c.model), winner?.contestant.model ?? null);
+  // Contestants that produced work are evidence for their skills; API failures are not
+  for (const sc of scores) if (sc.report && sc.changed.length && !sc.error) recordSkillOutcome(sc.report.skills, sc === winner);
 
   const lines = [`Tournament: ${contestants.length} models on "${task.slice(0, 80)}"${check ? ` · judged by \`${check}\`` : ""}`];
   lines.push(...ranked.map((s, i) => row(s, i, winner)));

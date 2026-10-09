@@ -2,6 +2,8 @@
 // (DuckDuckGo HTML) and upgrades automatically when a search key is present:
 //   TAVILY_API_KEY · BRAVE_SEARCH_API_KEY · SEARXNG_URL (your own instance)
 
+import { redactText } from "../providers/privacy.js";
+
 export interface SearchResult {
   title: string;
   url: string;
@@ -81,7 +83,8 @@ async function search(query: string, max: number): Promise<{ engine: string; res
 }
 
 export async function webSearch(args: { query: string; max_results?: number }): Promise<string> {
-  const query = (args.query || "").trim();
+  // Search engines are third parties: never send secrets or personal data in a query
+  const query = redactText((args.query || "").trim()).replace(/\[\[XYRO_[A-Z]+_\d+\]\]/g, "").replace(/\s+/g, " ").trim();
   if (!query) return "❌ web_search: `query` is required.";
   const max = Math.max(1, Math.min(args.max_results ?? 6, 12));
   try {

@@ -3,7 +3,7 @@ import assert from "node:assert";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { getExperts, getExpert, expandTools, BUILTIN_EXPERTS } from "../agents/experts.js";
+import { trustProjectExperts, getExperts, getExpert, expandTools, BUILTIN_EXPERTS } from "../agents/experts.js";
 import { pickExpert, rememberOutcome, readMemory } from "../agents/router.js";
 import { parseFrontmatter } from "../agents/skills-catalog.js";
 import { spawnAgent } from "../tools/subagent.js";
@@ -69,19 +69,21 @@ describe("Expert roster", () => {
     assert.ok(tools.includes("read_file") && tools.includes("run_command") && tools.includes("my_plugin_tool"));
   });
 
-  it("loads custom experts from .xyro/agents and lets them override built-ins", () => {
+  it("loads trusted project experts from .xyro/agents; built-ins are never replaced by project files", () => {
     fs.mkdirSync(path.join(tmp, ".xyro", "agents"), { recursive: true });
     fs.writeFileSync(
       path.join(tmp, ".xyro", "agents", "db.md"),
       "---\nname: db-expert\ndescription: Designs schemas and writes safe SQL migrations\ntools: read, shell\nskills: postgres\ntriggers: sql, migration, schema\n---\nYou are a database specialist."
     );
     fs.writeFileSync(path.join(tmp, ".xyro", "agents", "scout.md"), "---\nname: scout\ndescription: Custom scout\n---\nCustom.");
+    assert.equal(getExperts(tmp).length, BUILTIN_EXPERTS.length, "nothing loads before trust");
+    assert.equal(trustProjectExperts(tmp), 2);
     const experts = getExperts(tmp);
     const db = experts.find((e) => e.name === "db-expert")!;
     assert.equal(db.source, "project");
     assert.ok(db.tools.includes("read_file") && db.tools.includes("run_command"));
     assert.deepEqual(db.skills, ["postgres"]);
-    assert.equal(experts.find((e) => e.name === "scout")!.description, "Custom scout");
+    assert.equal(experts.find((e) => e.name === "scout")!.source, "builtin");
     assert.equal(experts.length, BUILTIN_EXPERTS.length + 1);
     assert.equal(pickExpert("write a sql migration for the users schema").expert.name, "db-expert");
   });

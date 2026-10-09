@@ -21,6 +21,9 @@ import { mcpNeedsApproval } from "../mcp/approvals.js";
 /** Tools that never prompt (pure reads, planning, bookkeeping). */
 const ALLOW_ALWAYS = new Set([
   "read_file",
+  "skill_load",
+  "council",
+  "assign_workers",
   "skill_search",
   "intent_check",
   "list_files",
@@ -37,7 +40,6 @@ const ALLOW_ALWAYS = new Set([
   "run_workflow",
   "team_note",
   "team_notes",
-  "web_search",
   "bg_output",
   "bg_list",
   "glob",
@@ -56,6 +58,10 @@ const ALLOW_ALWAYS = new Set([
 /** Tools that prompt for approval in an interactive terminal. */
 const ASK_ALWAYS = new Set([
   "write_file",
+  "skill_install",
+  "skill_find_online",
+  "web_search",
+  "skill_forge",
   "tournament",
   "intent_save",
   "intent_remove",

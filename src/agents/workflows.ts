@@ -15,6 +15,7 @@
 //
 // `||` runs steps of a stage in parallel. {{goal}} is the user's goal.
 
+import { projectFileTrust, trustProjectFile } from "../agent/hooks.js";
 import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { getConfigDir } from "../config/platform.js";
@@ -95,15 +96,36 @@ function loadDir(dir: string, source: "user" | "project"): Workflow[] {
   const out: Workflow[] = [];
   for (const f of readdirSync(dir).filter((x) => x.endsWith(".md"))) {
     try {
+      // Same rule as project experts: a cloned repo's workflows load only once trusted
+      if (source === "project" && projectFileTrust(join(dir, f)) !== "trusted") continue;
       const { fields, body } = parseFrontmatter(readFileSync(join(dir, f), "utf-8"));
       const stages = parseStages(body);
       if (!stages.length) continue;
-      out.push({ name: (fields.name || f.replace(/\.md$/, "")).toLowerCase(), description: fields.description || "", stages, source });
+      const name = (fields.name || f.replace(/\.md$/, "")).toLowerCase();
+      if (source === "project" && BUILTIN_WORKFLOWS.some((b) => b.name === name)) continue;
+      out.push({ name, description: fields.description || "", stages, source });
     } catch {
       // skip unreadable workflow files
     }
   }
   return out;
+}
+
+function projectWorkflowFiles(root: string): string[] {
+  const dir = join(root, ".xyro", "workflows");
+  try {
+    return readdirSync(dir).filter((f) => f.endsWith(".md")).map((f) => join(dir, f));
+  } catch {
+    return [];
+  }
+}
+
+export function untrustedProjectWorkflows(root = process.cwd()): string[] {
+  return projectWorkflowFiles(root).filter((p) => projectFileTrust(p) !== "trusted");
+}
+
+export function trustProjectWorkflows(root = process.cwd()): number {
+  return projectWorkflowFiles(root).filter((p) => trustProjectFile(p)).length;
 }
 
 export function getWorkflows(root = process.cwd()): Workflow[] {

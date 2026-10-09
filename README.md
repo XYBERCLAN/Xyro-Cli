@@ -58,6 +58,18 @@ Unlike most AI coding tools that require a VS Code extension, a web dashboard, o
 | ◆ | **Free-Quota Pool** | When a model is rate-limited or out of free quota, XYRO moves to another free model, then to another provider you have a key for. Limited providers rest until they recover. See `/quota` |
 | ▸ | **Intent Guard** | Lasting requirements you state ("login must reject empty passwords") are saved as checks in `.xyro/intents.json` and re-run after every change. Anything that broke is fixed before the turn ends. See `/intents` |
 | ● | **Privacy Shield** | API keys, tokens, passwords, private keys, card numbers and emails are replaced with placeholders before a request leaves your machine, then restored locally in replies and tool calls. Counts are logged to `privacy-audit.jsonl`, never values. See `/privacy`, or turn it off with `XYRO_PRIVACY=off` |
+| ★ | **Tournament Mode** | For a hard change, 2–4 free models from different providers each solve it in their own git worktree. Your tests, saved intents and the type checker score the results, and only a winner that passes is merged. XYRO remembers which models win. Free quota makes this affordable, which paid tools can't match |
+| ⚡ | **Hedged Requests** | XYRO learns how quickly each provider usually responds. If a request hasn't started streaming well past that time, a backup goes to another provider, and whichever answers first wins. Turn it off with `XYRO_HEDGE=off` |
+| ▸ | **Instant Commands** | "run the tests", "what changed", "show the diff", "typecheck" and "repo map" run locally with no model call and no quota used, and the result stays in the conversation. Turn it off with `XYRO_INSTANT=off` |
+| ◈ | **Bring Your Setup** | XYRO reads what you already set up for other agents: rules (`AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, Cursor, Windsurf, Cline, Copilot), skills (`~/.claude/skills` and Claude Code plugins, found with `skill_search`), and MCP servers (Claude Code, Cursor, VS Code, Gemini). MCP servers defined inside a project need `/mcp trust`. Turn it off with `XYRO_IMPORT=off` |
+| ❖ | **Evidence-Backed Skills** | Each skill keeps a record of how often its runs pass verification. Skills that keep failing are no longer loaded automatically. `skill_forge` saves a solved procedure as a project skill, but only if its check passes at that moment |
+| ◆ | **XYRO as an MCP Server** | `xyro mcp` gives Claude Code, Cursor and other agents XYRO's tools: tournament, experts, repo map, intents, web search and quota. The work runs on your free quota instead of the host's paid model: `claude mcp add xyro -- xyro mcp` |
+| ★ | **Learns How You Work** | XYRO keeps a local journal of evidence: what you ask for, your corrections ("no, use pnpm"), your praise, your rewinds, and errors it recovered from. Every so often it reflects on that journal (or right away with `/learn`), and code checks every claim against the evidence. A habit of yours is kept only after it has been seen twice. Project lessons go into `XYRO.md`. A skill is written only for a procedure seen working in two separate sessions. `/profile` shows what XYRO knows about you and `/forget` erases it. Turn it off with `XYRO_LEARN=off` |
+| ❖ | **Expert Council** | For decisions that are costly to get wrong, experts each investigate and propose an approach, read each other's proposals, debate and vote. The author of the winning proposal writes the final decision, and the team can then carry it out (`council`) |
+| ▸ | **Leads and Workers** | Any expert can lead: `assign_workers` hands out up to 3 sub-tasks in parallel. Workers follow the lead's rules, use only the lead's tools, and report back to the lead |
+| ◈ | **Skills Anywhere** | Every expert can search and load any installed skill or plugin tool whenever its task needs one. When nothing installed fits, `skill_find_online` searches the web and `skill_install` installs a skill from GitHub, after your approval |
+| ● | **The Team, Animated** | The free space at the bottom of the side panel shows each working expert as a small robot. It hops and looks around while working, smiles when done and shows crossed eyes on failure. Workers stand beside their lead, and when nobody is working the team dozes |
+| ◆ | **XYRO Link** | Open XYRO on the same project in another terminal and the sessions link automatically. `/chat` talks to the other users, and each side's experts see the other's notes, proposals and decisions on a shared team board. Teammates on the same network join with a code (`/link lan` on one machine, `/link join <code>` on the other). Join codes are 16 characters and the key is derived with scrypt, and every message is signed, so others on the network can't read or inject anything. Chat from teammates on the network reaches XYRO only after you type `/chat use`. Linked sessions only exchange text, never commands. Turn it off with `XYRO_LINK=off` |
 
 ---
 
@@ -123,6 +135,12 @@ Options:
 | `/quota` | Free-quota pool: requests, limits and resting providers |
 | `/intents` | Re-run saved requirement checks (`/intents trust`, `/intents remove <id>`) |
 | `/privacy` | What the privacy shield withheld this session (`/privacy on` / `off`) |
+| `/learn` | Reflect now: learn how you work, project lessons and proven skills |
+| `/profile` · `/forget` | See, or erase, what XYRO learned about you |
+| `/chat <message>` · `/peers` | Talk to linked XYRO sessions, and see who is linked |
+| `/link lan` · `/link join <code>` · `/link off` | Link with teammates on your network |
+| `/experts trust` | Load this project's experts from `.xyro/agents` after reviewing them (built-in experts can't be replaced) |
+| `xyro mcp` | Run XYRO as an MCP server for other agents |
 
 ---
 
@@ -258,6 +276,10 @@ XYRO_NO_UPDATE_CHECK=1 xyro     # opt out of the background check
 ## ✦ Releasing
 
 Releases are cut by CI — no local publishing needed.
+
+**Automatic (default):** every push to `main` that users would notice is published by `auto-release.yml`. The commit messages decide the version: `feat:` → minor, `fix:`/`perf:`/`revert:` → patch, `type!:` or `BREAKING CHANGE` → major (minor while on 0.x). Pushes that only change docs, chores, tests or CI publish nothing. Add `[release]` to a commit message to force a patch release, or `[skip release]` to skip one. Users see a "New version" pop-up with what's new the next time they start XYRO.
+
+**Manual:**
 
 1. **Actions → Release → Run workflow**, pick `patch`, `minor`, `major` or `prerelease` (or run `npm run release`, `npm run release:minor`, `npm run release:major` with the GitHub CLI).
 2. The workflow typechecks, builds, runs the tests, bumps `package.json`, tags `vX.Y.Z`, publishes to npm **with provenance**, and creates a GitHub Release with generated notes.

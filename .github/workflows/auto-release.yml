@@ -1,0 +1,111 @@
+name: Auto release
+
+# Every push to main that brings something users would notice is published
+# to npm automatically — no button to press:
+#   feat: → minor · fix:/perf:/revert: → patch · breaking (type!: / BREAKING CHANGE) → major
+#   docs/chore/test/ci/refactor only → nothing is published
+#   put [release] in a commit message to force a patch, [skip release] to skip
+# Users on any older XYRO see a pop-up on their next launch and can /update.
+#
+# Needs the NPM_TOKEN repository secret (an npm automation token). If main is
+# branch-protected, allow github-actions[bot] to push the version commit.
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write # version commit, tag and GitHub Release
+  id-token: write # npm provenance
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Decide, test, publish
+    # Our own version commits must not trigger another release
+    if: ${{ !startsWith(github.event.head_commit.message, 'chore(release)') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - name: Decide the version bump from the commits
+        id: bump
+        run: |
+          BUMP=$(node scripts/release-bump.mjs)
+          echo "bump=$BUMP" >> "$GITHUB_OUTPUT"
+          echo "Release type: $BUMP"
+
+      - name: Nothing to release
+        if: steps.bump.outputs.bump == 'none'
+        run: echo "Only docs/chore/test/ci changes since the last release, so nothing to publish."
+
+      - name: Check the npm token
+        if: steps.bump.outputs.bump != 'none'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if [ -z "$NODE_AUTH_TOKEN" ]; then
+            echo "::error::Add an npm automation token as the NPM_TOKEN repository secret (Settings → Secrets and variables → Actions)."
+            exit 1
+          fi
+
+      - name: Install dependencies
+        if: steps.bump.outputs.bump != 'none'
+        run: npm ci
+
+      - name: Typecheck
+        if: steps.bump.outputs.bump != 'none'
+        run: npm run lint
+
+      - name: Build
+        if: steps.bump.outputs.bump != 'none'
+        run: npm run build
+
+      - name: Tests
+        if: steps.bump.outputs.bump != 'none'
+        run: npm test
+
+      - name: Bump version (commit + tag)
+        if: steps.bump.outputs.bump != 'none'
+        id: version
+        env:
+          BUMP: ${{ steps.bump.outputs.bump }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          case "$BUMP" in patch|minor|major) ;; *) echo "::error::invalid bump: $BUMP"; exit 1 ;; esac
+          npm version "$BUMP" -m "chore(release): v%s"
+          echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+      - name: Rebuild with the new version
+        if: steps.bump.outputs.bump != 'none'
+        run: npm run build
+
+      - name: Push version commit and tag
+        if: steps.bump.outputs.bump != 'none'
+        run: git push --follow-tags origin HEAD:${{ github.ref_name }}
+
+      - name: Publish to npm
+        if: steps.bump.outputs.bump != 'none'
+        run: npm publish --provenance --access public --tag latest
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Create GitHub Release
+        if: steps.bump.outputs.bump != 'none'
+        run: gh release create "v${{ steps.version.outputs.version }}" --title "XYRO v${{ steps.version.outputs.version }}" --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

@@ -1,4 +1,8 @@
-import { searchSkills } from "../agents/skills-catalog.js";
+import { council } from "../agents/council.js";
+import { forgeSkill } from "../agents/skill-forge.js";
+import { trackRecord } from "../agents/skill-stats.js";
+import { searchSkills, findSkill, loadSkillBody } from "../agents/skills-catalog.js";
+import { installSkill, findSkillsOnline } from "../agents/skill-market.js";
 import { tournament } from "../agents/tournament.js";
 import { saveIntent, runIntents, removeIntent, formatIntentResults } from "../agent/intents.js";
 import OpenAI from "openai";
@@ -417,12 +421,70 @@ const builtinTools: Tool[] = [
     async (args) => {
       const found = searchSkills(args.query);
       if (!found.length) return `No skills match "${args.query}".`;
-      return found.map((s) => `- ${s.name} (${s.source}): ${s.description.slice(0, 200)}\n  ${s.path}`).join("\n");
+      return found.map((s) => `- ${s.name} (${[s.source, trackRecord(s.name)].filter(Boolean).join(", ")}): ${s.description.slice(0, 200)}\n  ${s.path}`).join("\n");
     }
   ),
   defineTool(
+    "skill_load",
+    "Load the full text of an installed skill by name (from skill_search or the skills index) and follow it for the current task.",
+    z.object({ name: z.string().describe("Skill name") }),
+    async (args) => {
+      const s = findSkill(args.name);
+      const body = s ? loadSkillBody(s.name) : null;
+      if (!s || !body) return `❌ No installed skill named "${args.name}". Try skill_search.`;
+      const record = trackRecord(s.name);
+      return `# Skill: ${s.name} (${s.source}${record ? `, ${record}` : ""})\n${s.description}\n\n${body}`;
+    }
+  ),
+  defineTool(
+    "skill_find_online",
+    "Search the web (GitHub) for agent skills on a topic when no installed skill fits. Install a result with skill_install.",
+    z.object({ query: z.string().describe("Topic, e.g. 'pdf forms' or 'react native testing'") }),
+    (args) => findSkillsOnline(args)
+  ),
+  defineTool(
+    "skill_install",
+    "Install a skill from GitHub (a folder with SKILL.md): URL or owner/repo/path. Default scope: all your projects; scope 'project' keeps it in .xyro/skills.",
+    z.object({
+      source: z.string().describe("GitHub URL or owner/repo/path of the skill folder"),
+      scope: z.enum(["user", "project"]).optional(),
+      replace: z.boolean().optional().describe("Overwrite an installed skill with the same name"),
+    }),
+    (args) => installSkill(args)
+  ),
+  defineTool(
+    "council",
+    "Convene a council of 2-5 experts for a decision that is expensive to get wrong (architecture, risky refactor, security-sensitive change): each investigates and proposes, they discuss each other's proposals and vote, the winner writes the final decision with assignments. With execute: true the team then carries it out.",
+    z.object({
+      goal: z.string().describe("What the team must decide or achieve"),
+      experts: z.array(z.string()).optional().describe("Members (default: the best-suited experts)"),
+      execute: z.boolean().optional().describe("Carry out the decided assignments afterwards"),
+    }),
+    (args) => council(args)
+  ),
+  defineTool(
+    "assign_workers",
+    "(Experts only) As the lead, hand 1-3 sub-tasks to workers who run in parallel, obey your rules, use only your tools (or fewer) and report back to you.",
+    z.object({
+      tasks: z.array(z.object({ task: z.string(), rules: z.string().optional(), tools: z.array(z.string()).optional() })).describe("Sub-tasks for workers"),
+      rules: z.string().optional().describe("Rules every worker must follow"),
+    }),
+    async () => "❌ assign_workers is for experts leading a team. As the coordinator, use delegate or delegate_team."
+  ),
+  defineTool(
+    "skill_forge",
+    "After a non-obvious task was solved AND verified, save the reusable procedure as a project skill (.xyro/skills/<name>/SKILL.md) for every expert. XYRO runs `check` first and saves only if it passes now; the evidence is recorded in the skill.",
+    z.object({
+      name: z.string().describe("kebab-case name, e.g. add-api-endpoint"),
+      description: z.string().describe("When to use this skill (one sentence)"),
+      body: z.string().describe("Markdown: when to use, steps, pitfalls, a short example"),
+      check: z.string().describe("Command that proves the procedure works in this project (exits 0)"),
+    }),
+    (args) => forgeSkill(args)
+  ),
+  defineTool(
     "tournament",
-    "Hard task with an objective check? Have 2-4 free models from different providers solve it in parallel, each in its own git worktree; every result is judged locally (check command or tests, saved intents, type checker) and only a winner that passes is merged. Use when correctness matters and a first attempt may fail.",
+    "Hard task with an objective check? Have 2-4 free models from different providers solve it in parallel, each in its own git worktree; every result is judged locally (check command or tests, saved intents, type checker) and only a winner that passes is merged. Use when correctness matters and a first attempt may fail. Note: judging runs the contestants' code (the tests) on this machine without per-edit review; attempts that touch build/test configuration are never run.",
     z.object({
       task: z.string().describe("The task, fully specified"),
       check: z.string().optional().describe("Command that exits 0 when the task is done (default: the project's tests)"),
@@ -655,7 +717,7 @@ export function getToolDefinitions(): OpenAI.ChatCompletionTool[] {
 /** Read-only tools: what XYRO may use in plan mode (no writes, no commands, no network). */
 const PLAN_MODE_TOOLS = new Set([
   "read_file", "list_files", "glob", "search_code", "find_files", "repo_map", "ast_inspect_file", "ast_find_symbol",
-  "write_todos", "propose_plan", "end_turn", "task_completed", "team_notes", "intent_check", "skill_search",
+  "write_todos", "propose_plan", "end_turn", "task_completed", "team_notes", "intent_check", "skill_search", "skill_load",
   "git_status", "git_diff", "git_log", "git_branch", "git_show", "git_diff_staged", "git_diff_unstaged", "git_pr_view",
 ]);
 

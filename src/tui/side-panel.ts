@@ -5,6 +5,7 @@ import { currentTheme, tint } from "../ui/theme.js";
 import { RenderLine, StyledSpan, span, line, wrapSpans, visualWidth } from "./core.js";
 import { mascotRows, pickMascot, MascotMood } from "./mascot.js";
 import { BRAND, shimmerSpans, spinnerGlyph } from "./components.js";
+import { botsFor, teamGrid } from "./expert-bots.js";
 import type { TodoView, PlanRequest, AgentActivity } from "../agent/ui-bridge.js";
 
 export type PanelMood = MascotMood;
@@ -22,6 +23,8 @@ export interface PanelState {
   plan: PlanView | null;
   /** Experts working (or recently finished) on this turn */
   agents?: AgentActivity[];
+  /** Teammates who doze in the free space when nobody is working */
+  roster?: { name: string; title: string }[];
 }
 
 /** Clickable region, in panel-local coordinates (row, [col0, col1)). */
@@ -51,7 +54,7 @@ export function renderSidePanel(
   width: number,
   height: number,
   tick: number,
-  opts: { mascot?: boolean } = {}
+  opts: { mascot?: boolean; reducedMotion?: boolean } = {}
 ): { rows: RenderLine[]; hits: PanelHit[]; used: number } {
   const t = currentTheme();
   const innerW = width - 3; // "│ " on the left, 1 space on the right
@@ -167,6 +170,16 @@ export function renderSidePanel(
   } else if (!plan) {
     section("TASKS");
     for (const w of wrapSpans([span("Multi-step work shows up here as a live checklist.", { fg: tint(t.textMuted, 0.65), italic: true })], innerW)) body.push(w.spans);
+  }
+
+  // ── the team, animated, in whatever space is left at the bottom ─────────
+  const bots = botsFor(state.agents ?? [], state.roster ?? []);
+  const grid = teamGrid(bots, innerW, opts.reducedMotion ? 0 : tick, height - body.length - 2);
+  if (grid.length) {
+    while (body.length < height - grid.length - 1) blank();
+    const working = (state.agents ?? []).filter((a) => a.status === "running").length;
+    section("TEAM", working ? `${working} working` : (state.agents ?? []).length ? "done" : "resting");
+    body.push(...grid);
   }
 
   // ── frame: subtle left rule + panel background ────────────────────────

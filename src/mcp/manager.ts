@@ -158,9 +158,6 @@ function readSource(src: McpSource): Record<string, McpServerConfig> {
   return out;
 }
 
-function readConfig(path: string): Record<string, McpServerConfig> {
-  return readSource({ path, origin: "xyro" });
-}
 
 /** Server name → safe identifier for tool names. */
 export function slug(name: string): string {
@@ -315,27 +312,39 @@ async function connectOne(name: string, cfg: McpServerConfig, source: "user" | "
 }
 
 /** Connect every configured server (user + trusted project), in parallel. */
+export interface DiscoveredServer {
+  name: string;
+  source: "user" | "project";
+  origin: string;
+  trusted: boolean;
+  config: McpServerConfig;
+}
+
+/**
+ * Every MCP server XYRO would use here. The first definition of a name wins:
+ * project before user, XYRO's own files before imported ones.
+ */
+export function discoverMcpServers(root = process.cwd()): DiscoveredServer[] {
+  const out: DiscoveredServer[] = [];
+  const taken = new Set<string>();
+  const add = (src: McpSource, source: "user" | "project", trusted: boolean) => {
+    for (const [name, config] of Object.entries(readSource(src))) {
+      if (taken.has(slug(name))) continue;
+      taken.add(slug(name));
+      out.push({ name, source, origin: src.origin, trusted, config });
+    }
+  };
+  for (const src of projectSources(root)) add(src, "project", projectFileTrust(src.path) === "trusted");
+  for (const src of userSources(root)) add(src, "user", true);
+  return out;
+}
+
+/** Connect every configured server (yours, imported, and trusted project ones), in parallel. */
 export async function connectMcpServers(root = process.cwd()): Promise<void> {
   const jobs: Promise<void>[] = [];
-  const taken = new Set<string>();
-  // First definition of a name wins: XYRO's own files, then imports; project before user
-  for (const src of projectSources(root)) {
-    const cfg = readSource(src);
-    if (!Object.keys(cfg).length) continue;
-    const trusted = projectFileTrust(src.path) === "trusted";
-    for (const [name, c] of Object.entries(cfg)) {
-      if (taken.has(slug(name))) continue;
-      taken.add(slug(name));
-      if (trusted) jobs.push(connectOne(name, c, "project", src.origin));
-      else servers.set(slug(name), { name, source: "project", origin: src.origin, state: "untrusted", tools: [], expertsOnly: Boolean(c.expertsOnly), transport: c.url ? "http" : "stdio" });
-    }
-  }
-  for (const src of userSources(root)) {
-    for (const [name, c] of Object.entries(readSource(src))) {
-      if (taken.has(slug(name))) continue;
-      taken.add(slug(name));
-      jobs.push(connectOne(name, c, "user", src.origin));
-    }
+  for (const d of discoverMcpServers(root)) {
+    if (d.trusted) jobs.push(connectOne(d.name, d.config, d.source, d.origin));
+    else servers.set(slug(d.name), { name: d.name, source: d.source, origin: d.origin, state: "untrusted", tools: [], expertsOnly: Boolean(d.config.expertsOnly), transport: d.config.url ? "http" : "stdio" });
   }
   changed();
   await Promise.all(jobs);

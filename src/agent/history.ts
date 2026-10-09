@@ -1,3 +1,4 @@
+import { profilePrompt } from "./learning.js";
 import { intentsPrompt } from "./intents.js";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -60,6 +61,11 @@ export class HistoryManager {
     if (guidance) {
       systemContent += `\n\n${guidance}`;
     }
+    // What XYRO learned about how this user works (evidence-backed, capped)
+    const profile = profilePrompt();
+    if (profile) systemContent += `\n\n${profile}`;
+    // When XYRO's distinctive tools pay off (kept short: the tool descriptions hold the details)
+    systemContent += `\n\n## Power moves\n- tournament: for a hard change with an objective check (tests or a check command), when one attempt may fail. Not for trivial edits.\n- skill_forge: after a non-obvious procedure was solved and verified, save it so the team reuses it.\n- skill_search: before a specialised task, look for an installed skill.\n- council: for decisions that are expensive to get wrong, let the experts propose, debate and vote before anyone writes code.`;
     // Intent guard: lasting requirements that must keep holding
     systemContent += `\n\n${intentsPrompt()}`;
     // Skill libraries: index only — experts load full skill text when their task needs it

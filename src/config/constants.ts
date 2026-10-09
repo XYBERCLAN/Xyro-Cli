@@ -10,7 +10,25 @@ export const DANGEROUS_COMMANDS: string[] = [];
 export const DEFAULT_MAX_TOOL_CALLS = 25;
 export const SHELL_TIMEOUT_MS = 30_000;
 export const HISTORY_FILE = ".agent_history.json";
-export const CONTEXT_FILES = ["XYRO.md", "AGENTS.md", "CLAUDE.md", "README.md"];
+/**
+ * Project instructions XYRO reads — its own, plus whatever you wrote for other
+ * agents (Claude Code, Codex, Gemini, Cursor, Windsurf, Cline, Copilot), so
+ * switching to XYRO needs no rewriting. README last: least specific.
+ */
+export const CONTEXT_FILES = [
+  "XYRO.md",
+  "AGENTS.md",
+  "CLAUDE.md",
+  "GEMINI.md",
+  ".cursorrules",
+  ".windsurfrules",
+  ".clinerules",
+  ".github/copilot-instructions.md",
+  "README.md",
+];
+
+/** Folders of rule files (Cursor .mdc rules, Cline / Windsurf rule folders). */
+export const CONTEXT_RULE_DIRS = [".cursor/rules", ".clinerules", ".windsurf/rules"];
 export const DEFAULT_MODEL = "gpt-4o";
 
 // Context window management: auto-compact when estimated tokens exceed this

@@ -28,12 +28,16 @@ export const COMMAND_ITEMS: CommandItem[] = [
   { cmd: "/help",     name: "Help & Shortcuts", category: "HELP",    desc: "Show full XYRO command list and keyboard controls" },
   { cmd: "/experts",  name: "Expert Team",      category: "AI",      desc: "Browse XYRO's specialist experts, their tools, skills and record" },
   { cmd: "/workflow", name: "Workflow",         category: "AI",      desc: "Run a team play: feature, bugfix, review, release-check, refactor…" },
-  { cmd: "/learn",    name: "Learn",            category: "CONTEXT", desc: "Save this session's lessons to XYRO.md so every expert remembers" },
+  { cmd: "/learn",    name: "Learn",            category: "CONTEXT", desc: "Reflect now: learn how you work, project lessons and proven skills" },
+  { cmd: "/profile",  name: "What XYRO Knows",  category: "CONTEXT", desc: "See what XYRO learned about how you work (evidence-backed)" },
+  { cmd: "/forget",   name: "Forget Me",        category: "CONTEXT", desc: "Erase everything XYRO learned about you" },
   { cmd: "/rewind",   name: "Rewind",           category: "SESSION", desc: "Undo files and conversation back to an earlier message (Esc Esc)" },
   { cmd: "/quota",    name: "Free-quota pool",  category: "METRICS", desc: "Live capacity of every free provider XYRO can fall back to" },
   { cmd: "/mcp",      name: "MCP Servers",      category: "CONFIG",  desc: "See connected MCP tool servers and trust this project's servers" },
   { cmd: "/intents",  name: "Intent Guard",     category: "AI",      desc: "Re-check the requirements you asked for; trust or remove them" },
   { cmd: "/privacy",  name: "Privacy Shield",   category: "CONFIG",  desc: "What secrets and personal data were kept off the network; on / off" },
+  { cmd: "/peers",    name: "Linked Sessions",  category: "SESSION", desc: "Other XYRO sessions on this project (this computer and your network)" },
+  { cmd: "/link",     name: "Link Over LAN",    category: "SESSION", desc: "Link with teammates on your network: /link lan, /link join <code>" },
   { cmd: "/hooks",    name: "Hooks",            category: "CONFIG",  desc: "See active reflex hooks and trust this project's hooks" },
   { cmd: "/update",   name: "Update XYRO",      category: "SYSTEM",  desc: "Check npm for a newer XYRO and install it" },
   { cmd: "/exit",     name: "Save & Exit",      category: "SYSTEM",  desc: "Save session checkpoints and exit the XYRO CLI" },
@@ -600,7 +604,7 @@ export type UpdateModalState =
   | { kind: "checking" }
   | { kind: "uptodate"; current: string }
   | { kind: "offline"; current: string }
-  | { kind: "available"; current: string; latest: string; method: string }
+  | { kind: "available"; current: string; latest: string; method: string; notes?: string[]; announce?: boolean }
   | { kind: "installing"; current: string; latest: string; startedAt: number }
   | { kind: "done"; ok: boolean; message: string };
 
@@ -646,12 +650,19 @@ export class UpdateModal {
       body.push([span("   ! ", { fg: BRAND_AMBER, bold: true }), span("Couldn't reach the npm registry. Check your connection.", { fg: t.text })]);
       body.push([span(`     You're running v${st.current}.`, { fg: muted })]);
     } else if (st.kind === "available") {
-      body.push([span("   A new version of XYRO is ready.", { fg: t.text, bold: true })]);
+      body.push([span(st.announce ? `   XYRO v${st.latest} is here.` : "   A new version of XYRO is ready.", { fg: t.text, bold: true })]);
       body.push([]);
       body.push([span("   "), span(`v${st.current}`, { fg: muted }), span("  →  ", { fg: tint(t.textMuted, 0.6) }), span(`v${st.latest}`, { fg: BRAND_LEMON, bold: true })]);
+      if (st.notes?.length) {
+        body.push([]);
+        body.push([span("   WHAT'S NEW", { fg: muted, bold: true })]);
+        for (const n of st.notes) {
+          wrapSpans([span(n, { fg: tint(t.text, 0.9) })], boxW - 12).forEach((w, j) => body.push([span(j === 0 ? "   ◆ " : "     ", { fg: BRAND_LEMON }), ...w.spans]));
+        }
+      }
       body.push([]);
       body.push([span("   install  ", { fg: muted }), span(st.method, { fg: t.text })]);
-      hint = "enter install · esc later";
+      hint = st.announce ? "enter update now · esc later (/update any time)" : "enter install · esc later";
     } else if (st.kind === "installing") {
       const secs = Math.floor((Date.now() - st.startedAt) / 1000);
       body.push([span(`   ${spin}  `, { fg: BRAND_BLUE }), span(`Installing v${st.latest}…`, { fg: t.text, bold: true }), span(`  ${secs}s`, { fg: muted })]);
@@ -661,7 +672,7 @@ export class UpdateModal {
       body.push([span(st.ok ? "   ✓ " : "   ✗ ", { fg: st.ok ? t.success : t.error, bold: true }), span(st.ok ? "Done." : "Update failed.", { fg: t.text, bold: true })]);
       for (const w of wrapSpans([span(st.message, { fg: tint(t.text, 0.85) })], boxW - 8)) body.push([span("     "), ...w.spans]);
     }
-    return modalFrame("Update XYRO", boxW, body, hint, BRAND_LEMON);
+    return modalFrame(st.kind === "available" && st.announce ? "New version" : "Update XYRO", boxW, body, hint, BRAND_LEMON);
   }
 }
 

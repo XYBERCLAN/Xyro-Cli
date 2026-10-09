@@ -1,9 +1,11 @@
+import { recordEvent, classifyMessage, reflect, reflectionDue, formatReflection } from "./learning.js";
+import { pickExpert } from "../agents/router.js";
 import { listIntents, runIntents, formatIntentResults } from "./intents.js";
 import OpenAI from "openai";
 import pc from "picocolors";
 import { Message, AgentOptions } from "./types.js";
 import { HistoryManager } from "./history.js";
-import { createClient, callLLMStream, summarizeHistory, LLMResponse, ModelSwitch } from "../providers/llm.js";
+import { createClient, callLLM, callLLMStream, summarizeHistory, LLMResponse, ModelSwitch } from "../providers/llm.js";
 import { executeTool, getPlanModeToolDefinitions } from "../tools/registry.js";
 import { END_TURN_TOOL_NAMES } from "../tools/end_turn.js";
 import { requestPermission, shouldAskPermission, describeToolCall, PERMISSION_DENIED_RESULT } from "../tools/permissions.js";
@@ -382,7 +384,11 @@ export class Agent {
     this.history.refreshSystemMessage();
   }
 
-  /** Number of messages in the conversation (for checkpoints). */
+  /** Rebuild the system prompt (after learning or forgetting something about the user). */
+  refreshSystemPrompt(): void {
+    this.history.refreshSystemMessage();
+  }
+
   /** Record a turn that was answered locally (instant commands) so follow-ups have the context. */
   recordLocalExchange(user: string, result: string): void {
     this.history.add({ role: "user", content: user });
@@ -419,6 +425,7 @@ export class Agent {
     this.history.add({ role: "user", content: input });
     if (!process.stdin.isTTY && !this.output) renderUserMessage(input);
     this.output?.onUserMessage?.(input);
+    this.observeUserMessage(input);
 
     let toolCallCount = 0;
     let lastToolRun: { sig: string; run: number } | null = null;
@@ -426,6 +433,9 @@ export class Agent {
     // Intent guard: re-check saved requirements once per turn after file changes
     let changedFiles = false;
     let intentsChecked = false;
+    // Learning: failed tool calls waiting to see whether a later attempt recovers
+    const pendingErrors = new Map<string, string>();
+    const toolsUsed: string[] = [];
     const turnStart = Date.now();
 
     while (true) {
@@ -604,6 +614,15 @@ export class Agent {
 
         const result = allowed ? await executeTool(name, args) : PERMISSION_DENIED_RESULT;
         if (allowed && FILE_CHANGING_TOOLS.has(name) && !result.startsWith("❌")) changedFiles = true;
+        toolsUsed.push(name);
+        if (!allowed) {
+          recordEvent({ kind: "denied", tool: name, detail: argsSummary });
+        } else if (result.startsWith("❌") || result.startsWith("⛔")) {
+          if (!pendingErrors.has(name)) pendingErrors.set(name, `${result.split("\n")[0].slice(0, 160)} (with: ${argsSummary})`);
+        } else if (pendingErrors.has(name)) {
+          recordEvent({ kind: "recovered", tool: name, detail: `failed: ${pendingErrors.get(name)} → worked with: ${argsSummary}` });
+          pendingErrors.delete(name);
+        }
         const elapsed = ((performance.now() - start) / 1000).toFixed(1);
         if (this.output) {
           const failed = result.startsWith("❌") || result.includes("Error");
@@ -645,6 +664,58 @@ export class Agent {
       // Small pacing delay between multi-step tool iterations to avoid RPM burst rate limits
       await sleep(600);
     }
+
+    for (const [tool, err] of pendingErrors) recordEvent({ kind: "tool_error", tool, detail: err });
+    const uniq = [...new Set(toolsUsed)];
+    this.lastTurn = { request: input.slice(0, 200), tools: uniq, changedFiles };
+    recordEvent({ kind: "turn", detail: `${toolsUsed.length} tool calls (${uniq.slice(0, 8).join(", ") || "none"})${changedFiles ? ", changed files" : ""}, ${Math.round((Date.now() - turnStart) / 1000)}s` });
+    if (reflectionDue()) void this.reflect();
+  }
+
+  private lastTurn: { request: string; tools: string[]; changedFiles: boolean } | null = null;
+  private reflecting: Promise<string> | null = null;
+
+  /** Learning: what the user asks for, and how they react to the previous turn. */
+  private observeUserMessage(input: string): void {
+    if (input.startsWith("[intent guard]")) return;
+    const reaction = this.lastTurn ? classifyMessage(input) : null;
+    if (reaction && this.lastTurn) {
+      recordEvent({ kind: reaction, text: input, detail: `previous request: ${this.lastTurn.request} · tools: ${this.lastTurn.tools.join(", ") || "none"}` });
+    }
+    if (input.trim().length >= 4) {
+      let category: string | undefined;
+      try {
+        category = pickExpert(input).expert.name;
+      } catch {
+        category = undefined;
+      }
+      recordEvent({ kind: "request", text: input, category });
+    }
+  }
+
+  /** The user rewound a turn: strong evidence the approach was wrong. */
+  noteRewind(prompt: string): void {
+    recordEvent({ kind: "rewind", text: prompt, detail: this.lastTurn ? `tools: ${this.lastTurn.tools.join(", ")}` : undefined });
+    this.lastTurn = null;
+  }
+
+  /**
+   * Reflect on the learning journal with the session's model (through the
+   * privacy shield). Runs one at a time; returns a short report.
+   */
+  reflect(force = false): Promise<string> {
+    if (this.reflecting) return this.reflecting;
+    const ask = async (system: string, user: string) => {
+      const res = await callLLM(this.client, this.model, [{ role: "system", content: system }, { role: "user", content: user }], []);
+      return res.content;
+    };
+    this.reflecting = reflect(ask, { force })
+      .then((r) => formatReflection(r))
+      .catch((e: unknown) => `Reflection failed: ${e instanceof Error ? e.message : String(e)}`)
+      .finally(() => {
+        this.reflecting = null;
+      });
+    return this.reflecting;
   }
 
   save(): void {

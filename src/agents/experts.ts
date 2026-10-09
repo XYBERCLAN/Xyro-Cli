@@ -18,6 +18,7 @@
 //   ---
 //   You are a database specialist… (persona / instructions)
 
+import { projectFileTrust, trustProjectFile } from "../agent/hooks.js";
 import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { getConfigDir } from "../config/platform.js";
@@ -339,9 +340,13 @@ function loadDir(dir: string, source: "project" | "user"): Expert[] {
   }
   for (const f of files) {
     try {
+      // A cloned repo must not be able to plant experts: project files load only once trusted
+      if (source === "project" && projectFileTrust(join(dir, f)) !== "trusted") continue;
       const { fields, body } = parseFrontmatter(readFileSync(join(dir, f), "utf-8"));
       const name = (fields.name || f.replace(/\.md$/, "")).toLowerCase().replace(/\s+/g, "-");
       if (!fields.description) continue; // the router needs a description
+      // Project experts never replace a built-in (no hostile "builder" persona)
+      if (source === "project" && BUILTIN_EXPERTS.some((b) => b.name === name)) continue;
       out.push({
         name,
         title: fields.title || name.replace(/(^|-)(\w)/g, (_, s: string, c: string) => (s ? " " : "") + c.toUpperCase()),
@@ -363,7 +368,26 @@ function loadDir(dir: string, source: "project" | "user"): Expert[] {
   return out;
 }
 
-/** Built-ins, then user experts, then project experts — later ones override by name. */
+function projectExpertFiles(root: string): string[] {
+  const dir = join(root, ".xyro", "agents");
+  try {
+    return readdirSync(dir).filter((f) => f.endsWith(".md")).map((f) => join(dir, f));
+  } catch {
+    return [];
+  }
+}
+
+/** Project expert files that are new or changed since you last trusted them. */
+export function untrustedProjectExperts(root = process.cwd()): string[] {
+  return projectExpertFiles(root).filter((p) => projectFileTrust(p) !== "trusted");
+}
+
+/** Trust this project's expert files as they are now (any later edit needs trusting again). */
+export function trustProjectExperts(root = process.cwd()): number {
+  return projectExpertFiles(root).filter((p) => trustProjectFile(p)).length;
+}
+
+/** Built-ins, then user experts, then trusted project experts — later ones override by name. */
 export function getExperts(root = process.cwd()): Expert[] {
   const byName = new Map<string, Expert>();
   for (const e of [...BUILTIN_EXPERTS, ...loadDir(join(getConfigDir(), "agents"), "user"), ...loadDir(join(root, ".xyro", "agents"), "project")]) {

@@ -6,6 +6,7 @@ import { readdirSync, readFileSync, existsSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { homedir } from "node:os";
 import { getConfigDir } from "../config/platform.js";
+import { loadSkillStats, isQuarantined, skillHealth, trackRecord } from "./skill-stats.js";
 
 export interface SkillInfo {
   name: string;
@@ -133,6 +134,11 @@ export function discoverSkills(root = process.cwd()): SkillInfo[] {
   return skills;
 }
 
+/** Forget the cached scan (after a skill is added). */
+export function invalidateSkillCache(): void {
+  cache = null;
+}
+
 export function findSkill(name: string): SkillInfo | undefined {
   const n = name.trim().toLowerCase();
   return discoverSkills().find((s) => s.name.toLowerCase() === n);
@@ -165,10 +171,13 @@ export function keywords(text: string): Set<string> {
 /** Skills whose description overlaps the task most (score ≥ 2 shared keywords). */
 export function matchSkills(task: string, limit = 2): SkillInfo[] {
   const words = keywords(task);
+  const stats = loadSkillStats();
   return discoverSkills()
-    .map((s) => ({ s, score: [...keywords(`${s.name} ${s.description}`)].filter((w) => words.has(w)).length }))
+    // Skills with a failing track record are not auto-loaded any more
+    .filter((s) => !isQuarantined(s.name, stats))
+    .map((s) => ({ s, score: [...keywords(`${s.name} ${s.description}`)].filter((w) => words.has(w)).length + skillHealth(s.name, stats) - 0.5 }))
     // Your own skills need 2 shared keywords; imported ones (hundreds) need 3 so they don't crowd in
-    .filter((x) => x.score >= (x.s.source === "project" || x.s.source === "user" ? 2 : 3))
+    .filter((x) => x.score >= (x.s.source === "project" || x.s.source === "user" ? 2 : 3) - 0.5)
     .sort((a, b) => b.score - a.score)
     .slice(0, limit)
     .map((x) => x.s);
@@ -203,9 +212,13 @@ export function skillsIndex(root = process.cwd()): string | null {
   const order = { project: 0, user: 1, claude: 2, plugin: 3 } as const;
   const sorted = [...skills].sort((a, b) => order[a.source] - order[b.source]);
   const shown = sorted.slice(0, INDEX_LIMIT);
-  const lines = shown.map((s) => `- ${s.name}: ${s.description.slice(0, 120)}${s.source !== "project" ? ` (${s.source})` : ""}`);
+  const stats = loadSkillStats();
+  const lines = shown.map((s) => {
+    const tags = [s.source !== "project" ? s.source : "", trackRecord(s.name, stats)].filter(Boolean).join(", ");
+    return `- ${s.name}: ${s.description.slice(0, 120)}${tags ? ` (${tags})` : ""}`;
+  });
   const more = skills.length - shown.length;
-  return `## Skills available to your experts\nExperts load the full text of these skills when their task needs them (pass \`skills\` to delegate, or they are matched automatically).${more > 0 ? ` ${skills.length} skills in total: find others with skill_search.` : ""}\n${lines.join("\n")}`;
+  return `## Skills available to your experts\nLoad one yourself with skill_load, pass \`skills\` to delegate, or let experts match them automatically. Nothing fits? skill_find_online, then skill_install.${more > 0 ? ` ${skills.length} skills in total: find others with skill_search.` : ""}\n${lines.join("\n")}`;
 }
 
 /** Path relative to the project, for display. */

@@ -12,7 +12,7 @@ import { FREE_PROVIDERS } from "../ui/prompts.js";
 import { _resetPool } from "../providers/pool.js";
 
 // The fake provider answers per model: what each contestant writes
-let plan: Record<string, string | null> = {};
+let plan: Record<string, string | { path: string; content: string } | null> = {};
 const called: string[] = [];
 let server: http.Server;
 let url = "";
@@ -26,10 +26,11 @@ before(async () => {
       const j = JSON.parse(body);
       const last = j.messages[j.messages.length - 1];
       called.push(j.model);
-      const content = plan[j.model];
+      const p = plan[j.model];
+      const file = typeof p === "string" ? { path: "answer.txt", content: p } : p;
       const delta =
-        last.role === "user" && content !== null && content !== undefined
-          ? { role: "assistant", tool_calls: [{ index: 0, id: "w", type: "function", function: { name: "write_file", arguments: JSON.stringify({ path: "answer.txt", content }) } }] }
+        last.role === "user" && file
+          ? { role: "assistant", tool_calls: [{ index: 0, id: "w", type: "function", function: { name: "write_file", arguments: JSON.stringify(file) } }] }
           : { role: "assistant", content: "done" };
       res.writeHead(200, { "Content-Type": "text/event-stream" });
       res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta }] })}\n\n`);
@@ -121,5 +122,45 @@ describe("Worktree dependencies", () => {
     assert.ok(!execSync("git diff --cached --name-only " + wt.base, { cwd: wt.path }).toString().includes("node_modules"));
     await removeWorktree(wt, tmp);
     assert.ok(fs.existsSync(path.join(tmp, "node_modules", "lib", "index.js")), "removing the worktree leaves the real folder alone");
+  });
+});
+
+describe("Tournament safety", () => {
+  it("an attempt that edits what the tests run is never executed, by the contestant or the judge", async () => {
+    const marker = path.join(tmp, "planted-ran");
+    fs.writeFileSync(path.join(tmp, "package.json"), JSON.stringify({ scripts: { test: "echo ok" } }));
+    execSync("git add . && git commit -qm pkg", { cwd: tmp });
+    // One contestant plants a test script; the other solves the task honestly
+    plan = {
+      "gemini-flash-latest": { path: "package.json", content: JSON.stringify({ scripts: { test: `touch "${marker}"` } }) },
+      "gemini-3.5-flash": "the correct answer",
+      "gemini-3.6-flash": null,
+    };
+    const out = await tournament({ task: "x", check: "npm test --silent && grep -q correct answer.txt || grep -q correct answer.txt", expert: "builder", contestants: 2 });
+    assert.ok(!fs.existsSync(marker), "the planted script never ran");
+    assert.match(out, /changed package\.json, which controls what runs/, out);
+    assert.match(out, /WINNER gemini-3\.5-flash/, out);
+  });
+
+  it("knows which files control what runs", async () => {
+    const { touchesControlFiles } = await import("../agents/tournament.js");
+    assert.deepEqual(
+      touchesControlFiles(["src/a.ts", "package.json", "vitest.config.ts", "tests/conftest.py", ".xyro/intents.json", "docs/config.md"]),
+      ["package.json", "vitest.config.ts", "tests/conftest.py", ".xyro/intents.json"]
+    );
+  });
+});
+
+describe("Path confinement follows symlinks", () => {
+  it("refuses writes that leave the project through a symlink", async () => {
+    const { resolveProjectPath } = await import("../tools/safety.js");
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "xyro-outside-"));
+    fs.symlinkSync(outside, path.join(tmp, "linked"), "dir");
+    fs.mkdirSync(path.join(tmp, "real"));
+    fs.symlinkSync(path.join(tmp, "real"), path.join(tmp, "inner-link"), "dir");
+    assert.equal(resolveProjectPath("linked/evil.js").ok, false);
+    assert.equal(resolveProjectPath("linked/new/dir/evil.js").ok, false, "not-yet-existing files are checked via their nearest real folder");
+    assert.equal(resolveProjectPath("inner-link/ok.js").ok, true, "links that stay inside are fine");
+    assert.equal(resolveProjectPath("src/new-file.ts").ok, true);
   });
 });

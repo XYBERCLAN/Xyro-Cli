@@ -1,3 +1,4 @@
+import { trustProjectWorkflows } from "../agents/workflows.js";
 import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert";
 import http from "node:http";
@@ -124,6 +125,8 @@ describe("Workflows", () => {
   it("loads custom workflows and lists them", async () => {
     fs.mkdirSync(path.join(tmp, ".xyro", "workflows"), { recursive: true });
     fs.writeFileSync(path.join(tmp, ".xyro", "workflows", "ship.md"), "---\nname: ship\ndescription: Test then commit\n---\n1. tester: run tests\n2. git: commit\n");
+    assert.ok(!(await runWorkflow({ name: "list" })).includes("ship (project)"), "untrusted project workflow is not offered");
+    trustProjectWorkflows(tmp);
     const list = await runWorkflow({ name: "list" });
     assert.ok(list.includes("ship (project): Test then commit") && list.includes("1. tester → 2. git"));
   });

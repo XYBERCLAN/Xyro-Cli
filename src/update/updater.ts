@@ -85,6 +85,73 @@ export async function checkForUpdate(opts: { force?: boolean } = {}): Promise<Up
   return { current, latest, updateAvailable: compareVersions(current, latest) < 0 };
 }
 
+// ─── launch pop-up: announce each new version once (again after a few days) ──
+
+const REMIND_AFTER_MS = 3 * 24 * 60 * 60 * 1000;
+const REPO = "XYBERCLAN/Xyro-Cli";
+
+function announcedPath(): string {
+  return join(getConfigDir(), "update-announced.json");
+}
+
+/** Should the launch pop-up show for this version? Once per version, then every 3 days if dismissed. */
+export function shouldAnnounce(latest: string, now = Date.now()): boolean {
+  if (updateChecksDisabled() || process.env.XYRO_NO_UPDATE_POPUP) return false;
+  try {
+    const a = JSON.parse(fs.readFileSync(announcedPath(), "utf-8")) as { version?: string; at?: number };
+    return a.version !== latest || now - (a.at ?? 0) > REMIND_AFTER_MS;
+  } catch {
+    return true;
+  }
+}
+
+export function markAnnounced(latest: string): void {
+  try {
+    fs.mkdirSync(getConfigDir(), { recursive: true });
+    fs.writeFileSync(announcedPath(), JSON.stringify({ version: latest, at: Date.now() }));
+  } catch {
+    // best effort
+  }
+}
+
+/** Turn GitHub release notes into a few plain lines ("What's new"). */
+export function summarizeNotes(markdown: string, max = 6): string[] {
+  return markdown
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => /^[-*]\s+/.test(l))
+    .map((l) =>
+      l
+        .replace(/^[-*]\s+/, "")
+        .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")
+        .replace(/\s+by @\S+.*$/, "")
+        .replace(/\s+in https?:\/\/\S+$/, "")
+        .replace(/[`*_]/g, "")
+        .replace(/^(feat|fix|perf|refactor|docs|chore)(\([^)]*\))?!?:\s*/i, "")
+        .trim()
+    )
+    .filter((l) => l.length > 2)
+    .slice(0, max);
+}
+
+/** Release notes for a version from GitHub (null when offline or missing). */
+export async function fetchReleaseNotes(version: string, timeoutMs = 3000): Promise<string[] | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const base = (process.env.XYRO_GITHUB_API || "https://api.github.com").replace(/\/+$/, "");
+    const res = await fetch(`${base}/repos/${REPO}/releases/tags/v${version}`, { headers: { Accept: "application/vnd.github+json", "User-Agent": "xyro-cli" }, signal: controller.signal });
+    if (!res.ok) return null;
+    const body = (await res.json()) as { body?: string };
+    const notes = summarizeNotes(body.body ?? "");
+    return notes.length ? notes : null;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export type InstallMethod = "npm-global" | "source" | "npx";
 
 /** How this copy of XYRO was installed, judged from where it runs. */

@@ -1,3 +1,4 @@
+import { readProfile, forgetEverything } from "./learning.js";
 import * as fs from "node:fs";
 import * as p from "@clack/prompts";
 import { Agent } from "../agent/loop.js";
@@ -50,7 +51,9 @@ Commands:
   /resume            reload last saved session
   /clear             reset conversation history
   /init              scaffold an AGENTS.md project context file
-  /learn             save this session's lessons to XYRO.md (project memory)
+  /learn             reflect now: learn how you work, project lessons, proven skills
+  /profile           what XYRO learned about how you work
+  /forget            erase what XYRO learned about you
   /workflow <name> <goal>   run a team workflow (feature, bugfix, review, …)
   /exit              save and quit
 Bare words also work: help, status, model, cost, compact, history, export, save, resume, clear, exit, quit
@@ -336,13 +339,24 @@ export async function handleCommand(
       };
     }
 
-    case "learn":
-      // The memory keeper records durable lessons from this session in XYRO.md
-      return {
-        action: "agent",
-        prompt:
-          "Use delegate with expert \"memory-keeper\" to record the durable lessons from this session in XYRO.md: conventions we followed, commands that worked, pitfalls we hit, and decisions with their reasons. Pass a concise summary of the session as context.",
-      };
+    case "learn": {
+      renderInfo("Reflecting on recent work…");
+      renderAssistant(await agent.reflect(true));
+      agent.refreshSystemPrompt();
+      return { action: "continue" };
+    }
+
+    case "profile": {
+      const items = readProfile();
+      renderAssistant(items.length ? items.map((i) => `- ${i.text} (${i.evidence} observations)`).join("\n") : "XYRO hasn't learned enough about how you work yet.");
+      return { action: "continue" };
+    }
+
+    case "forget":
+      forgetEverything();
+      agent.refreshSystemPrompt();
+      renderInfo("Forgot everything XYRO learned about you.");
+      return { action: "continue" };
 
     case "exit":
       agent.save();

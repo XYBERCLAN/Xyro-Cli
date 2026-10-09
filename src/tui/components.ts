@@ -103,7 +103,7 @@ function clock(d = new Date()): string {
 
 // ─── user message card ──────────────────────────────────────────────────────
 
-export function userMessage(content: string, colorIndex = 0, width = 80): RenderLine[] {
+export function userMessage(content: string, colorIndex = 0, width = 80, label = "you"): RenderLine[] {
   const t = currentTheme();
   const color = agentColor(colorIndex);
   const cardW = Math.max(30, Math.min(width - 4, 100));
@@ -122,7 +122,7 @@ export function userMessage(content: string, colorIndex = 0, width = 80): Render
 
   const time = clock();
   const out: RenderLine[] = [];
-  out.push(row([span("you", { fg: color, bold: true }), span(" ".repeat(Math.max(1, innerW - 3 - time.length))), span(time, { fg: tint(t.textMuted, 0.7) })]));
+  out.push(row([span(label, { fg: color, bold: true }), span(" ".repeat(Math.max(1, innerW - visualWidth(label) - time.length))), span(time, { fg: tint(t.textMuted, 0.7) })]));
   for (const para of content.split("\n")) {
     const wrapped = para ? wrapSpans([span(para, { fg: t.text })], innerW) : [line()];
     for (const w of wrapped) out.push(row(w.spans));

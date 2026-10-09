@@ -11,6 +11,7 @@ import { getExpert, getExperts } from "../agents/experts.js";
 import { pickExpert } from "../agents/router.js";
 import { runExpert, ExpertReport } from "../agents/runtime.js";
 import { runTests } from "./power.js";
+import { recordSkillOutcome } from "../agents/skill-stats.js";
 import { getWorkflows, getWorkflow, describeWorkflow } from "../agents/workflows.js";
 import { isGitRepo, createWorktree, mergeWorktree, Worktree } from "../agents/worktree.js";
 import { runInWorkspace } from "../agent/workspace.js";
@@ -74,6 +75,8 @@ async function runOne(job: DelegateArgs, depth = 0, history: string[] = []): Pro
       });
       const verdict = /^\s*VERIFIED\b/i.test(v.output) && !/^\s*NOT VERIFIED/i.test(v.output);
       ok = v.ok && verdict;
+      // The verifier's ruling is evidence for (or against) the skills that were used
+      recordSkillOutcome(report.skills, ok);
       lines.push(`${header(v, verifier.title, ok ? "independent check" : "found a problem")}\n${v.output}`);
     }
   }

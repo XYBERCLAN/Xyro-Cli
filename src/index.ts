@@ -28,6 +28,13 @@ function packageVersion(): string {
   return xyroVersion();
 }
 
+// `xyro mcp`: serve XYRO's team to other agents over MCP (stdio) and nothing else
+if (process.argv[2] === "mcp") {
+  const { serveMcp } = await import("./mcp/server.js");
+  await serveMcp();
+  await new Promise(() => {}); // the transport keeps the process alive until the host exits
+}
+
 program
   .name("xyro")
   .description("XYRO — AI coding agent")
@@ -42,6 +49,7 @@ program
   .option("--no-banner", "Skip interactive setup and banner")
   .option("--json", "JSON output mode (skips banner)", false)
   .option("--tui", "Full-screen XYRO interactive terminal interface", false)
+  .addHelpText("after", "\nCommands:\n  xyro mcp    Serve XYRO's team (tournament, experts, repo map…) to Claude Code, Cursor and other agents over MCP")
   .parse(process.argv);
 
 const opts = program.opts();

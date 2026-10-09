@@ -203,6 +203,10 @@ export class TuiApp {
   private onHooksRequestCb: (() => void) | null = null;
   private onIntentsRequestCb: ((arg: string) => void) | null = null;
   private onPrivacyRequestCb: ((arg: string) => void) | null = null;
+  private onExpertsTrustCb: (() => void) | null = null;
+  private onLearningRequestCb: ((cmd: string) => void) | null = null;
+  private onLinkRequestCb: ((text: string) => void) | null = null;
+  private linkedPeers = 0;
   private homeNotice: { label: string; text: string } | null = null;
   private updatePopup = new UpdateModal();
   /** Result of the background npm check (null until known). */
@@ -298,6 +302,10 @@ export class TuiApp {
       this.onHooksRequestCb?.();
     } else if (cmd === "/intents") {
       this.onIntentsRequestCb?.("");
+    } else if (cmd === "/peers" || cmd === "/link") {
+      this.onLinkRequestCb?.(cmd);
+    } else if (cmd === "/learn" || cmd === "/profile" || cmd === "/forget") {
+      this.onLearningRequestCb?.(cmd);
     } else if (cmd === "/privacy") {
       this.onPrivacyRequestCb?.("");
     } else if (cmd === "/mcp") {
@@ -411,6 +419,16 @@ export class TuiApp {
     this.agentPicker.open(this.agentName);
   }
 
+  /** A few teammates that doze in the side panel while nobody is working. */
+  private restingCache: { name: string; title: string }[] | null = null;
+  private restingTeam(): { name: string; title: string }[] {
+    if (this.restingCache) return this.restingCache;
+    const names = ["scout", "architect", "builder", "tester", "reviewer", "security", "debugger", "docs", "frontend"];
+    const all = getExperts();
+    this.restingCache = names.map((n) => all.find((e) => e.name === n)).filter((e): e is NonNullable<typeof e> => Boolean(e)).map((e) => ({ name: e.name, title: e.title }));
+    return this.restingCache;
+  }
+
   private getActiveOverlayRows(width: number): RenderLine[] {
     if (this.plan?.state === "pending" && this.view.view === "session" && !panelVisible(tuiSize().width)) {
       const w = Math.max(34, Math.min(width - 4, 72));
@@ -457,6 +475,21 @@ export class TuiApp {
   onHooksRequest(cb: () => void): void { this.onHooksRequestCb = cb; }
   onIntentsRequest(cb: (arg: string) => void): void { this.onIntentsRequestCb = cb; }
   onPrivacyRequest(cb: (arg: string) => void): void { this.onPrivacyRequestCb = cb; }
+  onExpertsTrust(cb: () => void): void { this.onExpertsTrustCb = cb; }
+  onLearningRequest(cb: (cmd: string) => void): void { this.onLearningRequestCb = cb; }
+  onLinkRequest(cb: (text: string) => void): void { this.onLinkRequestCb = cb; }
+
+  /** XYRO Link: how many other sessions on this project are connected. */
+  setLinkedPeers(n: number): void {
+    this.linkedPeers = n;
+  }
+
+  /** A message from someone in a linked XYRO session. */
+  addPeerMessage(label: string, text: string, colorSeed: number): void {
+    this.endStream();
+    this.scroll.append(emptyLine());
+    this.scroll.appendAll(userMessage(text, colorSeed, this.chatWidth(), label));
+  }
   onMcpRequest(cb: () => void): void { this.onMcpRequestCb = cb; }
 
   openMcp(view: () => McpView, onTrust: () => void): void {
@@ -1075,7 +1108,7 @@ export class TuiApp {
       const viewH = Math.max(1, height - bottom.length - 1);
       const chat = this.scroll.visible(viewH);
       const status = this.panelStatus();
-      const panel = renderSidePanel({ ...status, todos: this.todos, plan: this.plan, agents: this.agents }, pw, viewH, this.animTick);
+      const panel = renderSidePanel({ ...status, todos: this.todos, plan: this.plan, agents: this.agents, roster: this.restingTeam() }, pw, viewH, this.animTick, { reducedMotion: isReducedMotion() });
       const composed = new ScrollRegion();
       for (let r = 0; r < viewH; r++) {
         composed.append(line(...fitSpans(chat[r]?.spans ?? [], chatW), ...panel.rows[r].spans));
@@ -1443,6 +1476,7 @@ export class TuiApp {
     const tok = this.tokenStats;
     const right: StyledSpan[] = [
       ...(tok && tok.total > 0 ? [span(`${fmtTok(tok.total)} tokens`, { fg: dim }), span("  ·  ", { fg: tint(t.textMuted, 0.5) }), span(tok.cost, { fg: dim }), span("    ")] : []),
+      ...(this.linkedPeers ? [span(`${this.linkedPeers} linked`, { fg: BRAND.ramp[0], bold: true }), span("  ")] : []),
       ...(this.updateInfo?.updateAvailable ? [span(`update v${this.updateInfo.latest}`, { fg: BRAND.lemon, bold: true }), span("  ")] : []),
       span(`v${this.version} `, { fg: tint(t.textMuted, 0.6) }),
     ];
@@ -1665,6 +1699,14 @@ export class TuiApp {
         this.onHooksRequestCb?.();
         return;
       }
+      if (/^\/(chat|say|peers|link)(\s|$)/.test(text)) {
+        this.onLinkRequestCb?.(text);
+        return;
+      }
+      if (text === "/learn" || text === "/profile" || text === "/forget") {
+        this.onLearningRequestCb?.(text);
+        return;
+      }
       if (text === "/privacy" || text.startsWith("/privacy ")) {
         this.onPrivacyRequestCb?.(text.slice("/privacy".length).trim());
         return;
@@ -1679,6 +1721,10 @@ export class TuiApp {
       }
       if (text === "/quota" || text === "/pool") {
         this.quotaModal.open(() => poolStatus());
+        return;
+      }
+      if (text === "/experts trust" || text === "/agents trust") {
+        this.onExpertsTrustCb?.();
         return;
       }
       if (text === "/experts" || text === "/agents" || text === "/team") {
