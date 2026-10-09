@@ -3,3 +3,5 @@ dist/
 .env
 *.jsonc
 .agent_history.json
+__test_security__/
+__test_tmp__/

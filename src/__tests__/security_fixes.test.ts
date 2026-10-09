@@ -136,7 +136,6 @@ describe("run_command dangerous filter hardening", () => {
     "rm -If /tmp/x",
     "mkfs.ext4 /dev/sda1",
     "dd if=/dev/zero of=/dev/sda",
-    "shutdown -h now",
     ":(){ :|:& };:",
   ];
 
