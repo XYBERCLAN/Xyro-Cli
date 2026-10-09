@@ -1,18 +1,13 @@
 import OpenAI from "openai";
+import { z } from "zod";
+import { zodToJsonSchema } from "zod-to-json-schema";
 import { Tool } from "../agent/types.js";
 import { readFile } from "./read.js";
 import { writeFile, editFile } from "./write.js";
 import { runCommand } from "./shell.js";
 import { listFiles } from "./fs.js";
 import { searchCode } from "./search.js";
-import { fetchUrl } from "./fetch.js";
-import { writeTodos } from "./todos.js";
-import { glob } from "./glob.js";
-import { proposeWriteFile } from "./propose.js";
-import { spawnAgent, spawnAgents } from "./subagent.js";
-import { findFiles } from "./find_files.js";
-import { endTurn } from "./end_turn.js";
-import { revertFile } from "./undo.js";
+import { astInspectFile, astFindSymbol } from "./ast.js";
 import {
   gitStatus,
   gitDiff,
@@ -41,375 +36,277 @@ import {
 } from "./git.js";
 import { loadPlugins } from "../config/plugins.js";
 
-function def(
+function defineTool<T extends z.ZodTypeAny>(
   name: string,
   description: string,
-  properties: Record<string, unknown>,
-  required: string[]
-): OpenAI.ChatCompletionTool {
+  schema: T,
+  execute: (args: z.infer<T>) => Promise<string>
+): Tool {
+  const jsonSchema = zodToJsonSchema(schema, { target: "openAi" }) as Record<string, unknown>;
+  delete jsonSchema["$schema"];
+
   return {
-    type: "function",
-    function: {
-      name,
-      description,
-      parameters: {
-        type: "object",
-        properties: properties as Record<string, unknown>,
-        required,
+    definition: {
+      type: "function",
+      function: {
+        name,
+        description,
+        parameters: jsonSchema,
       },
+    },
+    execute: async (rawArgs: Record<string, unknown>) => {
+      const parsed = schema.safeParse(rawArgs || {});
+      if (!parsed.success) {
+        const issues = parsed.error.issues
+          .map((i) => `${i.path.join(".") || "input"}: ${i.message}`)
+          .join("; ");
+        return `❌ Invalid arguments for tool '${name}': ${issues}`;
+      }
+      return execute(parsed.data);
     },
   };
 }
 
-// Built-in tools
+// Built-in tools with runtime validation and schema generation
 const builtinTools: Tool[] = [
-  {
-    definition: def(
-      "read_file",
-      "Read file contents with line numbers (supports windowed/paginated reads)",
-      {
-        path: { type: "string", description: "File path to read" },
-        start_line: { type: "number", description: "First line to read (1-indexed, optional)" },
-        end_line: { type: "number", description: "Last line to read (1-indexed, optional)" },
-      },
-      ["path"]
-    ),
-    execute: (args) =>
-      readFile(args as { path: string; start_line?: number; end_line?: number }),
-  },
-  {
-    definition: def(
-      "propose_write_file",
-      "Propose changes to a file with diff preview and interactive user approval before saving",
-      {
-        path: { type: "string", description: "File path" },
-        content: { type: "string", description: "Proposed complete file content" },
-        reason: { type: "string", description: "Reason or description of the changes" },
-      },
-      ["path", "content"]
-    ),
-    execute: (args) =>
-      proposeWriteFile(args as { path: string; content: string; reason?: string }),
-  },
-  {
-    definition: def(
-      "glob",
-      "Find files matching a glob pattern across the project tree (e.g. **/*.ts, src/**/*.json)",
-      {
-        pattern: { type: "string", description: "Glob pattern to match" },
-        path: { type: "string", description: "Directory root to search from (defaults to cwd)" },
-      },
-      ["pattern"]
-    ),
-    execute: (args) => glob(args as { pattern: string; path?: string }),
-  },
-  {
-    definition: def(
-      "write_todos",
-      "Track and update in-session task checklist to organize multi-step work and avoid losing context",
-      {
-        todos: {
-          type: "array",
-          items: { type: "string" },
-          description: "New todo tasks to add to the checklist",
-        },
-        mark_done: {
-          type: "array",
-          items: { type: "number" },
-          description: "IDs of todo items to mark as completed",
-        },
-        clear: {
-          type: "boolean",
-          description: "Clear all existing todos",
-        },
-      },
-      []
-    ),
-    execute: (args) =>
-      writeTodos(args as { todos?: string[]; mark_done?: number[]; clear?: boolean }),
-  },
-  {
-    definition: def(
-      "spawn_agent",
-      "Spawn a focused sub-agent with isolated context to solve a dedicated sub-task",
-      {
-        prompt: { type: "string", description: "Sub-task instructions and goal for the agent" },
-        type: {
-          type: "string",
-          enum: ["file_finder", "code_reviewer", "task_planner", "summarizer", "generic"],
-          description: "Specialized sub-agent role (defaults to generic)",
-        },
-        context_files: {
-          type: "array",
-          items: { type: "string" },
-          description: "List of file paths to highlight for the sub-agent",
-        },
-      },
-      ["prompt"]
-    ),
-    execute: (args) =>
-      spawnAgent(args as { prompt: string; type?: any; context_files?: string[] }),
-  },
-  {
-    definition: def(
-      "spawn_agents",
-      "Run multiple sub-agents in parallel with isolated contexts and aggregate their results",
-      {
-        agents: {
-          type: "array",
-          description: "List of sub-agent jobs to run in parallel",
-          items: {
-            type: "object",
-            properties: {
-              prompt: { type: "string", description: "Sub-task instructions and goal for the agent" },
-              type: {
-                type: "string",
-                enum: ["file_finder", "code_reviewer", "task_planner", "summarizer", "generic"],
-                description: "Specialized sub-agent role (defaults to generic)",
-              },
-              context_files: {
-                type: "array",
-                items: { type: "string" },
-                description: "List of file paths to highlight for the sub-agent",
-              },
-            },
-          },
-        },
-      },
-      ["agents"]
-    ),
-    execute: (args) =>
-      spawnAgents(args as { agents: { prompt: string; type?: any; context_files?: string[] }[] }),
-  },
-  {
-    definition: def(
-      "find_files",
-      "Find the most relevant files for a query, ranked by filename/path/content match (gitignore-aware, fast, free)",
-      {
-        query: { type: "string", description: "Search query describing what you're looking for" },
-        path: { type: "string", description: "Directory root to search from (defaults to cwd)" },
-        max_results: { type: "number", description: "Max results to return (default 20, max 50)" },
-      },
-      ["query"]
-    ),
-    execute: (args) => findFiles(args as { query: string; path?: string; max_results?: number }),
-  },
-  {
-    definition: def(
-      "end_turn",
-      "Explicitly end your turn when the task is complete. Call this instead of looping further once you've finished.",
-      {
-        summary: { type: "string", description: "Short summary of what was accomplished this turn" },
-        reason: { type: "string", description: "Why you are ending the turn" },
-      },
-      []
-    ),
-    execute: (args) => endTurn(args as { reason?: string; summary?: string }),
-  },
-  {
-    definition: def(
-      "task_completed",
-      "Signal that the current task is finished and the turn should end (alias of end_turn)",
-      {
-        summary: { type: "string", description: "Short summary of what was accomplished this turn" },
-      },
-      []
-    ),
-    execute: (args) => endTurn(args as { reason?: string; summary?: string }),
-  },
-  {
-    definition: def(
-      "revert_file",
-      "Restore a file to its previous version using the automatic snapshot taken before the last write_file/edit_file",
-      {
-        path: { type: "string", description: "File path to revert" },
-      },
-      ["path"]
-    ),
-    execute: (args) => revertFile(args as { path: string }),
-  },
-  {
-    definition: def("write_file", "Write content to a file (creates directories)", {
-      path: { type: "string", description: "File path" },
-      content: { type: "string", description: "Complete file content" },
-    }, ["path", "content"]),
-    execute: (args) => writeFile(args as { path: string; content: string }),
-  },
-  {
-    definition: def("edit_file", "Replace text in a file (replaces all occurrences)", {
-      path: { type: "string", description: "File path" },
-      old_text: { type: "string", description: "Text to find" },
-      new_text: { type: "string", description: "Replacement text" },
-      replace_all: { type: "boolean", description: "Replace all occurrences (defaults to true when multiple matches exist)" },
-    }, ["path", "old_text", "new_text"]),
-    execute: (args) => editFile(args as { path: string; old_text: string; new_text: string; replace_all?: boolean }),
-  },
-  {
-    definition: def("run_command", "Execute a shell command (30s timeout)", {
-      command: { type: "string", description: "Shell command to execute" },
-    }, ["command"]),
-    execute: (args) => runCommand(args as { command: string }),
-  },
-  {
-    definition: def("list_files", "List directory structure (recursive, 3 levels)", {
-      path: { type: "string", description: "Directory path" },
-    }, []),
-    execute: (args) => listFiles(args as { path?: string }),
-  },
-  {
-    definition: def("search_code", "Search for a pattern across files", {
-      pattern: { type: "string", description: "Search pattern" },
-      path: { type: "string", description: "Search directory" },
-    }, ["pattern"]),
-    execute: (args) => searchCode(args as { pattern: string; path?: string }),
-  },
-  {
-    definition: def("fetch_url", "Fetch and extract text content from a web URL or GitHub repository", {
-      url: { type: "string", description: "The web URL to fetch (http or https)" },
-    }, ["url"]),
-    execute: (args) => fetchUrl(args as { url: string }),
-  },
+  defineTool(
+    "read_file",
+    "Read file contents with line numbers",
+    z.object({
+      path: z.string().describe("File path to read"),
+    }),
+    (args) => readFile(args)
+  ),
+  defineTool(
+    "write_file",
+    "Write content to a file (creates directories)",
+    z.object({
+      path: z.string().describe("File path"),
+      content: z.string().describe("Complete file content"),
+    }),
+    (args) => writeFile(args)
+  ),
+  defineTool(
+    "edit_file",
+    "Replace text in a file (first occurrence)",
+    z.object({
+      path: z.string().describe("File path"),
+      old_text: z.string().describe("Text to find"),
+      new_text: z.string().describe("Replacement text"),
+    }),
+    (args) => editFile(args)
+  ),
+  defineTool(
+    "run_command",
+    "Execute a shell command (30s timeout)",
+    z.object({
+      command: z.string().describe("Shell command to execute"),
+    }),
+    (args) => runCommand(args)
+  ),
+  defineTool(
+    "list_files",
+    "List directory structure (recursive, 3 levels)",
+    z.object({
+      path: z.string().optional().describe("Directory path"),
+    }),
+    (args) => listFiles(args)
+  ),
+  defineTool(
+    "search_code",
+    "Search for a pattern across files",
+    z.object({
+      pattern: z.string().describe("Search pattern"),
+      path: z.string().optional().describe("Search directory"),
+    }),
+    (args) => searchCode(args)
+  ),
+  defineTool(
+    "ast_inspect_file",
+    "Inspect structure of a TypeScript/JavaScript file: classes, methods, functions, interfaces, types, exports without reading raw lines",
+    z.object({
+      path: z.string().describe("Path to TypeScript/JavaScript file to inspect"),
+    }),
+    (args) => astInspectFile(args)
+  ),
+  defineTool(
+    "ast_find_symbol",
+    "Find where a class, function, interface, or variable is declared across the codebase using AST analysis",
+    z.object({
+      symbol: z.string().describe("Name of the symbol to search for"),
+      path: z.string().optional().describe("Search directory"),
+    }),
+    (args) => astFindSymbol(args)
+  ),
   // ─── Git tools ───────────────────────────────────────────────
-  {
-    definition: def("git_status", "Show git working tree status and current branch", {}, []),
-    execute: () => gitStatus(),
-  },
-  {
-    definition: def("git_diff", "Show unstaged changes in the working tree", {}, []),
-    execute: () => gitDiff(),
-  },
-  {
-    definition: def("git_log", "Show recent git commits", {
-      count: { type: "number", description: "Number of commits to show (default: 10)" },
-    }, []),
-    execute: (args) => gitLog(args as { count?: number }),
-  },
-  {
-    definition: def("git_commit", "Stage all changes and create a commit", {
-      message: { type: "string", description: "Commit message" },
-    }, ["message"]),
-    execute: (args) => gitCommit(args as { message: string }),
-  },
-  {
-    definition: def("git_branch", "List branches or create a new branch", {
-      name: { type: "string", description: "Branch name to create (omit to list)" },
-    }, []),
-    execute: (args) => gitBranch(args as { name?: string }),
-  },
-  {
-    definition: def("git_checkout", "Switch to a different branch", {
-      branch: { type: "string", description: "Branch name to switch to" },
-    }, ["branch"]),
-    execute: (args) => gitCheckout(args as { branch: string }),
-  },
-  {
-    definition: def("git_init", "Initialize a new git repository in the current directory", {}, []),
-    execute: () => gitInit(),
-  },
-  {
-    definition: def("git_stash", "Stash working tree changes", {}, []),
-    execute: () => gitStash(),
-  },
-  {
-    definition: def("git_stash_pop", "Apply the most recent stash and remove it from the stash list", {}, []),
-    execute: () => gitStashPop(),
-  },
-  {
-    definition: def("git_push", "Push committed changes to the remote repository", {
-      remote: { type: "string", description: "Remote name (default: origin)" },
-      branch: { type: "string", description: "Branch to push (default: current branch)" },
-      force: { type: "boolean", description: "Force push with lease (safer than --force)" },
-    }, []),
-    execute: (args) => gitPush(args as { remote?: string; branch?: string; force?: boolean }),
-  },
-  {
-    definition: def("git_create_pr", "Open a pull request on GitHub or view existing PR for current branch", {
-      title: { type: "string", description: "Pull request title (defaults to latest commit message)" },
-      body: { type: "string", description: "Pull request description in markdown" },
-      repo: { type: "string", description: "Target repository (e.g. owner/repo, defaults to upstream or origin)" },
-      base: { type: "string", description: "Base branch to merge into (default: main)" },
-      head: { type: "string", description: "Head branch containing changes (default: current branch or fork:branch)" },
-      draft: { type: "boolean", description: "Create as draft pull request" },
-    }, []),
-    execute: (args) => gitCreatePr(args as { title?: string; body?: string; repo?: string; base?: string; head?: string; draft?: boolean }),
-  },
-  {
-    definition: def("git_pr_view", "View pull request details and status on GitHub", {
-      pr: { type: "string", description: "Pull request number, branch, or URL (defaults to current branch)" },
-      repo: { type: "string", description: "Repository (defaults to upstream or origin)" },
-    }, []),
-    execute: (args) => gitPrView(args as { pr?: string; repo?: string }),
-  },
-  // Extended Git tools
-  {
-    definition: def("git_add", "Stage files for commit", {
-      files: { type: "array", items: { type: "string" }, description: "Files to stage (omit to stage all)" },
-    }, []),
-    execute: (args) => gitAdd(args as { files?: string[] }),
-  },
-  {
-    definition: def("git_diff_staged", "Show changes staged for commit", {}, []),
-    execute: () => gitDiffStaged(),
-  },
-  {
-    definition: def("git_diff_unstaged", "Show unstaged changes", {}, []),
-    execute: () => gitDiffUnstaged(),
-  },
-  {
-    definition: def("git_reset", "Unstage all staged changes (git reset)", {}, []),
-    execute: () => gitReset(),
-  },
-  {
-    definition: def("git_show", "Show the contents of a commit", {
-      revision: { type: "string", description: "Commit SHA, branch, or tag" },
-    }, ["revision"]),
-    execute: (args) => gitShow(args as { revision: string }),
-  },
-  {
-    definition: def("git_create_branch", "Create and switch to a new branch", {
-      branch: { type: "string", description: "Branch name" },
-      base: { type: "string", description: "Base branch to create from (default: current)" },
-    }, ["branch"]),
-    execute: (args) => gitCreateBranch(args as { branch: string; base?: string }),
-  },
-  {
-    definition: def("git_pull", "Pull changes from remote", {
-      remote: { type: "string", description: "Remote name (default: origin)" },
-      branch: { type: "string", description: "Branch name (default: current)" },
-    }, []),
-    execute: (args) => gitPull(args as { remote?: string; branch?: string }),
-  },
-  {
-    definition: def("git_fetch", "Fetch changes from remote", {
-      remote: { type: "string", description: "Remote name (default: origin)" },
-      prune: { type: "boolean", description: "Prune remote-tracking branches" },
-    }, []),
-    execute: (args) => gitFetch(args as { remote?: string; prune?: boolean }),
-  },
-  {
-    definition: def("git_remote", "List remotes", {}, []),
-    execute: () => gitRemote(),
-  },
-  {
-    definition: def("git_rebase", "Rebase onto another branch", {
-      branch: { type: "string", description: "Branch to rebase onto" },
-    }, ["branch"]),
-    execute: (args) => gitRebase(args as { branch: string }),
-  },
-  {
-    definition: def("git_pr_list", "List pull requests on GitHub", {
-      repo: { type: "string", description: "Repository (owner/repo)" },
-      state: { type: "string", description: "State: open, closed, merged, all (default: open)" },
-    }, []),
-    execute: (args) => gitPrList(args as { repo?: string; state?: string }),
-  },
-  {
-    definition: def("git_pr_status", "Show GitHub PR status for current branch/context", {
-      repo: { type: "string", description: "Repository (owner/repo)" },
-    }, []),
-    execute: (args) => gitPrStatus(args as { repo?: string }),
-  },
+  defineTool(
+    "git_status",
+    "Show git working tree status and current branch",
+    z.object({}),
+    () => gitStatus()
+  ),
+  defineTool(
+    "git_diff",
+    "Show unstaged changes in the working tree",
+    z.object({}),
+    () => gitDiff()
+  ),
+  defineTool(
+    "git_log",
+    "Show recent git commits",
+    z.object({
+      count: z.number().optional().describe("Number of commits to show (default: 10)"),
+    }),
+    (args) => gitLog(args)
+  ),
+  defineTool(
+    "git_commit",
+    "Stage all changes and create a commit",
+    z.object({
+      message: z.string().describe("Commit message"),
+    }),
+    (args) => gitCommit(args)
+  ),
+  defineTool(
+    "git_branch",
+    "List branches or create a new branch",
+    z.object({
+      name: z.string().optional().describe("Branch name to create (omit to list)"),
+    }),
+    (args) => gitBranch(args)
+  ),
+  defineTool(
+    "git_checkout",
+    "Switch to a different branch",
+    z.object({
+      branch: z.string().describe("Branch name to switch to"),
+    }),
+    (args) => gitCheckout(args)
+  ),
+  defineTool(
+    "git_init",
+    "Initialize a new git repository in the current directory",
+    z.object({}),
+    () => gitInit()
+  ),
+  defineTool(
+    "git_stash",
+    "Stash working tree changes",
+    z.object({}),
+    () => gitStash()
+  ),
+  defineTool(
+    "git_stash_pop",
+    "Apply the most recent stash and remove it from the stash list",
+    z.object({}),
+    () => gitStashPop()
+  ),
+  defineTool(
+    "git_push",
+    "Push committed changes to the remote repository",
+    z.object({
+      remote: z.string().optional().describe("Remote name (default: origin)"),
+      branch: z.string().optional().describe("Branch to push (default: current branch)"),
+      force: z.boolean().optional().describe("Force push with lease (safer than --force)"),
+    }),
+    (args) => gitPush(args)
+  ),
+  defineTool(
+    "git_create_pr",
+    "Open a pull request on GitHub or view existing PR for current branch",
+    z.object({
+      title: z.string().optional().describe("Pull request title (defaults to latest commit message)"),
+      body: z.string().optional().describe("Pull request description in markdown"),
+      repo: z.string().optional().describe("Target repository (e.g. owner/repo, defaults to upstream or origin)"),
+      base: z.string().optional().describe("Base branch to merge into (default: main)"),
+      head: z.string().optional().describe("Head branch containing changes (default: current branch or fork:branch)"),
+      draft: z.boolean().optional().describe("Create as draft pull request"),
+    }),
+    (args) => gitCreatePr(args)
+  ),
+  defineTool(
+    "git_pr_view",
+    "View pull request details and status on GitHub",
+    z.object({
+      pr: z.string().optional().describe("Pull request number, branch, or URL (defaults to current branch)"),
+      repo: z.string().optional().describe("Repository (defaults to upstream or origin)"),
+    }),
+    (args) => gitPrView(args)
+  ),
+  defineTool(
+    "git_add",
+    "Stage files for commit",
+    z.object({
+      files: z.array(z.string()).optional().describe("Files to stage (omit to stage all)"),
+    }),
+    (args) => gitAdd(args)
+  ),
+  defineTool("git_diff_staged", "Show changes staged for commit", z.object({}), () => gitDiffStaged()),
+  defineTool("git_diff_unstaged", "Show unstaged changes", z.object({}), () => gitDiffUnstaged()),
+  defineTool("git_reset", "Unstage all staged changes (git reset)", z.object({}), () => gitReset()),
+  defineTool(
+    "git_show",
+    "Show the contents of a commit",
+    z.object({
+      revision: z.string().describe("Commit SHA, branch, or tag"),
+    }),
+    (args) => gitShow(args)
+  ),
+  defineTool(
+    "git_create_branch",
+    "Create and switch to a new branch",
+    z.object({
+      branch: z.string().describe("Branch name"),
+      base: z.string().optional().describe("Base branch to create from (default: current)"),
+    }),
+    (args) => gitCreateBranch(args)
+  ),
+  defineTool(
+    "git_pull",
+    "Pull changes from remote",
+    z.object({
+      remote: z.string().optional().describe("Remote name (default: origin)"),
+      branch: z.string().optional().describe("Branch name (default: current)"),
+    }),
+    (args) => gitPull(args)
+  ),
+  defineTool(
+    "git_fetch",
+    "Fetch changes from remote",
+    z.object({
+      remote: z.string().optional().describe("Remote name (default: origin)"),
+      prune: z.boolean().optional().describe("Prune remote-tracking branches"),
+    }),
+    (args) => gitFetch(args)
+  ),
+  defineTool("git_remote", "List remotes", z.object({}), () => gitRemote()),
+  defineTool(
+    "git_rebase",
+    "Rebase onto another branch",
+    z.object({
+      branch: z.string().describe("Branch to rebase onto"),
+    }),
+    (args) => gitRebase(args)
+  ),
+  defineTool(
+    "git_pr_list",
+    "List pull requests on GitHub",
+    z.object({
+      repo: z.string().optional().describe("Repository (owner/repo)"),
+      state: z.string().optional().describe("State: open, closed, merged, all (default: open)"),
+    }),
+    (args) => gitPrList(args)
+  ),
+  defineTool(
+    "git_pr_status",
+    "Show GitHub PR status for current branch/context",
+    z.object({
+      repo: z.string().optional().describe("Repository (owner/repo)"),
+    }),
+    (args) => gitPrStatus(args)
+  ),
 ];
+
 
 // All tools (built-in + plugins)
 let allTools: Tool[] = [...builtinTools];
@@ -451,26 +348,4 @@ export function getToolCount(): { builtin: number; plugins: number; total: numbe
     plugins: allTools.length - builtinTools.length,
     total: allTools.length,
   };
-}
-
-/** Tools exposed while in plan mode (read-only + planning only). */
-const PLAN_MODE_TOOLS = new Set([
-  "read_file",
-  "list_files",
-  "glob",
-  "search_code",
-  "find_files",
-  "write_todos",
-  "end_turn",
-  "task_completed",
-  "git_status",
-  "git_diff",
-  "git_log",
-  "git_branch",
-  "git_pr_view",
-]);
-
-/** Tool definitions exposed in plan mode (write/execute/network tools filtered out). */
-export function getPlanModeToolDefinitions(): OpenAI.ChatCompletionTool[] {
-  return allTools.filter((t) => PLAN_MODE_TOOLS.has(t.definition.function.name)).map((t) => t.definition);
 }

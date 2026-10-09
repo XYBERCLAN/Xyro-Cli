@@ -7,8 +7,8 @@ import { listFiles } from "../tools/fs.js";
 import { generateDiff, generateInlineDiff } from "../tools/diff.js";
 import { runCommand } from "../tools/shell.js";
 import { gitCreatePr, gitPrView } from "../tools/git.js";
-import { fetchUrl, htmlToText } from "../tools/fetch.js";
-import { getEnvironmentContext } from "../config/platform.js";
+import { astInspectFile, astFindSymbol } from "../tools/ast.js";
+import { executeTool } from "../tools/registry.js";
 import { writeFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
@@ -245,59 +245,55 @@ describe("git PR tools", () => {
   });
 });
 
-describe("htmlToText", () => {
-  it("strips html tags and extracts readable text", () => {
-    const html = `
-      <html>
-        <head><title>Test Page</title><style>body { color: red; }</style></head>
-        <body>
-          <script>console.log("ignore");</script>
-          <h1>Main Title</h1>
-          <p>This is a <b>formatted</b> paragraph with &amp; entity.</p>
-          <ul>
-            <li>Item 1</li>
-            <li>Item 2</li>
-          </ul>
-        </body>
-      </html>
+describe("AST tools (ts-morph)", () => {
+  beforeEach(setup);
+  afterEach(teardown);
+
+  it("astInspectFile parses TypeScript classes, interfaces, and functions", async () => {
+    const tsFile = join(TEST_DIR, "sample.ts");
+    const code = `
+      export interface User { id: string; name: string; }
+      export class Service {
+        private key: string = "secret";
+        greet(name: string): string { return "Hello " + name; }
+      }
+      export async function calculateTotal(a: number, b: number): Promise<number> {
+        return a + b;
+      }
     `;
-    const text = htmlToText(html);
-    assert.ok(text.includes("# Main Title"));
-    assert.ok(text.includes("This is a formatted paragraph with & entity."));
-    assert.ok(text.includes("- Item 1"));
-    assert.ok(text.includes("- Item 2"));
-    assert.ok(!text.includes("<style>"));
-    assert.ok(!text.includes("console.log"));
+    writeFileSync(tsFile, code, "utf-8");
+
+    const result = await astInspectFile({ path: tsFile });
+
+    assert.ok(result.includes("Interfaces (1):"), `Missing interface: ${result}`);
+    assert.ok(result.includes("interface User"));
+    assert.ok(result.includes("Classes (1):"), `Missing class: ${result}`);
+    assert.ok(result.includes("class Service"));
+    assert.ok(result.includes("Functions (1):"), `Missing function: ${result}`);
+    assert.ok(result.includes("calculateTotal"));
+  });
+
+  it("astFindSymbol locates declarations across files", async () => {
+    const fileA = join(TEST_DIR, "modA.ts");
+    writeFileSync(fileA, "export function specialHeroHelper() { return 42; }", "utf-8");
+
+    const result = await astFindSymbol({ symbol: "specialHeroHelper", path: TEST_DIR });
+
+    assert.ok(result.includes("specialHeroHelper"), `Expected symbol in result: ${result}`);
+    assert.ok(result.includes("[function]"));
   });
 });
 
-describe("fetchUrl", () => {
-  it("rejects invalid URLs", async () => {
-    const result = await fetchUrl({ url: "ftp://invalid-protocol.com" });
-    assert.ok(result.includes("❌ Error"));
+describe("Zod Tool Validation", () => {
+  it("executes valid arguments cleanly", async () => {
+    const result = await executeTool("run_command", { command: "echo xyro_zod_valid" });
+    assert.ok(result.includes("xyro_zod_valid"));
   });
 
-  it("fetches a valid webpage or GitHub README successfully", async () => {
-    const result = await fetchUrl({ url: "https://github.com/XYBERCLAN/Xyro-Cli" });
-    // Should fetch repo README or page content
-    assert.ok(
-      result.includes("XYRO") || result.includes("terminal") || result.includes("cli") || result.includes("GitHub"),
-      `Expected repo or CLI content, got: ${result.slice(0, 200)}`
-    );
-  });
-});
-
-describe("getEnvironmentContext", () => {
-  it("includes current OS, shell, and guidance", () => {
-    const ctx = getEnvironmentContext();
-    assert.ok(ctx.includes("Current Host Environment"));
-    assert.ok(ctx.includes("Operating System:"));
-    assert.ok(ctx.includes("Shell for run_command:"));
-    if (process.platform === "win32") {
-      assert.ok(ctx.includes("cmd.exe"));
-      assert.ok(ctx.includes("CRITICAL WINDOWS RULES:"));
-      assert.ok(ctx.includes("NEVER use Unix commands"));
-    }
+  it("rejects missing required arguments with helpful error", async () => {
+    const result = await executeTool("read_file", {} as any);
+    assert.ok(result.includes("Invalid arguments"));
+    assert.ok(result.includes("path"));
   });
 });
 

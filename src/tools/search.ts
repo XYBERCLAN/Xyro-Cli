@@ -1,62 +1,37 @@
-import { readFileSync, readdirSync } from "node:fs";
-import { join, relative } from "node:path";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import fg from "fast-glob";
 import { IGNORED_DIRS } from "../config/constants.js";
-import { isIgnoredDir, isWindows } from "../config/platform.js";
-import { resolveProjectPath } from "./safety.js";
-import { GitIgnoreMatcher } from "./gitignore.js";
-
-function shouldIgnore(fp: string): boolean {
-  // Normalize path separators for consistent matching
-  const normalized = fp.replace(/\\/g, "/");
-  for (const d of IGNORED_DIRS) {
-    const dirLower = d.toLowerCase();
-    if (normalized.toLowerCase().includes(`/${dirLower}/`)) return true;
-  }
-  return false;
-}
-
-function getAllFiles(dir: string, matcher: GitIgnoreMatcher): string[] {
-  const results: string[] = [];
-  try {
-    const entries = readdirSync(dir, { withFileTypes: true });
-    for (const entry of entries) {
-      const full = join(dir, entry.name);
-      if (entry.name.startsWith(".")) continue;
-      if (matcher.isIgnored(relative(dir, full).replace(/\\/g, "/"))) continue;
-      if (entry.isDirectory()) {
-        if (!isIgnoredDir(entry.name, IGNORED_DIRS)) {
-          results.push(...getAllFiles(full, matcher));
-        }
-      } else {
-        results.push(full);
-      }
-    }
-  } catch {
-    // permission denied, skip
-  }
-  return results;
-}
+import { isWindows } from "../config/platform.js";
 
 export async function searchCode(args: { pattern: string; path?: string }): Promise<string> {
   const pattern = args.pattern.toLowerCase();
-  const resolveResult = resolveProjectPath(args.path || ".");
-  if (!resolveResult.ok) return resolveResult.message;
-  const dir = resolveResult.path;
-  const matcher = new GitIgnoreMatcher(dir);
-  const files = getAllFiles(dir, matcher);
+  const dir = args.path || ".";
+
+  const ignorePatterns = Array.from(IGNORED_DIRS).flatMap((d) => [`**/${d}/**`, `**/${d}`]);
+  ignorePatterns.push("**/.*/**");
+
+  const files = await fg("**/*", {
+    cwd: dir,
+    dot: false,
+    onlyFiles: true,
+    ignore: ignorePatterns,
+  });
+
+  // Sort files for deterministic search output
+  files.sort();
+
   const matches: string[] = [];
 
-  for (const fp of files) {
-    if (shouldIgnore(fp)) continue;
+  for (const rel of files) {
     if (matches.length >= 50) break;
+    const fullPath = join(dir, rel);
     try {
-      const content = readFileSync(fp, "utf-8");
-      // Handle both \n and \r\n line endings
+      const content = readFileSync(fullPath, "utf-8");
       const lines = content.split(/\r?\n/);
       for (let i = 0; i < lines.length; i++) {
         if (lines[i].toLowerCase().includes(pattern)) {
-          // Normalize path for display (use forward slashes for consistency)
-          const displayPath = isWindows ? fp.replace(/\\/g, "/") : fp;
+          const displayPath = isWindows ? fullPath.replace(/\\/g, "/") : fullPath;
           matches.push(`${displayPath}:${i + 1}: ${lines[i].trim()}`);
           if (matches.length >= 50) break;
         }

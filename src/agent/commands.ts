@@ -1,12 +1,12 @@
 import * as fs from "node:fs";
 import * as p from "@clack/prompts";
-import pc from "picocolors";
 import { Agent } from "../agent/loop.js";
 import { UsageTracker, formatUsage } from "../agent/usage.js";
 import { summarizeHistory } from "../providers/llm.js";
 import { FREE_PROVIDERS, interactiveSetup, Provider } from "../ui/prompts.js";
 import { renderInfo, renderError, renderAssistant, isJsonMode } from "../ui/render.js";
 import { getToolCount } from "../tools/registry.js";
+import { DEFAULT_MODELS } from "../models/catalog.js";
 
 export interface CommandContext {
   agent: Agent;
@@ -20,12 +20,20 @@ export interface CommandContext {
   setApiKey: (k: string) => void;
   usage: UsageTracker;
   persistConfig: (c: { provider?: string; model?: string; baseURL?: string; apiKey?: string }) => void;
-  setPlanMode?: (v: boolean) => void;
-  isPlanMode?: () => boolean;
+  /** Resolve the saved API key for a provider id (per-provider key store) */
+  keyForProvider: (providerId: string) => string | undefined;
+  /** Persist a provider id → API key mapping */
+  saveProviderKey: (providerId: string, apiKey: string) => void;
 }
 
 export interface CommandResult {
   action: "continue" | "exit" | "agent";
+  /** for action: "agent" — the prompt to run through the agent */
+  prompt?: string;
+  /** optional system prompt override for this run */
+  systemPrompt?: string;
+  /** optional model override for this run */
+  model?: string;
 }
 
 const HELP_TEXT = `
@@ -41,17 +49,15 @@ Commands:
   /save              save conversation history
   /resume            reload last saved session
   /clear             reset conversation history
-  /plan              toggle PLAN MODE (read-only planning; switch back to build with /plan again)
   /init              scaffold an AGENTS.md project context file
   /exit              save and quit
-Bare words also work: help, status, model, cost, compact, history, export, save, resume, clear, plan, exit, quit
+Bare words also work: help, status, model, cost, compact, history, export, save, resume, clear, exit, quit
 `.trim();
 
 const ALIASES: Record<string, string> = {
   help: "/help", status: "/status", model: "/model", provider: "/provider",
   cost: "/cost", compact: "/compact", history: "/history", export: "/export",
-  save: "/save", resume: "/resume", clear: "/clear", plan: "/plan",
-  init: "/init", quit: "/exit", exit: "/exit",
+  save: "/save", resume: "/resume", clear: "/clear", init: "/init", quit: "/exit", exit: "/exit",
 };
 
 function isCommand(input: string): string | null {
@@ -110,7 +116,6 @@ export async function handleCommand(
         `messages: ${msgs.length} (incl. ${toolCalls} tool results)`,
         `tools: ${toolInfo.total} (${toolInfo.builtin} built-in + ${toolInfo.plugins} plugin)` ,
         `max tool calls: ${agent.getMaxToolCalls()}`,
-        `plan mode: ${agent.isPlanMode() ? pc.green("ON") : pc.dim("off")}`,
       ];
       renderAssistant(lines.join("\n"));
       return { action: "continue" };
@@ -118,41 +123,54 @@ export async function handleCommand(
 
     case "model": {
       if (arg) {
+        const found = DEFAULT_MODELS.find((m) => m.id === arg);
         ctx.setModel(arg);
-        ctx.persistConfig({ model: arg });
+        if (found) {
+          ctx.setProvider(found.provider);
+          if (found.baseURL) ctx.setBaseURL(found.baseURL);
+          // Swap to the target provider's saved key — never send another
+          // provider's key to this endpoint (401 "User not found").
+          const key = ctx.keyForProvider(found.providerId) ?? (found.providerId === "local" ? "ollama" : "");
+          if (key) ctx.setApiKey(key);
+          ctx.agent.updateClient(found.baseURL || ctx.baseURL, key);
+          ctx.persistConfig({ model: arg, provider: found.provider, baseURL: found.baseURL, apiKey: key });
+        } else {
+          ctx.persistConfig({ model: arg });
+        }
         renderInfo(`Model switched to ${arg}`);
         return { action: "continue" };
       }
 
-      // Interactive model picker
+      // Interactive model picker with full provider & Free/Paid details
       const current = ctx.model;
-      const preset = FREE_PROVIDERS.find(
-        (pr: Provider) => pr.name === ctx.provider || pr.baseURL === ctx.baseURL
-      );
-
-      const options: { value: string; label: string; hint?: string }[] = [];
-      if (preset) {
-        for (const m of preset.models) {
-          options.push({
-            value: m,
-            label: m,
-            hint: m === current ? "current" : m === preset.defaultModel ? "default" : undefined,
-          });
-        }
-      }
-      options.push({ value: "__custom__", label: "Enter a custom model name…" });
 
       if (isJsonMode()) {
+        const list = DEFAULT_MODELS.map(
+          (m) => `• ${m.id} (${m.provider}) [${m.badge}] - ${m.desc}`
+        ).join("\n");
         renderAssistant(
-          `Current model: ${current}` +
-            (preset ? `\nAvailable models for ${preset.name}:\n${preset.models.map((m) => "- " + m).join("\n")}` : "") +
-            `\nSwitch with: /model <name>`
+          `Current model: ${current}\n\nAvailable Models:\n${list}\n\nSwitch with: /model <name>`
         );
         return { action: "continue" };
       }
 
+      const options = DEFAULT_MODELS.map((m) => {
+        const isCur = m.id === current;
+        return {
+          value: m.id,
+          label: `${m.name.padEnd(26)} · ${m.provider}`,
+          hint: `[${m.badge}] ${isCur ? "● CURRENT" : m.desc}`,
+        };
+      });
+
+      options.push({
+        value: "__custom__",
+        label: "Enter a custom model name…",
+        hint: "Manual model identifier",
+      });
+
       const choice = await p.select({
-        message: `Select model${preset ? ` (${preset.name})` : ""} — current: ${current}`,
+        message: `Select model — current: ${current}`,
         options,
       });
 
@@ -176,15 +194,54 @@ export async function handleCommand(
         newModel = choice as string;
       }
 
+      const found = DEFAULT_MODELS.find((m) => m.id === newModel);
       ctx.setModel(newModel);
-      ctx.persistConfig({ model: newModel });
-      renderInfo(`Model switched to ${newModel}`);
+      if (found) {
+        ctx.setProvider(found.provider);
+        if (found.baseURL) ctx.setBaseURL(found.baseURL);
+        // Swap to the target provider's saved key (prevents cross-provider 401s)
+        const key = ctx.keyForProvider(found.providerId) ?? (found.providerId === "local" ? "ollama" : "");
+        if (key) ctx.setApiKey(key);
+        ctx.agent.updateClient(found.baseURL || ctx.baseURL, key);
+        ctx.persistConfig({ model: newModel, provider: found.provider, baseURL: found.baseURL, apiKey: key });
+      } else {
+        ctx.persistConfig({ model: newModel });
+      }
+      renderInfo(`Model switched to ${newModel}${found ? ` (${found.provider})` : ""}`);
       return { action: "continue" };
     }
 
     case "provider": {
+      const target = arg.toLowerCase();
+      if (target) {
+        const found = FREE_PROVIDERS.find(
+          (p) => p.id.toLowerCase() === target || p.name.toLowerCase().includes(target)
+        );
+        if (found) {
+          ctx.setProvider(found.name);
+          ctx.setBaseURL(found.baseURL);
+          ctx.setModel(found.defaultModel);
+          // Use this provider's saved key when we have one; local needs no key
+          const key = ctx.keyForProvider(found.id) ?? (found.id === "local" ? "ollama" : ctx.apiKey);
+          ctx.setApiKey(key);
+          ctx.agent.updateClient(found.baseURL, key);
+          ctx.agent.setModel(found.defaultModel);
+          ctx.persistConfig({ provider: found.name, model: found.defaultModel, baseURL: found.baseURL, apiKey: key });
+          renderInfo(`Provider switched to ${found.name} (${found.defaultModel})`);
+          return { action: "continue" };
+        }
+      }
+
+      if (isJsonMode() || !process.stdin.isTTY) {
+        renderInfo("Available providers: " + FREE_PROVIDERS.map((p) => p.id).join(", "));
+        return { action: "continue" };
+      }
+
       const config = await interactiveSetup();
       ctx.persistConfig(config);
+      // Remember the key for this provider for future model/provider switches
+      const prov = FREE_PROVIDERS.find((p) => p.name === config.provider);
+      if (prov) ctx.saveProviderKey(prov.id, config.apiKey);
       // Update agent client immediately
       ctx.agent.updateClient(config.baseURL, config.apiKey);
       ctx.agent.setModel(config.model);
@@ -265,13 +322,6 @@ export async function handleCommand(
     case "init":
       renderAssistant(writeAgentsMd());
       return { action: "continue" };
-
-    case "plan": {
-      const next = ctx.isPlanMode ? !ctx.isPlanMode() : !agent.isPlanMode();
-      ctx.setPlanMode?.(next);
-      renderInfo(next ? "PLAN MODE enabled — read-only planning. Type your request to make a plan." : "PLAN MODE disabled — back to build mode.");
-      return { action: "continue" };
-    }
 
     case "exit":
       agent.save();

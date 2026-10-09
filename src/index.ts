@@ -11,12 +11,8 @@ import { handleCommand } from "./agent/commands.js";
 import { UsageTracker } from "./agent/usage.js";
 import { renderConfigBanner, renderInfo, renderError, setJsonMode } from "./ui/render.js";
 import { interactiveSetup, askForInput, CANCEL, FREE_PROVIDERS } from "./ui/prompts.js";
-import { printXyroHead } from "./cli/banner-icon.js";
-import { printBanner } from "./cli/banner.js";
-import { loadPersistedConfig, savePersistedConfig } from "./config/persist.js";
+import { loadPersistedConfig, savePersistedConfig, saveProviderKey, getProviderKey } from "./config/persist.js";
 import { initializeTools, getToolCount } from "./tools/registry.js";
-
-let bannerPrinted = false;
 
 // Suppress punycode deprecation warning (from internal Node.js usage)
 process.removeAllListeners("warning");
@@ -41,23 +37,20 @@ program
   .option("--base-url <url>", "OpenAI-compatible base URL")
   .option("--provider <id>", "Provider ID (e.g. groq, openrouter, deepseek)")
   .option("--max-tool-calls <n>", "Max tool calls per turn", "25")
-  .option("--plan", "Start in PLAN MODE (read-only, produces a plan)", false)
-  .option("--no-approve", "Skip interactive approval prompts for mutating tools", false)
   .option("--resume", "Resume previous conversation", false)
   .option("--no-banner", "Skip interactive setup and banner")
   .option("--json", "JSON output mode (skips banner)", false)
+  .option("--tui", "Full-screen XYRO interactive terminal interface", false)
   .parse(process.argv);
 
 const opts = program.opts();
 
+// commander exposes --base-url as opts.baseUrl (camelCase) — normalize
+const baseURLArg = (opts.baseURL || opts.baseUrl) as string | undefined;
+
 if (opts.v) {
   console.log(packageVersion());
   process.exit(0);
-}
-
-// --no-approve disables permission prompts (also honors XYRO_NO_APPROVE)
-if (opts.approve === false) {
-  process.env.XYRO_NO_APPROVE = "1";
 }
 
 if (opts.json) {
@@ -101,13 +94,7 @@ function formatApiError(err: unknown, provider: string, model: string): string {
   if ((status && status >= 500) || msg.includes("500") || msg.includes("502") || msg.includes("503")) {
     return `${provider} server error (${status || 500}). Try again in a moment.`;
   }
-  if (
-    msg.toLowerCase().includes("timed out") ||
-    msg.toLowerCase().includes("timeout") ||
-    msg.toLowerCase().includes("etimedout") ||
-    msg.toLowerCase().includes("connection error") ||
-    msg.toLowerCase().includes("fetch failed")
-  ) {
+  if (msg.toLowerCase().includes("etimedout") || msg.toLowerCase().includes("connection error") || msg.toLowerCase().includes("fetch failed")) {
     return (
       `Network connection to ${provider} timed out or failed.` +
       `\n  ${pc.dim("Check your internet connection / VPN / proxy, or switch provider with /provider")}`
@@ -162,18 +149,6 @@ async function main(): Promise<void> {
 
   apiKey = opts.apiKey || process.env["OPENAI_API_KEY"] || saved.apiKey || "";
 
-  if (
-    !bannerPrinted &&
-    opts.banner !== false &&
-    !process.env["XYRO_NO_BANNER"] &&
-    process.stdout.isTTY &&
-    !opts.json
-  ) {
-    printXyroHead();
-    printBanner();
-    bannerPrinted = true;
-  }
-
   if (!apiKey && opts.banner !== false && !opts.json) {
     const config = await interactiveSetup();
     apiKey = config.apiKey;
@@ -181,6 +156,9 @@ async function main(): Promise<void> {
     baseURL = config.baseURL;
     provider = config.provider;
     savePersistedConfig({ provider, model, baseURL, apiKey });
+    // Seed per-provider key store so future model switches reuse the right key
+    const prov = FREE_PROVIDERS.find((p) => p.name === provider);
+    if (prov) saveProviderKey(prov.id, apiKey);
   }
 
   if (!apiKey) {
@@ -194,7 +172,6 @@ async function main(): Promise<void> {
     baseURL,
     apiKey,
     maxToolCalls: parseInt(opts.maxToolCalls, 10),
-    planMode: opts.plan,
   });
 
   const usage = new UsageTracker();
@@ -239,11 +216,8 @@ async function main(): Promise<void> {
       setApiKey: (k) => { apiKey = k; },
       usage,
       persistConfig: (c) => savePersistedConfig({ provider: c.provider, model: c.model, baseURL: c.baseURL, apiKey: c.apiKey }),
-      setPlanMode: (v) => {
-        agent.setPlanMode(v);
-        agent.refreshSystemMessage();
-      },
-      isPlanMode: () => agent.isPlanMode(),
+      keyForProvider: (pid) => getProviderKey(pid),
+      saveProviderKey: (pid, k) => saveProviderKey(pid, k),
     });
 
     if (cmdResult) {
@@ -266,7 +240,26 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((err) => {
+// TUI dispatch: full-screen XYRO terminal interface when interactive.
+async function bootstrap(): Promise<void> {
+  const wantTui =
+    opts.tui || (process.stdin.isTTY && process.stdout.isTTY && !opts.json && opts.banner !== false);
+  if (wantTui) {
+    const { runTuiMode } = await import("./tui/entry.js");
+    await runTuiMode({
+      provider: opts.provider,
+      model: opts.model,
+      baseUrl: baseURLArg,
+      apiKey: opts.apiKey,
+      maxToolCalls: parseInt(opts.maxToolCalls, 10),
+      resume: opts.resume,
+    });
+    return;
+  }
+  await main();
+}
+
+bootstrap().catch((err) => {
   console.error(pc.red(`Fatal: ${err.message}`));
   process.exit(1);
 });
