@@ -14,7 +14,7 @@
 import { StyledSpan, span } from "./core.js";
 import { currentTheme, tint } from "../ui/theme.js";
 
-export type BotState = "running" | "done" | "failed" | "idle";
+export type BotState = "running" | "ready" | "done" | "failed" | "idle";
 
 export interface Bot {
   name: string;
@@ -113,7 +113,7 @@ export function botFrame(bot: Bot, tick: number, seed = 0): StyledSpan[][] {
 
   // Waking up: dozing → eyes pop open "!" → a happy hop. Then work.
   const since = bot.since ?? WAKE_MS;
-  const waking = bot.state === "running" && since < WAKE_MS;
+  const waking = (bot.state === "running" || bot.state === "ready") && since < WAKE_MS;
   const phase = since < WAKE_MS * 0.33 ? "doze" : since < WAKE_MS * 0.66 ? "pop" : "hop";
   const work = workBeat(workStyle(bot.name), Math.floor(local / 4));
 
@@ -123,6 +123,8 @@ export function botFrame(bot: Bot, tick: number, seed = 0): StyledSpan[][] {
   else if (bot.state === "running") {
     eyes = work.eyes;
     if (local % 37 === 0 || local % 37 === 1) eyes = " ─ ─ ";
+  } else if (bot.state === "ready") {
+    eyes = local % 41 === 0 ? " ─ ─ " : " ● ● "; // awake and attentive, waiting for its step
   } else if (bot.state === "done") eyes = " ^ ^ ";
   else if (bot.state === "failed") eyes = " x x ";
   else if (bot.state === "idle") eyes = " - - ";
@@ -133,6 +135,7 @@ export function botFrame(bot: Bot, tick: number, seed = 0): StyledSpan[][] {
   let top = "       ";
   if (waking) top = phase === "doze" ? "    z  " : phase === "pop" ? "   !   " : "   ✦   ";
   else if (bot.state === "running") top = work.top;
+  else if (bot.state === "ready") top = Math.floor(local / 6) % 2 ? "   ·   " : "   •   ";
   else if (bot.state === "done") top = "   ✓   ";
   else if (bot.state === "idle") {
     const z = Math.floor(local / 6) % 4;
@@ -140,7 +143,7 @@ export function botFrame(bot: Bot, tick: number, seed = 0): StyledSpan[][] {
   }
 
   const sprite: StyledSpan[][] = [
-    [span(top, { fg: bot.state === "idle" ? tint(t.textMuted, 0.6) : bot.state === "done" ? t.success : BRAND_SPARK, bold: bot.state !== "idle" })],
+    [span(top, { fg: bot.state === "idle" ? tint(t.textMuted, 0.6) : bot.state === "done" ? t.success : bot.state === "ready" ? color : BRAND_SPARK, bold: bot.state !== "idle" })],
     [span("╭──", { fg: color }), span(emblem(bot.name, bot.worker), { fg: bot.state === "idle" ? color : "#FFFFFF", bold: true }), span("──╮", { fg: color })],
     [span("│", { fg: color }), span(eyes, { fg: bot.state === "failed" ? t.error : eyeColor, bold: true }), span("│", { fg: color })],
     [span(mouth, { fg: color })],
@@ -183,7 +186,7 @@ export function teamGrid(bots: Bot[], width: number, tick: number, maxRows: numb
 }
 
 /** Who to draw: this request's experts (working first), else a few dozing teammates. */
-export function botsFor(agents: { expert: string; title: string; status: "running" | "done" | "failed"; startedAt?: number }[], roster: { name: string; title: string }[], now = Date.now()): Bot[] {
+export function botsFor(agents: { expert: string; title: string; status: "running" | "ready" | "done" | "failed"; startedAt?: number }[], roster: { name: string; title: string }[], now = Date.now()): Bot[] {
   if (agents.length) {
     const latest = new Map<string, Bot>();
     for (const a of agents) {
@@ -191,7 +194,7 @@ export function botsFor(agents: { expert: string; title: string; status: "runnin
       const key = worker ? `${a.expert}:${a.title}` : a.expert;
       latest.set(key, { name: a.expert, title: worker ? a.title : a.expert, state: a.status, worker, since: a.startedAt !== undefined ? now - a.startedAt : undefined });
     }
-    const order = { running: 0, failed: 1, done: 2, idle: 3 };
+    const order = { running: 0, ready: 1, failed: 2, done: 3, idle: 4 };
     return [...latest.values()].sort((x, y) => order[x.state] - order[y.state]);
   }
   return roster.map((r) => ({ name: r.name, title: r.name, state: "idle" as const }));

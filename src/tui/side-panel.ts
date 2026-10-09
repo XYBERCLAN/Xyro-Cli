@@ -25,6 +25,8 @@ export interface PanelState {
   agents?: AgentActivity[];
   /** Teammates who doze in the free space when nobody is working */
   roster?: { name: string; title: string }[];
+  /** Experts who recognised XYRO's own current work as their trade (robots only, not the AGENTS list) */
+  instinct?: { expert: string; title: string; status: "running" | "ready" | "done" | "failed"; startedAt: number }[];
   /** ms since XYRO started working on this turn (drives its wake-up) */
   workingFor?: number;
 }
@@ -172,7 +174,8 @@ export function renderSidePanel(
           : item.status === "in_progress"
             ? { fg: t.text, bold: true }
             : { fg: tint(t.text, 0.8) };
-      wrapSpans([span(item.text, style)], innerW - 2).forEach((w, j) => body.push([span(j === 0 ? glyph + " " : "  ", { fg: gColor, bold: true }), ...w.spans]));
+      const owner = item.expert ? [span(` · ${item.expert}`, { fg: tint(t.textMuted, item.status === "in_progress" ? 0.95 : 0.6) })] : [];
+      wrapSpans([span(item.text, style), ...owner], innerW - 2).forEach((w, j) => body.push([span(j === 0 ? glyph + " " : "  ", { fg: gColor, bold: true }), ...w.spans]));
     }
   } else if (!plan) {
     section("TASKS");
@@ -180,12 +183,17 @@ export function renderSidePanel(
   }
 
   // ── the team, animated, in whatever space is left at the bottom ─────────
-  const bots = botsFor(state.agents ?? [], state.roster ?? []);
+  // Delegated experts first; then whoever recognised XYRO's own work as theirs
+  const delegated = state.agents ?? [];
+  const instinct = (state.instinct ?? []).filter((i) => !delegated.some((a) => a.expert === i.expert && a.status === "running"));
+  const team = [...delegated, ...instinct];
+  const bots = botsFor(team, state.roster ?? []);
   const grid = teamGrid(bots, innerW, opts.reducedMotion ? 0 : tick, height - body.length - 2);
   if (grid.length) {
     while (body.length < height - grid.length - 1) blank();
-    const working = (state.agents ?? []).filter((a) => a.status === "running").length;
-    section("TEAM", working ? `${working} working` : (state.agents ?? []).length ? "done" : "resting");
+    const working = team.filter((a) => a.status === "running").length;
+    const ready = team.filter((a) => a.status === "ready").length;
+    section("TEAM", working ? `${working} working` : ready ? `${ready} ready` : team.length ? "done" : "resting");
     body.push(...grid);
   }
 

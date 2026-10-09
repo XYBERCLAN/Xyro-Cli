@@ -579,10 +579,10 @@ const builtinTools: Tool[] = [
   ),
   defineTool(
     "write_todos",
-    "Publish the task list shown live to the user. Pass `items` with the FULL list every time (each item's text and status: pending | in_progress | done); keep exactly one item in_progress.",
+    "Publish the plan / task list shown live to the user. Pass `items` with the FULL list every time (each item's text and status: pending | in_progress | done, and the expert who owns it); keep exactly one item in_progress.",
     z.object({
       items: z
-        .array(z.object({ text: z.string(), status: z.enum(["pending", "in_progress", "done"]) }))
+        .array(z.object({ text: z.string(), status: z.enum(["pending", "in_progress", "done"]), expert: z.string().optional().describe("Expert who owns this step, e.g. builder, tester, docs") }))
         .optional()
         .describe("The complete task list, in order"),
       clear: z.boolean().optional().describe("Clear the list"),

@@ -64,9 +64,21 @@ jobs:
 
       - name: Publish
         if: steps.meta.outputs.published != 'true'
-        run: npm publish --provenance --access public --tag ${{ steps.meta.outputs.tag }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          TAG: ${{ steps.meta.outputs.tag }}
+        run: |
+          # Tokens that require staged publishing (npm's 2FA-safe flow) are refused by a direct
+          # publish: stage the release instead and let a human approve it on npmjs.com
+          if npm publish --provenance --access public --tag "$TAG" 2> publish.err; then exit 0; fi
+          cat publish.err
+          if grep -q "E_STAGE_REQUIRED" publish.err; then
+            npx -y npm@12 stage publish . --provenance --access public --tag "$TAG"
+            VERSION=$(node -p "require('./package.json').version")
+            echo "::notice title=Approve the release::xyro-cli v$VERSION is staged. Approve it on npmjs.com (your package → Staged), or run: npm stage list xyro-cli, then npm stage approve <id>"
+            exit 0
+          fi
+          exit 1
 
       - name: Create GitHub Release
         if: steps.meta.outputs.published != 'true'

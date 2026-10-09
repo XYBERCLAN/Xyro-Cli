@@ -1,3 +1,4 @@
+import { dispatchFor } from "./dispatch.js";
 import { beginTurn, cancelTurn, isStopped } from "./cancel.js";
 import { recordEvent, classifyMessage, reflect, reflectionDue, formatReflection } from "./learning.js";
 import { pickExpert } from "../agents/router.js";
@@ -39,6 +40,8 @@ export interface AgentOutput {
   onError?(message: string): void;
   /** The free-quota pool moved this request to another model/provider. */
   onModelSwitched?(s: ModelSwitch): void;
+  /** The experts recognised for this request, ready before any work starts */
+  onDispatch?(team: { name: string; title: string; why: string }[]): void;
   /** A short status line (intent guard, privacy shield…) */
   onNotice?(text: string, kind: "info" | "warn"): void;
   /** Ask the user to approve a mutating/exec tool call (TUI modal). */
@@ -55,6 +58,9 @@ export function summarizeToolArgs(args: Record<string, unknown>): string {
   const json = JSON.stringify(args ?? {});
   return json === "{}" ? "" : json.slice(0, 80);
 }
+
+/** Calling any of these counts as having a plan for the turn. */
+const PLANNING_TOOLS = new Set(["write_todos", "propose_plan", "council", "run_workflow", "delegate_team"]);
 
 /** Tools after which the intent guard re-checks saved requirements. */
 const FILE_CHANGING_TOOLS = new Set([
@@ -423,10 +429,15 @@ export class Agent {
       this.compactGen++;
       this.pendingCompact = null;
     }
-    this.history.add({ role: "user", content: input });
+    // Dispatch: the experts for this request get ready now; multi-step work is planned first
+    const dispatch = dispatchFor(input);
+    this.history.add({ role: "user", content: dispatch?.note ? `${input}\n\n${dispatch.note}` : input });
     if (!process.stdin.isTTY && !this.output) renderUserMessage(input);
     this.output?.onUserMessage?.(input);
+    if (dispatch?.team.length) this.output?.onDispatch?.(dispatch.team);
     this.observeUserMessage(input);
+    let planned = false;
+    let planNudged = false;
 
     beginTurn(); // Esc stops everything this turn starts
     let toolCallCount = 0;
@@ -660,6 +671,13 @@ export class Agent {
       if (isStopped()) {
         this.finishStopped("", turnStart);
         break;
+      }
+
+      // Plan first: a multi-step request that started without a plan gets one reminder
+      if (response.tool_calls.some((tc) => PLANNING_TOOLS.has(tc.function.name))) planned = true;
+      if (dispatch?.multiStep && !planned && !planNudged) {
+        planNudged = true;
+        this.history.add({ role: "user", content: "[coordinator] Plan before going further: call write_todos with the remaining steps (each with its expert, one in_progress), then continue and delegate the specialised steps." });
       }
 
       // The model explicitly ended its turn

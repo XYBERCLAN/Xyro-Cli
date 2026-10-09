@@ -202,13 +202,17 @@ export function linePlainText(l: RenderLine, w = width): string {
 export class ScrollRegion {
   private lines: RenderLine[] = [];
   private offset = 0; // lines scrolled up from the bottom
+  private viewHeight = 0; // last rendered height (limits how far up you can scroll)
 
+  // While you read older messages, new lines arrive below without moving your view
   append(l: RenderLine): void {
     this.lines.push(l);
+    if (this.offset > 0) this.offset++;
   }
 
   appendAll(ls: RenderLine[]): void {
     for (const l of ls) this.lines.push(l);
+    if (this.offset > 0) this.offset += ls.length;
   }
 
   /** Replace one line in place (live rows: spinners, streaming text). */
@@ -218,11 +222,16 @@ export class ScrollRegion {
 
   /** Drop every line from `length` onward (re-render a streaming block). */
   truncate(length: number): void {
-    if (length >= 0 && length < this.lines.length) this.lines.length = length;
+    if (length >= 0 && length < this.lines.length) {
+      if (this.offset > 0) this.offset = Math.max(1, this.offset - (this.lines.length - length));
+      this.lines.length = length;
+    }
   }
 
+  /** Positive scrolls up (older), negative down. Never past the first line. */
   scrollBy(delta: number): void {
-    this.offset = Math.max(0, Math.min(this.lines.length, this.offset + delta));
+    const max = Math.max(0, this.lines.length - (this.viewHeight || 1));
+    this.offset = Math.max(0, Math.min(max, this.offset + delta));
   }
 
   scrollToBottom(): void {
@@ -238,6 +247,8 @@ export class ScrollRegion {
   }
 
   visible(viewHeight: number): RenderLine[] {
+    this.viewHeight = viewHeight;
+    this.offset = Math.min(this.offset, Math.max(0, this.lines.length - viewHeight));
     const start = Math.max(0, this.lines.length - viewHeight - this.offset);
     return this.lines.slice(start, start + viewHeight);
   }

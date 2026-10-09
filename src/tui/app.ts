@@ -1,3 +1,5 @@
+import { instinctExpert } from "../agents/instinct.js";
+import { fitToScreen } from "./fit.js";
 import { readFileSync, existsSync } from "node:fs";
 import { xyroVersion } from "../version.js";
 import { fileURLToPath } from "node:url";
@@ -154,6 +156,9 @@ function detectGitBranch(): string {
 
 
 type View = { view: "home" } | { view: "session" };
+
+/** Lines the chat moves per mouse-wheel notch. */
+const WHEEL_LINES = 3;
 
 export class TuiApp {
   private scroll = new ScrollRegion();
@@ -665,6 +670,7 @@ export class TuiApp {
 
   setTodos(todos: TodoView[]): void {
     this.todos = todos;
+    this.syncPlanOwners(todos);
   }
 
   /** Show a plan with Approve / Revise and resolve once the user decides. */
@@ -756,12 +762,14 @@ export class TuiApp {
 
   addUserMessage(text: string): void {
     this.totalMessages++;
+    this.scroll.scrollToBottom(); // sending always brings you back to the conversation
     this.view = { view: "session" };
     this.endStream();
     this.clearThinking();
     this.headerAt = -1;
     this.liveTools = [];
     this.agents = [];
+    this.instinct.clear();
     this.scroll.append(emptyLine());
     this.scroll.appendAll(userMessage(text, this.colorIdx, this.chatWidth()));
   }
@@ -797,7 +805,48 @@ export class TuiApp {
     this.lastKind = "none";
   }
 
+  // Experts who recognised XYRO's current work as their trade (side-panel robots)
+  private instinct = new Map<string, { expert: string; title: string; status: "running" | "ready" | "done" | "failed"; startedAt: number; running: number }>();
+
+  /** Dispatch: the experts for this request wake up and wait, ready. */
+  setDispatch(team: { name: string; title: string }[]): void {
+    for (const m of team) {
+      if (!this.instinct.has(m.name)) this.instinct.set(m.name, { expert: m.name, title: m.name, status: "ready", startedAt: Date.now(), running: 0 });
+    }
+  }
+
+  /** Plan steps owned by experts: the owner works while its step is in progress. */
+  private syncPlanOwners(todos: TodoView[]): void {
+    for (const td of todos) {
+      if (!td.expert) continue;
+      const cur = this.instinct.get(td.expert);
+      if (td.status === "in_progress") {
+        if (cur?.status !== "running") this.instinct.set(td.expert, { expert: td.expert, title: td.expert, status: "running", startedAt: cur ? cur.startedAt : Date.now(), running: cur?.running ?? 0 });
+      } else if (td.status === "pending" && !cur) {
+        this.instinct.set(td.expert, { expert: td.expert, title: td.expert, status: "ready", startedAt: Date.now(), running: 0 });
+      } else if (td.status === "done" && cur && !cur.running && !todos.some((o) => o.expert === td.expert && o.status !== "done")) {
+        cur.status = "done";
+      }
+    }
+  }
+
+  private noteInstinct(tool: string, phase: "start" | "done", failed = false): void {
+    const expert = instinctExpert(tool);
+    if (!expert) return;
+    const cur = this.instinct.get(expert);
+    if (phase === "start") {
+      // Already awake (busy, or just finished): keep working, no second wake-up
+      const awake = cur && (cur.status === "running" || Date.now() - cur.startedAt < 15_000);
+      this.instinct.set(expert, { expert, title: expert, status: "running", startedAt: awake ? cur!.startedAt : Date.now(), running: (cur?.status === "running" ? cur.running : 0) + 1 });
+    } else if (cur) {
+      cur.running = Math.max(0, cur.running - 1);
+      if (failed) cur.status = "failed";
+      else if (!cur.running && cur.status === "running") cur.status = "done";
+    }
+  }
+
   addToolRunning(name: string, summary: string): void {
+    this.noteInstinct(name, "start");
     this.totalToolCalls++;
     this.clearThinking();
     this.ensureHeader();
@@ -809,6 +858,7 @@ export class TuiApp {
   }
 
   addToolDone(name: string, summary: string, elapsed?: string, failed?: boolean): void {
+    this.noteInstinct(name, "done", Boolean(failed));
     const i = this.liveTools.findIndex((tl) => tl.name === name);
     const secs = Number(elapsed ?? 0);
     if (i >= 0) {
@@ -832,6 +882,8 @@ export class TuiApp {
   setBusy(b: boolean): void {
     this.busy = b;
     this.stopping = false;
+    // Turn over: experts that were ready but never needed go back to rest
+    if (!b) for (const [k, v] of this.instinct) if (v.status === "ready") this.instinct.delete(k);
     if (b) {
       this.turnStart = Date.now();
       if (this.view.view === "session") {
@@ -881,9 +933,24 @@ export class TuiApp {
         return;
       }
     }
-    // Only left-button events select; wheel/middle/right are ignored
-    if (e.button !== 0 && e.kind !== "wheel") return;
-    if (e.kind === "wheel") return; // native scroll passthrough (future work)
+    // Mouse wheel scrolls the chat (3 lines a notch); pop-ups keep it from moving underneath
+    if (e.kind === "wheel") {
+      // In a pop-up: move the selection, or scroll a pop-up without a list
+      if (this.anyOverlayOpen()) {
+        const up = e.button === 0;
+        if (this.overlayHasCursor) this.handleKey(up ? "\u001b[A" : "\u001b[B");
+        else this.overlayScroll = Math.max(0, this.overlayScroll + (up ? -WHEEL_LINES : WHEEL_LINES));
+        this.render();
+        return;
+      }
+      if (this.view.view !== "session") return;
+      if (e.button === 0) this.scroll.scrollBy(WHEEL_LINES);
+      else if (e.button === 1) this.scroll.scrollBy(-WHEEL_LINES);
+      this.render();
+      return;
+    }
+    // Only left-button events select; middle/right are ignored
+    if (e.button !== 0) return;
 
     const changed = this.selection.onMouse(e);
     if (!changed) return;
@@ -901,13 +968,30 @@ export class TuiApp {
     return "idle";
   }
 
+  // Pop-ups taller than the screen: keep the top and footer, scroll the middle
+  private overlayScroll = 0;
+  private overlayHasCursor = false;
+  private lastOverlayHeight = 0;
+
+  private fitOverlay(rows: RenderLine[], maxH: number, stickyTop: number): RenderLine[] {
+    const fit = fitToScreen(rows, maxH, stickyTop, this.overlayScroll);
+    this.overlayScroll = fit.scroll;
+    this.overlayHasCursor = fit.hasCursor;
+    return fit.rows;
+  }
+
   private modal: { rows: RenderLine[]; openedAt: number; closingAt: number } | null = null;
   private modalTimer: ReturnType<typeof setInterval> | null = null;
 
   /** Track the open menu and drive its open/close animation via the frame filter. */
   private updateModal(): void {
-    const { width } = tuiSize();
-    const rows = this.getActiveOverlayRows(width);
+    const { width, height } = tuiSize();
+    const raw = this.getActiveOverlayRows(width);
+    if (!raw.length) this.overlayScroll = 0;
+    else if (raw.length !== this.lastOverlayHeight && !this.overlayHasCursor) this.overlayScroll = Math.min(this.overlayScroll, raw.length);
+    this.lastOverlayHeight = raw.length;
+    // The command palette keeps its search field in view while its list scrolls
+    const rows = this.fitOverlay(raw, height - 2, this.commandPicker.isOpen() ? 4 : 1);
     const now = Date.now();
     if (rows.length) {
       if (!this.modal || this.modal.closingAt) this.modal = { rows, openedAt: now, closingAt: 0 };
@@ -1114,7 +1198,7 @@ export class TuiApp {
       const chat = this.scroll.visible(viewH);
       const status = this.panelStatus();
       const panel = renderSidePanel(
-        { ...status, todos: this.todos, plan: this.plan, agents: this.agents, roster: this.restingTeam(), workingFor: this.busy ? Date.now() - this.turnStart : undefined },
+        { ...status, todos: this.todos, plan: this.plan, agents: this.agents, instinct: [...this.instinct.values()], roster: this.restingTeam(), workingFor: this.busy ? Date.now() - this.turnStart : undefined },
         pw,
         viewH,
         this.animTick,
@@ -1435,6 +1519,14 @@ export class TuiApp {
     );
   }
 
+  /** Is any pop-up / picker on screen? (the wheel must not scroll the chat underneath) */
+  private anyOverlayOpen(): boolean {
+    return [
+      this.permissionModal, this.updatePopup, this.expertsModal, this.rewindModal, this.hooksModal, this.mcpModal, this.quotaModal,
+      this.modelPicker, this.commandPicker, this.agentPicker, this.themePicker, this.providerPicker, this.statusModal, this.costModal,
+    ].some((m) => m.isOpen());
+  }
+
   private closeAnyOverlay(): boolean {
     if (this.permissionModal.isOpen()) { this.permissionModal.close(); return true; }
     if (this.updatePopup.isOpen()) { this.updatePopup.close(); return !this.updatePopup.isOpen(); }
@@ -1487,6 +1579,7 @@ export class TuiApp {
     const tok = this.tokenStats;
     const right: StyledSpan[] = [
       ...(tok && tok.total > 0 ? [span(`${fmtTok(tok.total)} tokens`, { fg: dim }), span("  ·  ", { fg: tint(t.textMuted, 0.5) }), span(tok.cost, { fg: dim }), span("    ")] : []),
+      ...(this.view.view === "session" && !this.scroll.isSticky() ? [span("scrolled · End to follow", { fg: BRAND.lemon }), span("  ")] : []),
       ...(this.busy ? [span(this.stopping ? "stopping…" : "esc stop", { fg: this.stopping ? t.warning : dim }), span("  ")] : []),
       ...(this.linkedPeers ? [span(`${this.linkedPeers} linked`, { fg: BRAND.ramp[0], bold: true }), span("  ")] : []),
       ...(this.updateInfo?.updateAvailable ? [span(`update v${this.updateInfo.latest}`, { fg: BRAND.lemon, bold: true }), span("  ")] : []),
@@ -1654,6 +1747,12 @@ export class TuiApp {
     // Home / Ctrl+A
     if (key === "\u001b[H" || cp === 1) {
       this.cursorPos = 0;
+      return;
+    }
+
+    // End on an empty prompt: jump back to the newest message
+    if (key === "\u001b[F" && !this.input && this.view.view === "session" && !this.scroll.isSticky()) {
+      this.scroll.scrollToBottom();
       return;
     }
 

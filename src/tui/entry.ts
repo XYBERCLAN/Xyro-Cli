@@ -117,6 +117,7 @@ export async function runTuiMode(opts: {
     onToolResult: (name, summary, elapsed, failed) => tui.addToolDone(name, summary, elapsed, failed),
     requestPermission: (label) => tui.askPermission(label),
     onNotice: (text, kind) => tui.addNotice(text, kind),
+    onDispatch: (team) => tui.setDispatch(team),
     onModelSwitched: (sw) => {
       const where = sw.crossProvider ? `${sw.toProvider} · ${sw.to}` : sw.to;
       tui.addNotice(`${sw.from}: ${sw.reason} — continuing on **${where}**`, "info");

@@ -4,6 +4,7 @@
  * The LLM can update it to plan multi-step tasks and avoid losing track.
  */
 
+import { getExpert } from "../agents/experts.js";
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
@@ -17,6 +18,8 @@ export interface TodoItem {
   text: string;
   done: boolean;
   status?: TodoStatus;
+  /** Expert who owns this step (shown in the task panel; wakes them while in progress) */
+  expert?: string;
 }
 
 function statusOf(t: TodoItem): TodoStatus {
@@ -36,18 +39,18 @@ function loadTodos(): TodoItem[] {
 function saveTodos(todos: TodoItem[]): void {
   if (!existsSync(TODOS_DIR)) mkdirSync(TODOS_DIR, { recursive: true });
   writeFileSync(TODOS_FILE, JSON.stringify(todos, null, 2), "utf-8");
-  emitTodos(todos.map((t) => ({ text: t.text, status: statusOf(t) })));
+  emitTodos(todos.map((t) => ({ text: t.text, status: statusOf(t), ...(t.expert ? { expert: t.expert } : {}) })));
 }
 
 function renderTodos(todos: TodoItem[]): string {
   if (todos.length === 0) return "No todos.";
   const mark = { done: "[x]", in_progress: "[~]", pending: "[ ]" } as const;
-  const lines = todos.map((t) => `${mark[statusOf(t)]} ${t.id}. ${t.text}`);
+  const lines = todos.map((t) => `${mark[statusOf(t)]} ${t.id}. ${t.text}${t.expert ? ` (${t.expert})` : ""}`);
   return `Todos:\n${lines.join("\n")}`;
 }
 
 export async function writeTodos(args: {
-  items?: { text: string; status: TodoStatus }[];
+  items?: { text: string; status: TodoStatus; expert?: string }[];
   todos?: string[];
   mark_done?: number[];
   clear?: boolean;
@@ -56,7 +59,10 @@ export async function writeTodos(args: {
 
   // Replace the whole list (preferred: the model restates every item + status)
   if (args.items) {
-    todos = args.items.map((it, i) => ({ id: i + 1, text: it.text, done: it.status === "done", status: it.status }));
+    todos = args.items.map((it, i) => {
+      const owner = it.expert ? getExpert(it.expert)?.name : undefined;
+      return { id: i + 1, text: it.text, done: it.status === "done", status: it.status, ...(owner ? { expert: owner } : {}) };
+    });
     saveTodos(todos);
     return renderTodos(todos);
   }

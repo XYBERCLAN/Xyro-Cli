@@ -9,6 +9,8 @@ export type TodoStatus = "pending" | "in_progress" | "done";
 export interface TodoView {
   text: string;
   status: TodoStatus;
+  /** Expert who owns the step */
+  expert?: string;
 }
 
 export interface PlanRequest {
