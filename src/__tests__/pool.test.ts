@@ -272,3 +272,34 @@ describe("Bad keys elsewhere never block your provider", () => {
     assert.equal(err.status, 404, "not the other provider's 401, which would wrongly ask for a new key");
   });
 });
+
+describe("Model switch notices", () => {
+  it("say nothing when your own model ends up answering, even after a detour", async () => {
+    noteRateLimit("google", Object.assign(new Error("rate limit"), { status: 429 })); // your provider "rests"
+    behaviourB = () => ({ status: 400, error: "" }); // the borrowed provider fails
+    behaviourA = () => ({ text: "mine" });
+    const switches: ModelSwitch[] = [];
+    const { text } = await ask((s) => switches.push(s));
+    assert.equal(text, "mine");
+    assert.deepEqual(switches, [], "no 'continuing on…' lines for a detour that came back");
+  });
+
+  it("a successful answer ends the rest period, so the next request goes straight to your provider", async () => {
+    noteRateLimit("google", Object.assign(new Error("rate limit"), { status: 429 }));
+    behaviourB = () => ({ status: 400, error: "" });
+    await ask();
+    assert.equal(isCoolingDown("google"), false, "it answered, so it's not resting");
+    hits.b.length = 0;
+    await ask();
+    assert.equal(hits.b.length, 0, "no detour through the other provider any more");
+  });
+
+  it("a real switch is announced once, not on every step", async () => {
+    behaviourA = (model) => (model === "gemini-flash-latest" ? { status: 404, error: "model not found" } : { text: "other model" });
+    const switches: ModelSwitch[] = [];
+    for (let i = 0; i < 4; i++) await ask((s) => switches.push(s));
+    assert.equal(switches.length, 1);
+    assert.equal(switches[0].from, "gemini-flash-latest");
+    assert.equal(switches[0].reason, "model unavailable");
+  });
+});

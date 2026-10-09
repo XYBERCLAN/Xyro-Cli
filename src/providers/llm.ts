@@ -4,7 +4,7 @@ import type { Candidate } from "./pool.js";
 import { shouldShield, redactMessages, restoreResponse, restoreText, restoringStream } from "./privacy.js";
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
-import { buildCandidates, isFallbackableError, isAuthError, noteRejectedKey, noteRateLimit, noteSuccess, noteFirstToken, hedgeDelayMs, providerIdForBaseURL } from "./pool.js";
+import { buildCandidates, isFallbackableError, isAuthError, noteRejectedKey, noteBorrowFailure, shouldAnnounceSwitch, noteRateLimit, noteSuccess, noteFirstToken, hedgeDelayMs, providerIdForBaseURL } from "./pool.js";
 export { getFallbackChain, isFallbackableError } from "./pool.js";
 import { Message } from "../agent/types.js";
 import { getToolDefinitions } from "../tools/registry.js";
@@ -421,23 +421,21 @@ export async function callLLMStream(
   const candidates = buildCandidates(client.baseURL, model, { pool: opts.pool });
   let lastError: unknown;
   let sessionError: unknown;
-  let previous = { model, provider: providerIdForBaseURL(client.baseURL) };
+  let firstError: unknown;
   const skip = new Set<string>();
+  // Tell the user once, after the fact, when a different model actually answered
+  const announce = (winner: Candidate, reason?: string) => {
+    if (winner.sameProvider && winner.model === model) return;
+    const why = reason ?? describeFailure(firstError);
+    if (!shouldAnnounceSwitch(`${model}|${winner.providerId}|${winner.model}|${why}`)) return;
+    opts.onSwitch?.({ from: model, to: winner.model, toProvider: winner.providerId, crossProvider: !winner.sameProvider, reason: why });
+  };
   for (let i = 0; i < candidates.length; i++) {
     const c = candidates[i];
     if (skip.has(c.providerId)) continue;
     const cl = c.sameProvider ? client : createClient(c.baseURL, c.apiKey);
     let emitted = false;
     try {
-      if (i > 0 || c.model !== model) {
-        opts.onSwitch?.({
-          from: previous.model,
-          to: c.model,
-          toProvider: c.providerId,
-          crossProvider: !c.sameProvider,
-          reason: describeFailure(lastError),
-        });
-      }
       const isLast = i === candidates.length - 1;
       const emit = (chunk: string) => {
         emitted = true;
@@ -454,9 +452,7 @@ export async function callLLMStream(
           emit
         );
         const winner = raced.winner === 0 ? c : backup;
-        if (raced.winner === 1) {
-          opts.onSwitch?.({ from: c.model, to: backup.model, toProvider: backup.providerId, crossProvider: !backup.sameProvider, reason: "slow to respond" });
-        }
+        announce(winner, raced.winner === 1 ? "slow to respond" : undefined);
         const u = raced.res.usage as { total_tokens?: number } | null | undefined;
         noteSuccess(winner.providerId, u?.total_tokens ?? 0);
         if (raced.backupStarted) noteSuccess((raced.winner === 0 ? backup : c).providerId, 0);
@@ -467,10 +463,12 @@ export async function callLLMStream(
       });
       const u = res.usage as { total_tokens?: number } | null | undefined;
       noteSuccess(c.providerId, u?.total_tokens ?? 0);
+      announce(c);
       return { ...res, actualModel: c.model, providerId: c.providerId };
     } catch (err: unknown) {
       if (turnSignal().aborted) throw new StoppedByUser();
       lastError = tagProvider(err, c.providerId);
+      firstError ??= err;
       if (c.sameProvider) sessionError = err;
       if (isRateLimitError(err)) {
         noteRateLimit(c.providerId, err);
@@ -484,12 +482,12 @@ export async function callLLMStream(
         if (candidates.slice(i + 1).some((x) => !skip.has(x.providerId))) continue;
         throw sessionError ?? err;
       }
-      // Any other failure of a borrowed provider never ends the chain: move on to the next one
+      // Any other failure of a borrowed provider never ends the chain: move on, and rest it a while
       if (!c.sameProvider && !isStopped()) {
         skip.add(c.providerId);
+        if (!isRateLimitError(err)) noteBorrowFailure(c.providerId);
         if (candidates.slice(i + 1).some((x) => !skip.has(x.providerId))) continue;
       }
-      previous = { model: c.model, provider: c.providerId };
       if (!emitted && candidates.slice(i + 1).some((x) => !skip.has(x.providerId)) && isFallbackableError(err)) continue;
       throw emitted ? err : sessionError ?? err;
     }

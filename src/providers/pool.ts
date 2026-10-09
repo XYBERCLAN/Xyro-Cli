@@ -218,6 +218,7 @@ export function noteSuccess(providerId: string, tokens = 0): void {
   if (!providerId) return;
   const u = usage(providerId);
   u.badKey = undefined; // it works now
+  u.cooldownUntil = 0; // …so it is not resting any more
   u.requests++;
   u.tokens += tokens;
   save();
@@ -352,6 +353,26 @@ export function poolStatus(): ProviderCapacity[] {
 }
 
 /** Test helper. */
+/** A borrowed provider failed for another reason (bad request, outage…): leave it alone for a while. */
+export function noteBorrowFailure(providerId: string, ms = 10 * 60_000): void {
+  if (!providerId) return;
+  const u = usage(providerId);
+  u.cooldownUntil = Math.max(u.cooldownUntil, Date.now() + ms);
+  save();
+}
+
+// Switch notices: one per actual change of model, not repeated within a while
+const announced = new Map<string, number>();
+const ANNOUNCE_EVERY_MS = 10 * 60_000;
+
+export function shouldAnnounceSwitch(key: string, now = Date.now()): boolean {
+  const at = announced.get(key);
+  if (at !== undefined && now - at < ANNOUNCE_EVERY_MS) return false;
+  announced.set(key, now);
+  return true;
+}
+
 export function _resetPool(): void {
   cache = {};
+  announced.clear();
 }
