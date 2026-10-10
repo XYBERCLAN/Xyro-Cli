@@ -19,6 +19,7 @@ export interface CommandItem {
 export const COMMAND_ITEMS: CommandItem[] = [
   { cmd: "/model",    name: "Switch Model",     category: "AI",      desc: "Switch AI model & inspect free/paid providers" },
   { cmd: "/agent",    name: "Agent Mode",       category: "MODE",    desc: "Switch persona (Build, Plan, Review, Explore)" },
+  { cmd: "/language", name: "Language",         category: "CONFIG",  desc: "Choose the language XYRO speaks with you" },
   { cmd: "/theme",    name: "Theme Gallery",    category: "CONFIG",  desc: "Choose from 11 curated cyber & developer palettes" },
   { cmd: "/status",   name: "Session Status",   category: "SYSTEM",  desc: "Inspect model, context history & active tools" },
   { cmd: "/cost",     name: "Token Usage",      category: "METRICS", desc: "View token consumption & estimated session cost" },

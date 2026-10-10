@@ -1,3 +1,5 @@
+import { languageByCode } from "../config/languages.js";
+import { loadPersistedConfig } from "../config/persist.js";
 import { toolGroupsPrompt } from "../tools/registry.js";
 import { profilePrompt } from "./learning.js";
 import { intentsPrompt } from "./intents.js";
@@ -61,6 +63,11 @@ export class HistoryManager {
     const guidance = loadSkills();
     if (guidance) {
       systemContent += `\n\n${guidance}`;
+    }
+    // The language the user chose on first launch (/language to change)
+    const lang = languageByCode(loadPersistedConfig().language);
+    if (lang && lang.code !== "en") {
+      systemContent += `\n\n## Language\nThe user chose ${lang.name}: always reply in ${lang.name} (keep code, commands and file names as they are). If the user writes in another language, follow them.`;
     }
     // Specialised tool groups are loaded on demand (keeps every request small)
     const groups = toolGroupsPrompt();

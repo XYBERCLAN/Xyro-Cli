@@ -1,3 +1,4 @@
+import { LanguagePicker } from "./language-picker.js";
 import { teamStrip, MINI_H, MINI_W } from "./expert-bots.js";
 import { instinctExpert } from "../agents/instinct.js";
 import { fitToScreen } from "./fit.js";
@@ -212,6 +213,7 @@ export class TuiApp {
   private onExpertsTrustCb: (() => void) | null = null;
   private onLearningRequestCb: ((cmd: string) => void) | null = null;
   private onLinkRequestCb: ((text: string) => void) | null = null;
+  private onLanguageRequestCb: (() => void) | null = null;
   private onStopCb: (() => boolean) | null = null;
   private stopping = false;
   private linkedPeers = 0;
@@ -221,6 +223,10 @@ export class TuiApp {
   private updateInfo: { current: string; latest: string; updateAvailable: boolean } | null = null;
   private onUpdateCb: ((action: "check" | "install") => void) | null = null;
   private themePicker = new ThemePicker();
+  private languagePicker = new LanguagePicker();
+  private onLanguageChangeCb: ((code: string) => void) | null = null;
+  /** No AI provider connected yet (first launch): onboarding ends by connecting one */
+  private needsProvider = false;
   private themeId = "xyro";
   private onThemeChangeCb: ((id: string) => void) | null = null;
   private providerPicker = new ProviderPicker();
@@ -268,7 +274,16 @@ export class TuiApp {
     this.themePicker.onClose(() => {
       if (this.welcomeOpen) this.completeOnboarding();
     });
+    this.languagePicker.onSelect((lang) => {
+      this.onLanguageChangeCb?.(lang.code);
+      // During the welcome, the look comes next
+      if (this.welcomeOpen) this.themePicker.open(currentTheme().name, true);
+    });
     this.providerPicker.onSelect((provider, apiKey, model, baseURL) => {
+      if (this.needsProvider && apiKey) {
+        this.needsProvider = false;
+        this.setHomeNotice(null);
+      }
       this.provider = provider.name;
       this.model = model;
       this.apiKey = apiKey;
@@ -310,6 +325,8 @@ export class TuiApp {
       this.onHooksRequestCb?.();
     } else if (cmd === "/intents") {
       this.onIntentsRequestCb?.("");
+    } else if (cmd === "/language") {
+      this.onLanguageRequestCb?.();
     } else if (cmd === "/peers" || cmd === "/link") {
       this.onLinkRequestCb?.(cmd);
     } else if (cmd === "/learn" || cmd === "/profile" || cmd === "/forget") {
@@ -453,6 +470,7 @@ export class TuiApp {
     if (this.modelPicker.isOpen()) return this.modelPicker.render(width);
     if (this.commandPicker.isOpen()) return this.commandPicker.render(width);
     if (this.agentPicker.isOpen()) return this.agentPicker.render(width);
+    if (this.languagePicker.isOpen()) return this.languagePicker.render(width);
     if (this.themePicker.isOpen()) return this.themePicker.render(width);
     if (this.providerPicker.isOpen()) return this.providerPicker.render(width);
     if (this.statusModal.isOpen()) return this.statusModal.render(width);
@@ -486,6 +504,7 @@ export class TuiApp {
   onExpertsTrust(cb: () => void): void { this.onExpertsTrustCb = cb; }
   onLearningRequest(cb: (cmd: string) => void): void { this.onLearningRequestCb = cb; }
   onLinkRequest(cb: (text: string) => void): void { this.onLinkRequestCb = cb; }
+  onLanguageRequest(cb: () => void): void { this.onLanguageRequestCb = cb; }
   /** Esc while busy: stop the running turn (callback returns false when nothing was running). */
   onStop(cb: () => boolean): void { this.onStopCb = cb; }
 
@@ -629,16 +648,44 @@ export class TuiApp {
   // ---- first launch: "Welcome to XYRO — pick a look" ----
   private welcomeOpen = false;
 
+  /**
+   * First launch, inside XYRO itself (never a bare text prompt): the mascot
+   * intro, then the language, then a look, then connecting a free AI
+   * provider when there is none yet.
+   */
   private maybeStartOnboarding(): void {
     const force = process.env.XYRO_ONBOARD === "1";
-    if (this.welcomeOpen || this.view.view !== "home" || (!force && hasOnboarded())) return;
+    if (this.welcomeOpen || this.view.view !== "home") return;
+    if (!force && hasOnboarded()) {
+      if (this.needsProvider) this.openWelcomeProvider();
+      return;
+    }
     this.welcomeOpen = true;
-    this.themePicker.open(currentTheme().name, true);
+    this.languagePicker.open(undefined, true);
   }
 
   private completeOnboarding(): void {
     this.welcomeOpen = false;
     if (process.env.XYRO_ONBOARD !== "1") markOnboarded();
+    if (this.needsProvider) this.openWelcomeProvider();
+  }
+
+  private openWelcomeProvider(): void {
+    this.providerPicker.open(this.provider, this.apiKey);
+    this.setHomeNotice({ label: "setup", text: "Last step: connect a free AI provider (Google AI Studio and Groq have free keys) and XYRO is ready." });
+  }
+
+  /** Entry layer: no provider connected yet, so onboarding ends by connecting one. */
+  setNeedsProvider(v: boolean): void {
+    this.needsProvider = v;
+  }
+
+  onLanguageChange(cb: (code: string) => void): void {
+    this.onLanguageChangeCb = cb;
+  }
+
+  openLanguagePicker(current?: string): void {
+    this.languagePicker.open(current, false);
   }
 
   private finishIntro(): void {
@@ -1533,7 +1580,7 @@ export class TuiApp {
   private anyOverlayOpen(): boolean {
     return [
       this.permissionModal, this.updatePopup, this.expertsModal, this.rewindModal, this.hooksModal, this.mcpModal, this.quotaModal,
-      this.modelPicker, this.commandPicker, this.agentPicker, this.themePicker, this.providerPicker, this.statusModal, this.costModal,
+      this.modelPicker, this.commandPicker, this.agentPicker, this.themePicker, this.languagePicker, this.providerPicker, this.statusModal, this.costModal,
     ].some((m) => m.isOpen());
   }
 
@@ -1548,6 +1595,7 @@ export class TuiApp {
     if (this.modelPicker.isOpen()) { this.modelPicker.close(); return true; }
     if (this.commandPicker.isOpen()) { this.commandPicker.close(); return true; }
     if (this.agentPicker.isOpen()) { this.agentPicker.close(); return true; }
+    if (this.languagePicker.isOpen()) { this.languagePicker.close(); return true; }
     if (this.themePicker.isOpen()) { this.themePicker.close(); return true; }
     if (this.providerPicker.isOpen()) { this.providerPicker.close(); return true; }
     if (this.statusModal.isOpen()) { this.statusModal.close(); return true; }
@@ -1664,6 +1712,10 @@ export class TuiApp {
     }
     if (this.agentPicker.isOpen()) {
       this.agentPicker.handleKey(key);
+      return;
+    }
+    if (this.languagePicker.isOpen()) {
+      this.languagePicker.handleKey(key);
       return;
     }
     if (this.themePicker.isOpen()) {
@@ -1826,6 +1878,10 @@ export class TuiApp {
       }
       if (text === "/hooks") {
         this.onHooksRequestCb?.();
+        return;
+      }
+      if (text === "/language" || text === "/lang") {
+        this.onLanguageRequestCb?.();
         return;
       }
       if (/^\/(chat|say|peers|link)(\s|$)/.test(text)) {

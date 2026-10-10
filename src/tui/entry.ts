@@ -16,6 +16,7 @@ import { scanFiles } from "../agents/sentinel.js";
 import { clearNotes } from "../agents/team-board.js";
 import { listIntents, runIntents, removeIntent, trustIntents, intentsTrust } from "../agent/intents.js";
 import { matchInstant } from "../agent/instant.js";
+import { languageByCode } from "../config/languages.js";
 import { LinkNode, describePeer, formatCode } from "../collab/link.js";
 import { addRemoteNote, onNotePosted } from "../agents/team-board.js";
 import { forgetEverything, readProfile, learningEnabled } from "../agent/learning.js";
@@ -78,20 +79,17 @@ export async function runTuiMode(opts: {
 
   apiKey = opts.apiKey || process.env["OPENAI_API_KEY"] || saved.apiKey || "";
 
+  // No key yet (first launch): set up INSIDE XYRO — welcome, language, look,
+  // then connecting a free provider — instead of a bare text prompt before it
+  let needsSetup = false;
   if (!apiKey) {
     if (!process.stdin.isTTY) {
       console.error(pc.red("No API key provided. Pass --api-key or set OPENAI_API_KEY"));
       process.exit(1);
     }
-    const config = await interactiveSetup();
-    apiKey = config.apiKey;
-    model = config.model;
-    baseURL = config.baseURL;
-    provider = config.provider;
-    savePersistedConfig({ provider, model, baseURL, apiKey });
-    // Seed per-provider key store so future model switches reuse the right key
-    const prov = FREE_PROVIDERS.find((p) => p.name === provider);
-    if (prov) saveProviderKey(prov.id, apiKey);
+    needsSetup = true;
+    provider = "";
+    model = "";
   } else if (saved.provider) {
     // Migrate legacy single-key config into the per-provider store
     const prov = FREE_PROVIDERS.find(
@@ -102,7 +100,8 @@ export async function runTuiMode(opts: {
     }
   }
 
-  const agent = new Agent({ model, baseURL, apiKey, maxToolCalls: opts.maxToolCalls });
+  // Until a provider is connected the agent holds a placeholder (nothing is sent before then)
+  const agent = new Agent({ model: model || "not-configured", baseURL, apiKey: apiKey || "setup-pending", maxToolCalls: opts.maxToolCalls });
   const usage = new UsageTracker();
   agent.onLLMResponse((u) => usage.track(u as { prompt_tokens?: number; completion_tokens?: number } | null));
 
@@ -154,6 +153,11 @@ export async function runTuiMode(opts: {
   };
 
   tui.onSubmit(async (text) => {
+    if (needsSetup && !text.startsWith("/")) {
+      tui.addNotice("Connect an AI provider first: pick one, paste its free key, and XYRO is ready.", "info");
+      tui.openProviderPicker();
+      return;
+    }
     // Checkpoint before every real message (slash commands change nothing)
     if (!text.startsWith("/")) {
       clearNotes(); // fresh team board for each request
@@ -305,6 +309,8 @@ export async function runTuiMode(opts: {
   });
 
   tui.onProviderChange((prov, newApiKey, newModel, newBaseUrl) => {
+    const finishedSetup = needsSetup && Boolean(newApiKey);
+    if (finishedSetup) needsSetup = false;
     provider = prov.name;
     model = newModel;
     currentModel = newModel;
@@ -321,6 +327,7 @@ export async function runTuiMode(opts: {
     tui.setApiKey(apiKey);
     savePersistedConfig({ provider, model: newModel, baseURL, apiKey });
     tui.addNotice(`Configured provider: **${prov.name}** with model **${newModel}**`);
+    if (finishedSetup) tui.addNotice("You're all set. Ask XYRO anything about this project.", "success");
     syncStats();
   });
 
@@ -399,6 +406,15 @@ export async function runTuiMode(opts: {
       if (intentsTrust() === "untrusted") tui.addNotice("This project's intent file changed outside XYRO. Review .xyro/intents.json, then /intents trust", "warn");
     });
   });
+
+  // ---- language: chosen on first launch, /language to change ----
+  tui.onLanguageChange((code) => {
+    savePersistedConfig({ language: code });
+    agent.refreshSystemPrompt();
+    const lang = languageByCode(code);
+    if (lang && !needsSetup) tui.addNotice(`XYRO will speak ${lang.native} with you`, "success");
+  });
+  tui.onLanguageRequest(() => tui.openLanguagePicker(loadPersistedConfig().language));
 
   // ---- learning: /learn, /profile, /forget ----
   tui.onLearningRequest((cmd) => {
@@ -575,6 +591,8 @@ export async function runTuiMode(opts: {
     tui.addNotice("Usage: /chat <message> · /peers · /link lan · /link join <code> · /link off", "info");
   });
 
+  // First launch with no key: onboarding ends by connecting a provider
+  if (needsSetup) tui.setNeedsProvider(true);
   tui.start();
 
   // Quietly look for a newer release (cached 12h, 3s timeout, never blocks).

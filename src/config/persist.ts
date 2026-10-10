@@ -9,6 +9,8 @@ export interface PersistedConfig {
   apiKey?: string;
   /** Per-provider saved API keys — prevents cross-provider 401s on model switch */
   providerKeys?: Record<string, string>;
+  /** Language XYRO speaks with the user (code, e.g. "fr") */
+  language?: string;
 }
 
 function configPath(): string {
@@ -38,6 +40,7 @@ export function savePersistedConfig(config: PersistedConfig): void {
     ...(config.model !== undefined ? { model: config.model } : {}),
     ...(config.baseURL !== undefined ? { baseURL: config.baseURL } : {}),
     ...(config.apiKey !== undefined ? { apiKey: config.apiKey } : {}),
+    ...(config.language !== undefined ? { language: config.language } : {}),
     ...(config.providerKeys !== undefined
       ? { providerKeys: { ...existing.providerKeys, ...config.providerKeys } } : {}),
   };
