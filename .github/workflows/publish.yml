@@ -80,7 +80,12 @@ jobs:
             exit 0
           fi
           if grep -q "E_STAGE_REQUIRED" publish.err; then
-            npx -y npm@12 stage publish . --provenance --access public --tag "$TAG"
+            if ! npx -y npm@12 stage publish . --provenance --access public --tag "$TAG" 2> stage.err; then
+              cat stage.err
+              # Already staged or published: nothing new to do for this version
+              if grep -q "Cannot stage previously published" stage.err; then echo "::notice::This version is already staged or published."; exit 0; fi
+              exit 1
+            fi
             VERSION=$(node -p "require('./package.json').version")
             echo "::notice title=Approve the release::xyro-cli v$VERSION is staged. Approve it on npmjs.com (your package → Staged), or run: npm stage list xyro-cli, then npm stage approve <id>"
             exit 0

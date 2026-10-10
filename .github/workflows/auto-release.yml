@@ -44,13 +44,20 @@ jobs:
 
       - name: Decide the version bump from the commits
         id: bump
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           VERSION=$(node -p "require('./package.json').version")
-          # Catch-up: a version that was tagged but never reached npm (say, a bad token) is published first
+          # Catch-up: a version that was tagged but never reached npm (say, a bad token) is published first,
+          # unless it is only waiting for approval in npm's staging area (then the next version is released)
           if [ "$VERSION" != "0.0.0" ] && ! npm view "xyro-cli@$VERSION" version >/dev/null 2>&1 && git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null; then
-            echo "bump=catchup" >> "$GITHUB_OUTPUT"
-            echo "Publishing v$VERSION, which was versioned but never published"
-            exit 0
+            if npx -y npm@12 stage list xyro-cli 2>/dev/null | grep -q "$VERSION"; then
+              echo "v$VERSION is staged and waiting for approval: releasing the next version instead"
+            else
+              echo "bump=catchup" >> "$GITHUB_OUTPUT"
+              echo "Publishing v$VERSION, which was versioned but never published"
+              exit 0
+            fi
           fi
           BUMP=$(node scripts/release-bump.mjs)
           echo "bump=$BUMP" >> "$GITHUB_OUTPUT"
@@ -127,7 +134,12 @@ jobs:
             exit 0
           fi
           if grep -q "E_STAGE_REQUIRED" publish.err; then
-            npx -y npm@12 stage publish . --provenance --access public --tag "$TAG"
+            if ! npx -y npm@12 stage publish . --provenance --access public --tag "$TAG" 2> stage.err; then
+              cat stage.err
+              # Already staged or published: nothing new to do for this version
+              if grep -q "Cannot stage previously published" stage.err; then echo "::notice::This version is already staged or published."; exit 0; fi
+              exit 1
+            fi
             VERSION=$(node -p "require('./package.json').version")
             echo "::notice title=Approve the release::xyro-cli v$VERSION is staged. Approve it on npmjs.com (your package → Staged), or run: npm stage list xyro-cli, then npm stage approve <id>"
             exit 0
