@@ -365,6 +365,55 @@ export async function disconnectMcpServers(): Promise<void> {
   clients.clear();
 }
 
+/**
+ * /mcp add: a server in YOUR config (~/.config/xyro/mcp.json). `target` is a
+ * URL (remote server) or a command line (local server, e.g. "npx -y @scope/server").
+ */
+export function addUserMcpServer(name: string, target: string): { ok: boolean; message: string } {
+  const n = name.trim();
+  if (!/^[A-Za-z0-9][\w.-]{0,40}$/.test(n)) return { ok: false, message: "Give the server a short name: letters, digits, - or _" };
+  const t = target.trim();
+  if (!t) return { ok: false, message: "Usage: /mcp add <name> <command or URL>" };
+  let cfg: McpServerConfig;
+  if (/^https?:\/\//i.test(t)) cfg = { url: t };
+  else {
+    const parts = t.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
+    const [command, ...args] = parts.map((p) => p.replace(/^["']|["']$/g, ""));
+    cfg = { command, ...(args.length ? { args } : {}) };
+  }
+  const p = userMcpPath();
+  let file: { mcpServers?: Record<string, McpServerConfig> } = {};
+  try {
+    file = JSON.parse(fs.readFileSync(p, "utf-8"));
+  } catch {
+    // new file
+  }
+  const replaced = Boolean(file.mcpServers?.[n]);
+  file.mcpServers = { ...(file.mcpServers ?? {}), [n]: cfg };
+  fs.mkdirSync(getConfigDir(), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify(file, null, 2), { mode: 0o600 });
+  return { ok: true, message: `${replaced ? "Updated" : "Added"} MCP server "${n}" (${cfg.url ?? [cfg.command, ...(cfg.args ?? [])].join(" ")}). Connecting…` };
+}
+
+/** /mcp remove: only servers in YOUR config (imported ones live in their own tool's settings). */
+export function removeUserMcpServer(name: string): { ok: boolean; message: string } {
+  const p = userMcpPath();
+  let file: { mcpServers?: Record<string, McpServerConfig> } = {};
+  try {
+    file = JSON.parse(fs.readFileSync(p, "utf-8"));
+  } catch {
+    // none
+  }
+  const key = Object.keys(file.mcpServers ?? {}).find((k) => k.toLowerCase() === name.trim().toLowerCase());
+  if (!key) {
+    const elsewhere = discoverMcpServers().find((d) => d.name.toLowerCase() === name.trim().toLowerCase());
+    return { ok: false, message: elsewhere ? `"${elsewhere.name}" comes from ${elsewhere.origin === "xyro" ? "this project's .xyro/mcp.json" : `your ${elsewhere.origin} settings`}; remove it there.` : `No MCP server named "${name}".` };
+  }
+  delete file.mcpServers![key];
+  fs.writeFileSync(p, JSON.stringify(file, null, 2), { mode: 0o600 });
+  return { ok: true, message: `Removed MCP server "${key}".` };
+}
+
 /** Disconnect and reconnect everything (after editing mcp.json or trusting it). */
 export async function reloadMcpServers(root = process.cwd()): Promise<void> {
   await disconnectMcpServers();

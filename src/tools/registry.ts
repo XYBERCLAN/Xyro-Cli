@@ -703,6 +703,14 @@ export async function initializeTools(): Promise<void> {
   pluginsLoaded = true;
 }
 
+/** /plugins reload: pick up added, changed or removed plugins without restarting XYRO. */
+export async function reloadPlugins(): Promise<number> {
+  const pluginTools = await loadPlugins({ fresh: true });
+  allTools = [...builtinTools, ...pluginTools];
+  pluginsLoaded = true;
+  return pluginTools.length;
+}
+
 /** Tools added at runtime (MCP servers). `mainVisible: false` = experts only. */
 const externalTools = new Map<string, { tool: Tool; mainVisible: boolean }>();
 

@@ -1,3 +1,4 @@
+import { SkillsModal, PluginsModal, SkillRow, PluginRow } from "./capabilities.js";
 import { LanguagePicker } from "./language-picker.js";
 import { teamStrip, MINI_H, MINI_W } from "./expert-bots.js";
 import { instinctExpert } from "../agents/instinct.js";
@@ -224,6 +225,9 @@ export class TuiApp {
   private onUpdateCb: ((action: "check" | "install") => void) | null = null;
   private themePicker = new ThemePicker();
   private languagePicker = new LanguagePicker();
+  private skillsModal = new SkillsModal();
+  private pluginsModal = new PluginsModal();
+  private onCapabilityRequestCb: ((text: string) => void) | null = null;
   private onLanguageChangeCb: ((code: string) => void) | null = null;
   /** No AI provider connected yet (first launch): onboarding ends by connecting one */
   private needsProvider = false;
@@ -325,6 +329,8 @@ export class TuiApp {
       this.onHooksRequestCb?.();
     } else if (cmd === "/intents") {
       this.onIntentsRequestCb?.("");
+    } else if (cmd === "/skills" || cmd === "/plugins") {
+      this.onCapabilityRequestCb?.(cmd);
     } else if (cmd === "/language") {
       this.onLanguageRequestCb?.();
     } else if (cmd === "/peers" || cmd === "/link") {
@@ -471,6 +477,8 @@ export class TuiApp {
     if (this.commandPicker.isOpen()) return this.commandPicker.render(width);
     if (this.agentPicker.isOpen()) return this.agentPicker.render(width);
     if (this.languagePicker.isOpen()) return this.languagePicker.render(width);
+    if (this.skillsModal.isOpen()) return this.skillsModal.render(width, tuiSize().height - 4);
+    if (this.pluginsModal.isOpen()) return this.pluginsModal.render(width);
     if (this.themePicker.isOpen()) return this.themePicker.render(width);
     if (this.providerPicker.isOpen()) return this.providerPicker.render(width);
     if (this.statusModal.isOpen()) return this.statusModal.render(width);
@@ -505,6 +513,9 @@ export class TuiApp {
   onLearningRequest(cb: (cmd: string) => void): void { this.onLearningRequestCb = cb; }
   onLinkRequest(cb: (text: string) => void): void { this.onLinkRequestCb = cb; }
   onLanguageRequest(cb: () => void): void { this.onLanguageRequestCb = cb; }
+  onCapabilityRequest(cb: (text: string) => void): void { this.onCapabilityRequestCb = cb; }
+  openSkills(rows: SkillRow[], loadBody: (name: string) => string | null): void { this.skillsModal.open(rows, loadBody); }
+  openPlugins(rows: PluginRow[], dir: string): void { this.pluginsModal.open(rows, dir); }
   /** Esc while busy: stop the running turn (callback returns false when nothing was running). */
   onStop(cb: () => boolean): void { this.onStopCb = cb; }
 
@@ -834,6 +845,13 @@ export class TuiApp {
     this.stream.lines = assistantText(this.stream.text.replace(/^\n+/, ""), this.contentWidth());
     this.scroll.appendAll(this.stream.lines);
     this.lastKind = "text";
+  }
+
+  /** A short block of text from XYRO itself (command results), outside a model turn. */
+  addAssistantBlock(text: string): void {
+    this.endStream();
+    this.scroll.append(emptyLine());
+    this.scroll.appendAll(assistantText(text, this.contentWidth()));
   }
 
   /** One-line confirmation (model/theme/provider switched, …). */
@@ -1580,7 +1598,7 @@ export class TuiApp {
   private anyOverlayOpen(): boolean {
     return [
       this.permissionModal, this.updatePopup, this.expertsModal, this.rewindModal, this.hooksModal, this.mcpModal, this.quotaModal,
-      this.modelPicker, this.commandPicker, this.agentPicker, this.themePicker, this.languagePicker, this.providerPicker, this.statusModal, this.costModal,
+      this.modelPicker, this.commandPicker, this.agentPicker, this.themePicker, this.languagePicker, this.skillsModal, this.pluginsModal, this.providerPicker, this.statusModal, this.costModal,
     ].some((m) => m.isOpen());
   }
 
@@ -1596,6 +1614,8 @@ export class TuiApp {
     if (this.commandPicker.isOpen()) { this.commandPicker.close(); return true; }
     if (this.agentPicker.isOpen()) { this.agentPicker.close(); return true; }
     if (this.languagePicker.isOpen()) { this.languagePicker.close(); return true; }
+    if (this.skillsModal.isOpen()) { this.skillsModal.close(); return true; }
+    if (this.pluginsModal.isOpen()) { this.pluginsModal.close(); return true; }
     if (this.themePicker.isOpen()) { this.themePicker.close(); return true; }
     if (this.providerPicker.isOpen()) { this.providerPicker.close(); return true; }
     if (this.statusModal.isOpen()) { this.statusModal.close(); return true; }
@@ -1716,6 +1736,14 @@ export class TuiApp {
     }
     if (this.languagePicker.isOpen()) {
       this.languagePicker.handleKey(key);
+      return;
+    }
+    if (this.skillsModal.isOpen()) {
+      this.skillsModal.handleKey(key);
+      return;
+    }
+    if (this.pluginsModal.isOpen()) {
+      this.pluginsModal.handleKey(key);
       return;
     }
     if (this.themePicker.isOpen()) {
@@ -1878,6 +1906,10 @@ export class TuiApp {
       }
       if (text === "/hooks") {
         this.onHooksRequestCb?.();
+        return;
+      }
+      if (/^\/(skills|plugins)(\s|$)/.test(text) || /^\/mcp\s+(add|remove)\b/.test(text)) {
+        this.onCapabilityRequestCb?.(text);
         return;
       }
       if (text === "/language" || text === "/lang") {

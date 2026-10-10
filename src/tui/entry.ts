@@ -16,6 +16,15 @@ import { scanFiles } from "../agents/sentinel.js";
 import { clearNotes } from "../agents/team-board.js";
 import { listIntents, runIntents, removeIntent, trustIntents, intentsTrust } from "../agent/intents.js";
 import { matchInstant } from "../agent/instant.js";
+import { discoverSkills, loadSkillBody, invalidateSkillCache } from "../agents/skills-catalog.js";
+import { trackRecord } from "../agents/skill-stats.js";
+import { installSkill, findSkillsOnline } from "../agents/skill-market.js";
+import { pluginStatuses, getPluginDirectory } from "../config/plugins.js";
+import { reloadPlugins } from "../tools/registry.js";
+import { addUserMcpServer, removeUserMcpServer } from "../mcp/manager.js";
+import { getConfigDir } from "../config/platform.js";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { languageByCode } from "../config/languages.js";
 import { LinkNode, describePeer, formatCode } from "../collab/link.js";
 import { addRemoteNote, onNotePosted } from "../agents/team-board.js";
@@ -419,6 +428,69 @@ export async function runTuiMode(opts: {
       }
       if (intentsTrust() === "untrusted") tui.addNotice("This project's intent file changed outside XYRO. Review .xyro/intents.json, then /intents trust", "warn");
     });
+  });
+
+  // ---- skills, plugins, MCP servers: see them, read them, add and remove them ----
+  const skillRows = () =>
+    discoverSkills().map((sk) => ({ name: sk.name, description: sk.description, source: sk.source, path: sk.path, record: trackRecord(sk.name) }));
+  tui.onCapabilityRequest((text) => {
+    const [cmd, sub, ...rest] = text.trim().split(/\s+/);
+    const arg = rest.join(" ");
+    if (cmd === "/skills") {
+      if (!sub) return tui.openSkills(skillRows(), (name) => loadSkillBody(name));
+      if (sub === "search") {
+        if (!arg) return tui.addNotice("Usage: /skills search <topic>, e.g. /skills search pdf forms", "info");
+        tui.addNotice(`Searching for skills about "${arg}"…`, "info");
+        void findSkillsOnline({ query: arg }).then((out) => tui.addAssistantBlock(out));
+        return;
+      }
+      if (sub === "install") {
+        const [source, scope] = rest;
+        if (!source) return tui.addNotice("Usage: /skills install <github url or owner/repo/path> [project]", "info");
+        tui.addNotice(`Installing ${source}…`, "info");
+        void installSkill({ source, scope: scope === "project" ? "project" : "user" }).then((out) => tui.addAssistantBlock(out));
+        return;
+      }
+      if (sub === "remove") {
+        const sk = discoverSkills().find((x) => x.name === arg);
+        if (!sk) return tui.addNotice(`No skill named "${arg}"`, "warn");
+        const userDir = path.join(getConfigDir(), "skills");
+        const folder = path.dirname(sk.path);
+        // Only skills you installed into XYRO; project, Claude Code and plugin skills belong to them
+        if (sk.source !== "user" || path.relative(userDir, folder).startsWith("..")) {
+          return tui.addNotice(`"${sk.name}" comes from ${sk.source === "project" ? "this project (.xyro/skills or skills/)" : sk.source === "claude" ? "your Claude Code skills" : "a plugin"}; remove it there.`, "warn");
+        }
+        fs.rmSync(folder, { recursive: true, force: true });
+        invalidateSkillCache();
+        agent.refreshSystemPrompt();
+        return tui.addNotice(`Removed skill "${sk.name}"`, "success");
+      }
+      return tui.addNotice("Usage: /skills · /skills search <topic> · /skills install <url> [project] · /skills remove <name>", "info");
+    }
+    if (cmd === "/plugins") {
+      if (sub === "reload") {
+        void reloadPlugins().then((n) => {
+          const failed = pluginStatuses().filter((p) => p.error).length;
+          tui.addNotice(`Plugins reloaded: ${n} tool${n === 1 ? "" : "s"} from ${pluginStatuses().length - failed} plugin${pluginStatuses().length - failed === 1 ? "" : "s"}${failed ? `, ${failed} failed (see /plugins)` : ""}`, failed ? "warn" : "success");
+        });
+        return;
+      }
+      return tui.openPlugins(pluginStatuses(), getPluginDirectory());
+    }
+    if (cmd === "/mcp" && (sub === "add" || sub === "remove")) {
+      const [name, ...target] = rest;
+      const r = sub === "add" ? addUserMcpServer(name ?? "", target.join(" ")) : removeUserMcpServer(name ?? "");
+      tui.addNotice(r.message, r.ok ? "info" : "warn");
+      if (!r.ok) return;
+      void reloadMcpServers().then(() => {
+        tui.setMcpCount(connectedServerCount());
+        if (sub !== "add") return;
+        const st = mcpStatus().find((x) => x.name === name);
+        if (st?.state === "connected") tui.addNotice(`MCP server "${name}" connected: ${st.tools.length} tool${st.tools.length === 1 ? "" : "s"}`, "success");
+        else tui.addNotice(`MCP server "${name}" did not connect${st?.error ? `: ${st.error}` : ""}. Check the command or URL, then /mcp`, "warn");
+      });
+      return;
+    }
   });
 
   // ---- language: chosen on first launch, /language to change ----
