@@ -28,6 +28,14 @@ function packageVersion(): string {
   return xyroVersion();
 }
 
+// `xyro plugin …` and `xyro mcp add|remove|list …`: same commands as inside XYRO, from the shell
+if (process.argv[2] === "plugin" || (process.argv[2] === "mcp" && ["add", "remove", "rm", "list"].includes(process.argv[3] ?? ""))) {
+  const { runPluginCommand, runMcpCommand } = await import("./plugins/commands.js");
+  const r = process.argv[2] === "plugin" ? await runPluginCommand(process.argv.slice(3)) : await runMcpCommand(process.argv.slice(3));
+  console.log(r.text);
+  process.exit(r.text.startsWith("❌") ? 1 : 0);
+}
+
 // `xyro mcp`: serve XYRO's team to other agents over MCP (stdio) and nothing else
 if (process.argv[2] === "mcp") {
   const { serveMcp } = await import("./mcp/server.js");
@@ -49,7 +57,7 @@ program
   .option("--no-banner", "Skip interactive setup and banner")
   .option("--json", "JSON output mode (skips banner)", false)
   .option("--tui", "Full-screen XYRO interactive terminal interface", false)
-  .addHelpText("after", "\nCommands:\n  xyro mcp    Serve XYRO's team (tournament, experts, repo map…) to Claude Code, Cursor and other agents over MCP")
+  .addHelpText("after", "\nCommands:\n  xyro mcp                     Serve XYRO's team (tournament, experts, repo map…) to other agents over MCP\n  xyro mcp add|remove|list …   Manage MCP servers (Claude Code syntax: xyro mcp add <name> -- <command>)\n  xyro plugin …                Claude Code plugins: marketplace add <repo>, install <name>@<market>, list")
   .parse(process.argv);
 
 const opts = program.opts();

@@ -38,24 +38,31 @@ describe("/skills", () => {
     m.open(rows, () => null);
     const t = text(m.render(100));
     assert.ok(t.indexOf("THIS PROJECT") < t.indexOf("YOURS") && t.indexOf("YOURS") < t.indexOf("FROM PLUGINS"));
-    assert.match(t, /3 skills XYRO and its experts can load/);
+    assert.match(t, /3 skills\. Enter puts one to work in this session/);
     assert.match(t, /3\/3 verified/);
-    assert.match(t, /▌ deploy-flow/, "project skills first");
+    assert.match(t, /▌\s+deploy-flow/, "project skills first");
   });
 
-  it("type to filter, enter to read the whole skill, esc back to the list", () => {
+  it("enter puts a skill to work (again stops it); → reads it; esc goes back", () => {
+    const toggled: string[] = [];
     const m = new SkillsModal();
-    m.open(rows, (name) => (name === "pdf" ? "# PDF\n\nUse pypdf.\n\n- fill fields\n- merge files" : null));
+    m.open(rows, (name) => (name === "pdf" ? "# PDF\n\nUse pypdf.\n\n- fill fields\n- merge files" : null), [], (name, use) => toggled.push(`${use ? "use" : "stop"} ${name}`));
     for (const ch of "pdf") m.handleKey(ch);
     assert.doesNotMatch(text(m.render(100)), /deploy-flow/);
     m.handleKey("\r");
+    assert.deepEqual(toggled, ["use pdf"]);
+    assert.match(text(m.render(100)), /In use: pdf/);
+    assert.match(text(m.render(100)), /● pdf/);
+    m.handleKey("\r");
+    assert.deepEqual(toggled, ["use pdf", "stop pdf"]);
+    m.handleKey("\u001b[C");
     const reading = text(m.render(100));
     assert.match(reading, /Use pypdf\./);
     assert.match(reading, /fill fields/);
     assert.match(reading, /esc back to the list/);
     m.handleKey("\u001b");
     assert.ok(m.isOpen(), "esc while reading goes back to the list");
-    assert.match(text(m.render(100)), /▌ pdf/);
+    assert.match(text(m.render(100)), /▌\s+pdf/);
     m.handleKey("\u001b");
     assert.equal(m.isOpen(), false);
   });
@@ -63,7 +70,7 @@ describe("/skills", () => {
   it("a long skill scrolls inside the pop-up", () => {
     const m = new SkillsModal();
     m.open(rows, () => Array.from({ length: 200 }, (_, i) => `line ${i}`).join("\n"));
-    m.handleKey("\r");
+    m.handleKey("\u001b[C");
     const first = m.render(100, 30);
     assert.ok(first.length <= 34);
     assert.match(text(first), /↓ \d+ more/);

@@ -4,7 +4,7 @@ import type { Candidate } from "./pool.js";
 import { shouldShield, redactMessages, restoreResponse, restoreText, restoringStream } from "./privacy.js";
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
-import { buildCandidates, isFallbackableError, isAuthError, noteRejectedKey, noteBorrowFailure, shouldAnnounceSwitch, noteRateLimit, noteSuccess, noteFirstToken, hedgeDelayMs, providerIdForBaseURL } from "./pool.js";
+import { buildCandidates, isFallbackableError, isAuthError, noteRejectedKey, noteBorrowFailure, shouldAnnounceSwitch, waitForSlot, noteMinuteLimit, noteRateLimit, noteSuccess, noteFirstToken, hedgeDelayMs, providerIdForBaseURL } from "./pool.js";
 export { getFallbackChain, isFallbackableError } from "./pool.js";
 import { Message } from "../agent/types.js";
 import { getToolDefinitions } from "../tools/registry.js";
@@ -344,6 +344,7 @@ export async function callLLM(
   let lastError: unknown;
   let sessionError: unknown;
   const skip = new Set<string>();
+  const limited = new Map<string, number>();
   for (let i = 0; i < candidates.length; i++) {
     const c = candidates[i];
     if (skip.has(c.providerId)) continue;
@@ -372,8 +373,11 @@ export async function callLLM(
       lastError = tagProvider(err, c.providerId);
       if (c.sameProvider) sessionError = err;
       if (isRateLimitError(err)) {
+        noteMinuteLimit(c.providerId, err);
         noteRateLimit(c.providerId, err);
-        if (!PER_MODEL_LIMITS.has(c.providerId)) skip.add(c.providerId);
+        // Limits per key: leave the provider. Per model (Gemini, Groq): try a few other models, not all of them
+        limited.set(c.providerId, (limited.get(c.providerId) ?? 0) + 1);
+        if (!PER_MODEL_LIMITS.has(c.providerId) || (limited.get(c.providerId) ?? 0) >= PER_MODEL_TRIES) skip.add(c.providerId);
       }
       // Another provider rejected its saved key: skip it (until the key changes) and keep going
       if (!c.sameProvider && isAuthError(err)) {
@@ -423,6 +427,7 @@ export async function callLLMStream(
   let sessionError: unknown;
   let firstError: unknown;
   const skip = new Set<string>();
+  const limited = new Map<string, number>();
   // Tell the user once, after the fact, when a different model actually answered
   const announce = (winner: Candidate, reason?: string) => {
     if (winner.sameProvider && winner.model === model) return;
@@ -471,8 +476,11 @@ export async function callLLMStream(
       firstError ??= err;
       if (c.sameProvider) sessionError = err;
       if (isRateLimitError(err)) {
+        noteMinuteLimit(c.providerId, err);
         noteRateLimit(c.providerId, err);
-        if (!PER_MODEL_LIMITS.has(c.providerId)) skip.add(c.providerId);
+        // Limits per key: leave the provider. Per model (Gemini, Groq): try a few other models, not all of them
+        limited.set(c.providerId, (limited.get(c.providerId) ?? 0) + 1);
+        if (!PER_MODEL_LIMITS.has(c.providerId) || (limited.get(c.providerId) ?? 0) >= PER_MODEL_TRIES) skip.add(c.providerId);
       }
       // Another provider rejected its saved key: skip it (until the key changes) and keep going
       if (!c.sameProvider && isAuthError(err)) {
@@ -512,6 +520,9 @@ async function attempt(
   retryRateLimit: boolean,
   ctl: AttemptControl
 ): Promise<LLMResponse> {
+  // Stay under the provider's per-minute limit (bursts of steps or parallel experts 429 free tiers)
+  await waitForSlot(c.providerId, retryReporter, turnSignal());
+  if (turnSignal().aborted) throw new StoppedByUser();
   // Privacy shield: the provider sees placeholders, the user sees real values
   const shield = shouldShield(cl.baseURL);
   const restorer = shield ? restoringStream(emit) : null;
@@ -635,7 +646,9 @@ export function providerLabel(providerId: string): string {
 }
 
 /** Providers whose rate limits are per model (others limit per key: skip them entirely). */
-const PER_MODEL_LIMITS = new Set(["groq"]);
+const PER_MODEL_LIMITS = new Set(["groq", "google"]);
+/** Models tried on a per-model-limit provider before moving on (each failed try is a request). */
+const PER_MODEL_TRIES = 3;
 
 function describeFailure(err: unknown): string {
   if (!err) return "resting after a rate limit";

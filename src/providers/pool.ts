@@ -458,7 +458,71 @@ export function resetProviderState(providerId: string): void {
 }
 onProviderKeyChanged(resetProviderState);
 
+// ─── pacing: stay under each provider's per-minute limit ────────────────────
+
+/** Free-tier requests per minute (per key), when known. Learned values replace these. */
+const KNOWN_RPM: Record<string, number> = { google: 10, openrouter: 20, groq: 30, cerebras: 30, mistral: 60 };
+const sent = new Map<string, number[]>();
+const learnedRpm = new Map<string, number>();
+const pacingNoticeAt = new Map<string, number>();
+
+function recent(providerId: string, now = Date.now()): number[] {
+  const list = (sent.get(providerId) ?? []).filter((t) => now - t < 60_000);
+  sent.set(providerId, list);
+  return list;
+}
+
+export function rpmLimit(providerId: string): number | undefined {
+  return learnedRpm.get(providerId) ?? KNOWN_RPM[providerId];
+}
+
+/**
+ * A per-minute 429 (not a daily one) tells the real limit: what was sent in
+ * the last minute was one too many.
+ */
+export function noteMinuteLimit(providerId: string, err: unknown): void {
+  if (isDailyLimitError(err)) return;
+  const n = recent(providerId).length;
+  if (n >= 2) learnedRpm.set(providerId, Math.max(1, Math.min(n - 1, rpmLimit(providerId) ?? n - 1)));
+}
+
+/**
+ * Wait until this provider can take another request within its per-minute
+ * limit (free tiers 429 a burst of steps or parallel experts). The wait ends
+ * early if the user stops the turn.
+ */
+export async function waitForSlot(providerId: string, report?: (msg: string) => void, signal?: AbortSignal): Promise<void> {
+  const limit = rpmLimit(providerId);
+  if (!limit || process.env.XYRO_NO_PACING) {
+    recent(providerId).push(Date.now());
+    return;
+  }
+  for (;;) {
+    const list = recent(providerId);
+    if (list.length < limit) {
+      list.push(Date.now());
+      return;
+    }
+    const wait = Math.max(250, list[0] + 60_000 - Date.now());
+    const last = pacingNoticeAt.get(providerId) ?? 0;
+    if (Date.now() - last > 30_000) pacingNoticeAt.set(providerId, Date.now());
+    else report = undefined; // one notice per provider per 30s
+    report?.(`Pacing: ${FREE_PROVIDERS.find((p) => p.id === providerId)?.name.replace(/\s*\(.*\)$/, "") ?? providerId} allows about ${limit} requests a minute on the free tier, waiting ${Math.ceil(wait / 1000)}s`);
+    await new Promise<void>((resolve) => {
+      const t = setTimeout(resolve, wait);
+      signal?.addEventListener("abort", () => {
+        clearTimeout(t);
+        resolve();
+      }, { once: true });
+    });
+    if (signal?.aborted) return;
+  }
+}
+
 export function _resetPool(): void {
+  sent.clear();
+  learnedRpm.clear();
+  pacingNoticeAt.clear();
   cache = {};
   announced.clear();
 }

@@ -53,7 +53,7 @@ describe("XYRO stays in the project", () => {
     let asks = 0;
     setToolApprover(async () => (asks++, true));
     assert.match(await executeTool("read_file", { path: path.join(outside, "secret.txt") }), /outside data/);
-    assert.match(await executeTool("search_code", { pattern: "outside", path: outside }), /secret\.txt/);
+    assert.match(await executeTool("read_file", { path: path.join(outside, "secret.txt") }), /outside data/);
     assert.equal(asks, 1, "not asked again for the same folder");
     const w = await executeTool("write_file", { path: path.join(outside, "new.txt"), content: "x" });
     assert.match(w, /outside the project/);
@@ -65,6 +65,21 @@ describe("XYRO stays in the project", () => {
       throw new Error("should not ask");
     });
     assert.match(await executeTool("read_file", { path: "in.txt" }), /inside/);
+  });
+});
+
+describe("Never searching outside the project", () => {
+  it("searching or listing elsewhere is refused without even asking", async () => {
+    setToolApprover(async () => {
+      throw new Error("must not ask");
+    });
+    for (const [tool, args] of [["search_code", { pattern: "x", path: outside }], ["list_files", { path: os.homedir() }], ["glob", { pattern: "**/*", path: "/" }], ["find_files", { query: "x", path: "../elsewhere" }]] as const) {
+      assert.match(await executeTool(tool, args), /^⛔ Not searched: .* is outside the project/, tool);
+    }
+  });
+
+  it("the prompt states the boundary with the real path", () => {
+    assert.match(String(new HistoryManager().getAll()[0].content), new RegExp(`You work in ${project.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\. Never list, search or read anything outside it`));
   });
 });
 

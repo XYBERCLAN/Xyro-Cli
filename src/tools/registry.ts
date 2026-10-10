@@ -838,8 +838,10 @@ export function getAllToolDefinitions(): OpenAI.ChatCompletionTool[] {
   return [...allTools.map((t) => t.definition), ...[...externalTools.values()].map((e) => e.tool.definition)].map(compactTool);
 }
 
-/** Tools that only read, by `path` (outside the project they ask first). */
-const READ_PATH_TOOLS = new Set(["read_file", "list_files", "glob", "search_code", "find_files", "repo_map", "ast_inspect_file", "ast_find_symbol"]);
+/** Tools that look through many files: never outside the project. */
+const SEARCH_TOOLS = new Set(["list_files", "glob", "search_code", "find_files", "repo_map", "ast_find_symbol"]);
+/** Tools that read one named file: outside the project they ask first. */
+const READ_PATH_TOOLS = new Set(["read_file", "ast_inspect_file"]);
 
 async function askOutsideRead(folder: string): Promise<boolean> {
   const label = `Read outside the project: ${folder}`;
@@ -858,7 +860,11 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
   const pre = await runHooks("PreToolUse", { tool: name, args });
   if (pre.blocked) return `⛔ Blocked by a hook: ${pre.reason}`;
 
-  // Stay in the project: reading anywhere else needs the user's OK (once per folder, per session)
+  // Stay in the project. Searching or listing elsewhere is never done; reading one
+  // file elsewhere needs the user's OK (only when they asked for that file)
+  if (SEARCH_TOOLS.has(name) && typeof args.path === "string" && args.path.trim() && isOutsideProject(args.path)) {
+    return `⛔ Not searched: ${args.path} is outside the project (${workspaceRoot()}). XYRO only searches inside the project it runs in.`;
+  }
   if (READ_PATH_TOOLS.has(name) && typeof args.path === "string" && args.path.trim() && isOutsideProject(args.path)) {
     const target = resolvePath(workspaceRoot(), args.path);
     const folder = name === "read_file" || name === "ast_inspect_file" ? dirname(target) : target;

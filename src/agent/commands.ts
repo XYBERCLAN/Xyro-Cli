@@ -1,3 +1,6 @@
+import { runPluginCommand, runMcpCommand, splitArgs } from "../plugins/commands.js";
+import { expandPluginCommand } from "../plugins/claude-plugins.js";
+import { listSessions } from "./sessions.js";
 import { readProfile, forgetEverything } from "./learning.js";
 import * as fs from "node:fs";
 import * as p from "@clack/prompts";
@@ -48,6 +51,9 @@ Commands:
   /history           show session message count and sizes
   /export [file]     export conversation to markdown (default xyro-session.md)
   /save              save conversation history
+  /plugin …          Claude Code plugins: marketplace add, install, list (/plugin for help)
+  /mcp add|remove|list   manage MCP servers (Claude Code syntax)
+  /sessions          this project's conversations (/resume <id> reopens one)
   /resume            reload last saved session
   /clear             reset conversation history
   /init              scaffold an AGENTS.md project context file
@@ -75,7 +81,7 @@ function isCommand(input: string): string | null {
   return rest ? `${mapped} ${rest}` : mapped;
 }
 
-function writeAgentsMd(): string {
+export function writeAgentsMd(): string {
   const path = "AGENTS.md";
   if (fs.existsSync(path)) return `${path} already exists — not overwriting`;
   const content = `# Project Context
@@ -314,15 +320,24 @@ export async function handleCommand(
       return { action: "continue" };
 
     case "resume": {
-      const loaded = agent.load();
+      const loaded = agent.load(arg || undefined);
       renderInfo(loaded ? "Resumed previous conversation" : "No saved session found");
       return { action: "continue" };
     }
 
     case "clear":
-      agent.reset();
-      usage && renderInfo("Conversation cleared");
+    case "new":
+      agent.save();
+      agent.newSession();
+      renderInfo("New session (the previous one is listed by /sessions)");
       return { action: "continue" };
+
+    case "sessions": {
+      const list = listSessions();
+      if (!list.length) renderAssistant("No sessions in this project yet.");
+      else renderAssistant(list.map((x, i) => `${i + 1}. ${x.title}  (${x.turns} prompts, ${x.updatedAt.slice(0, 16).replace("T", " ")})  id ${x.id}`).join("\n") + "\n\nReopen one with /resume <id>.");
+      return { action: "continue" };
+    }
 
     case "init":
       renderAssistant(writeAgentsMd());
@@ -358,14 +373,31 @@ export async function handleCommand(
       renderInfo("Forgot everything XYRO learned about you.");
       return { action: "continue" };
 
+    case "plugin": {
+      const r = await runPluginCommand(splitArgs(arg));
+      renderAssistant(r.text);
+      if (r.changed) agent.refreshSystemPrompt();
+      return { action: "continue" };
+    }
+
+    case "mcp": {
+      const r = await runMcpCommand(splitArgs(arg));
+      renderAssistant(r.text);
+      return { action: "continue" };
+    }
+
     case "exit":
       agent.save();
       renderInfo("Goodbye");
       return { action: "exit" };
 
-    default:
+    default: {
+      // A slash command from an installed Claude Code plugin
+      const prompt = expandPluginCommand(cmd);
+      if (prompt) return { action: "agent", prompt };
       renderError(`Unknown command: ${name}. Type /help for the list.`);
       return { action: "continue" };
+    }
   }
 }
 

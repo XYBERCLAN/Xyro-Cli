@@ -17,6 +17,22 @@ function configPath(): string {
   return join(getConfigDir(), "config.json");
 }
 
+function tightenFile(p: string): void {
+  try {
+    if (process.platform !== "win32" && fs.existsSync(p) && (fs.statSync(p).mode & 0o077) !== 0) fs.chmodSync(p, 0o600);
+  } catch {
+    // best effort
+  }
+}
+
+/**
+ * Files older versions left readable by every user on the machine (keys,
+ * conversations, MCP config): make them private. Runs once at start-up.
+ */
+export function tightenPrivateFiles(extra: string[] = []): void {
+  for (const p of [configPath(), join(getConfigDir(), "mcp.json"), ...extra]) tightenFile(p);
+}
+
 export function loadPersistedConfig(): PersistedConfig {
   try {
     const p = configPath();
@@ -44,7 +60,9 @@ export function savePersistedConfig(config: PersistedConfig): void {
     ...(config.providerKeys !== undefined
       ? { providerKeys: { ...existing.providerKeys, ...config.providerKeys } } : {}),
   };
-  fs.writeFileSync(configPath(), JSON.stringify(merged, null, 2), "utf-8");
+  // Holds API keys: readable by you only
+  fs.writeFileSync(configPath(), JSON.stringify(merged, null, 2), { encoding: "utf-8", mode: 0o600 });
+  tightenFile(configPath());
 }
 
 // ── Per-provider key store ──────────────────────────────────────────────────

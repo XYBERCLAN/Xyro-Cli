@@ -1,3 +1,5 @@
+import { workspaceRoot } from "./workspace.js";
+import { newSessionId, saveSession, loadSession, listSessions, titleFrom } from "./sessions.js";
 import { languageByCode } from "../config/languages.js";
 import { loadPersistedConfig } from "../config/persist.js";
 import { toolGroupsPrompt } from "../tools/registry.js";
@@ -9,16 +11,12 @@ import { Message } from "./types.js";
 import { SYSTEM_PROMPT, PLAN_MODE_INSTRUCTIONS } from "../config/constants.js";
 import { getHistoryDir, getEnvironmentContext } from "../config/platform.js";
 import { loadProjectContext } from "../config/loader.js";
-import { skillsIndex, shortDesc } from "../agents/skills-catalog.js";
+import { skillsIndex, shortDesc, loadSkillBody } from "../agents/skills-catalog.js";
 import { loadSkills } from "../config/skills.js";
 import { getExperts } from "../agents/experts.js";
 import { historyToMarkdown } from "./usage.js";
 
 type ResponseListener = (usage: unknown) => void;
-
-function historyFilePath(): string {
-  return join(getHistoryDir(), "session.json");
-}
 
 export class HistoryManager {
   private messages: Message[] = [];
@@ -68,6 +66,13 @@ export class HistoryManager {
     const lang = languageByCode(loadPersistedConfig().language);
     if (lang && lang.code !== "en") {
       systemContent += `\n\n## Language\nThe user chose ${lang.name}: always reply in ${lang.name} (keep code, commands and file names as they are). If the user writes in another language, follow them.`;
+    }
+    // The project boundary, stated with the real path
+    systemContent += `\n\n## Project boundary\nYou work in ${workspaceRoot()}. Never list, search or read anything outside it: not the home folder, not other projects, not system folders. Only if the user explicitly names a file outside it may you read that one file.`;
+    // Skills the user switched on in /skills: followed for the whole session
+    if (this.activeSkills.length) {
+      const parts = this.activeSkills.map((n) => `### ${n}\n${(loadSkillBody(n) ?? "").slice(0, 6000)}`).join("\n\n");
+      systemContent += `\n\n## Skills in use (the user chose these: follow them)\n${parts}`;
     }
     // Specialised tool groups are loaded on demand (keeps every request small)
     const groups = toolGroupsPrompt();
@@ -126,6 +131,11 @@ export class HistoryManager {
     this.messages.push(msg);
   }
 
+  /** Replace the whole conversation (after a repair), keeping the current system prompt first. */
+  replaceAll(messages: Message[]): void {
+    this.messages = [this.systemMessage(), ...messages.filter((m) => m.role !== "system")];
+  }
+
   getAll(): Message[] {
     return this.messages;
   }
@@ -139,31 +149,77 @@ export class HistoryManager {
     return historyToMarkdown(this.messages);
   }
 
-  save(): void {
+  // ---- skills the user put to work (/skills, Enter) ----
+  private activeSkills: string[] = [];
+
+  setSkillInUse(name: string, use: boolean): void {
+    this.activeSkills = use ? [...new Set([...this.activeSkills, name])] : this.activeSkills.filter((n) => n !== name);
+    this.refreshSystemMessage();
+  }
+
+  skillsInUse(): string[] {
+    return this.activeSkills.slice();
+  }
+
+  // ---- sessions: this project's conversations (.xyro/sessions) ----
+  private sessionId = newSessionId();
+  private sessionTitle = "";
+  private sessionCreated = new Date().toISOString();
+  private prompts: string[] = [];
+
+  /** Remember a prompt the user typed (titles the session; ↑/↓ walks them). */
+  notePrompt(text: string): void {
+    if (!this.sessionTitle) this.sessionTitle = titleFrom(text);
+    if (this.prompts.at(-1) !== text) this.prompts.push(text);
+  }
+
+  getPrompts(): string[] {
+    return this.prompts.slice();
+  }
+
+  currentSessionId(): string {
+    return this.sessionId;
+  }
+
+  /** Save this conversation as this project's session (nothing is saved before the first prompt). */
+  save(meta: { model?: string; provider?: string } = {}): void {
+    if (!this.prompts.length && this.messages.length <= 1) return;
     try {
-      const filePath = historyFilePath();
-      const dir = getHistoryDir();
-      if (!existsSync(dir)) {
-        mkdirSync(dir, { recursive: true });
-      }
-      writeFileSync(filePath, JSON.stringify(this.messages, null, 2), "utf-8");
+      saveSession({
+        version: 1,
+        id: this.sessionId,
+        title: this.sessionTitle || "New session",
+        createdAt: this.sessionCreated,
+        updatedAt: this.sessionCreated,
+        ...meta,
+        messages: this.messages.filter((m) => m.role !== "system"),
+        prompts: this.prompts,
+      });
     } catch {
-      // silent fail
+      // never break a turn over saving
     }
   }
 
-  load(): boolean {
-    try {
-      const filePath = historyFilePath();
-      if (existsSync(filePath)) {
-        const data = readFileSync(filePath, "utf-8");
-        this.messages = JSON.parse(data);
-        return true;
-      }
-    } catch {
-      // corrupted file, reset
-      this.reset();
-    }
-    return false;
+  /** Open a session of this project (the latest when no id). */
+  load(id?: string): boolean {
+    const pick = id ?? listSessions()[0]?.id;
+    const s = pick ? loadSession(pick) : null;
+    if (!s) return false;
+    this.sessionId = s.id;
+    this.sessionTitle = s.title;
+    this.sessionCreated = s.createdAt;
+    this.prompts = s.prompts ?? [];
+    this.messages = [this.systemMessage(), ...s.messages];
+    return true;
   }
+
+  /** Start a fresh session (the previous one stays in /sessions). */
+  newSession(): void {
+    this.sessionId = newSessionId();
+    this.sessionTitle = "";
+    this.sessionCreated = new Date().toISOString();
+    this.prompts = [];
+    this.reset();
+  }
+
 }

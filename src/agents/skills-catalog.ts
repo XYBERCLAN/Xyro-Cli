@@ -127,6 +127,17 @@ export function discoverSkills(root = process.cwd()): SkillInfo[] {
     scanDir(join(home, ".agents", "skills"), "claude", found);
     for (const dir of pluginSkillDirs(join(home, ".claude", "plugins"))) scanDir(dir, "plugin", found);
   }
+  // Claude Code plugins installed into XYRO (/plugin install)
+  {
+    const installed = join(getConfigDir(), "claude-plugins");
+    let names: string[] = [];
+    try {
+      names = readdirSync(installed);
+    } catch {
+      names = [];
+    }
+    for (const n of names) scanDir(join(installed, n, "skills"), "plugin", found);
+  }
 
   const seen = new Set<string>();
   const skills = found.filter((s) => (seen.has(s.name) ? false : (seen.add(s.name), true)));

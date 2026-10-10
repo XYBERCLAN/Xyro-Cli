@@ -16,6 +16,12 @@ import { scanFiles } from "../agents/sentinel.js";
 import { clearNotes } from "../agents/team-board.js";
 import { listIntents, runIntents, removeIntent, trustIntents, intentsTrust } from "../agent/intents.js";
 import { matchInstant } from "../agent/instant.js";
+import { runPluginCommand, runMcpCommand, splitArgs } from "../plugins/commands.js";
+import { expandPluginCommand } from "../plugins/claude-plugins.js";
+import { listSessions } from "../agent/sessions.js";
+import { writeAgentsMd } from "../agent/commands.js";
+import { tightenPrivateFiles } from "../config/persist.js";
+import { getHistoryDir } from "../config/platform.js";
 import { discoverSkills, loadSkillBody, invalidateSkillCache } from "../agents/skills-catalog.js";
 import { trackRecord } from "../agents/skill-stats.js";
 import { installSkill, findSkillsOnline } from "../agents/skill-market.js";
@@ -114,7 +120,9 @@ export async function runTuiMode(opts: {
   const usage = new UsageTracker();
   agent.onLLMResponse((u) => usage.track(u as { prompt_tokens?: number; completion_tokens?: number } | null));
 
-  if (opts.resume) agent.load();
+  // Older versions left keys and conversations readable by everyone: make them private
+  tightenPrivateFiles([path.join(getHistoryDir(), "session.json")]);
+  const resumed = opts.resume ? agent.load() : false;
 
   const tui = new TuiApp();
   tui.setMeta(model, provider);
@@ -161,7 +169,10 @@ export async function runTuiMode(opts: {
     }
   };
 
-  tui.onSubmit(async (text) => {
+  tui.onSubmit(async (typed) => {
+    // A slash command from an installed plugin (/name or /plugin:name) runs as a prompt
+    const pluginPrompt = typed.startsWith("/") ? expandPluginCommand(typed) : null;
+    const text = pluginPrompt ?? typed;
     if (needsSetup && !text.startsWith("/")) {
       tui.addNotice("Connect an AI provider first: pick one, paste its free key, and XYRO is ready.", "info");
       tui.openProviderPicker();
@@ -173,7 +184,7 @@ export async function runTuiMode(opts: {
       const cp = beginCheckpoint(text, agent.historyLength());
       tui.markCheckpoint(cp.id);
     }
-    tui.addUserMessage(text);
+    tui.addUserMessage(typed);
     tui.setBusy(true);
     const cmdResult = await handleCommand(text, {
       agent,
@@ -248,7 +259,9 @@ export async function runTuiMode(opts: {
       teamChat.length = 0;
     }
     goneModel = null;
+    agent.notePrompt(typed);
     await runTurn(tui, agent, provider, prompt, undefined, undefined, promptForKey);
+    agent.save({ provider });
     void runHooks("Stop", { prompt: text });
     // The saved model no longer exists on this provider, and another of its models just answered: keep that one
     const answered = agent.lastAnsweredBy();
@@ -431,13 +444,33 @@ export async function runTuiMode(opts: {
   });
 
   // ---- skills, plugins, MCP servers: see them, read them, add and remove them ----
+  // ---- sessions: each project keeps its own (.xyro/sessions) ----
+  const openSession = (id: string) => {
+    agent.save({ provider });
+    if (!agent.load(id)) return tui.addNotice("That session could not be opened", "warn");
+    tui.loadTranscript(agent.messages());
+    tui.setPromptHistory(agent.sessionPrompts());
+    tui.addNotice(`Reopened session: ${listSessions().find((x) => x.id === id)?.title ?? id}`, "success");
+  };
+  const startNewSession = () => {
+    agent.save({ provider });
+    agent.newSession();
+    tui.resetChat();
+    tui.setPromptHistory([]);
+    tui.addNotice("New session. The previous one is in /sessions", "info");
+  };
+
   const skillRows = () =>
     discoverSkills().map((sk) => ({ name: sk.name, description: sk.description, source: sk.source, path: sk.path, record: trackRecord(sk.name) }));
   tui.onCapabilityRequest((text) => {
     const [cmd, sub, ...rest] = text.trim().split(/\s+/);
     const arg = rest.join(" ");
     if (cmd === "/skills") {
-      if (!sub) return tui.openSkills(skillRows(), (name) => loadSkillBody(name));
+      if (!sub)
+        return tui.openSkills(skillRows(), (name) => loadSkillBody(name), agent.skillsInUse(), (name, use) => {
+          agent.useSkill(name, use);
+          tui.addNotice(use ? `Using skill **${name}**: XYRO follows it for this session (Enter on it again in /skills to stop)` : `Stopped using skill ${name}`, use ? "success" : "info");
+        });
       if (sub === "search") {
         if (!arg) return tui.addNotice("Usage: /skills search <topic>, e.g. /skills search pdf forms", "info");
         tui.addNotice(`Searching for skills about "${arg}"…`, "info");
@@ -467,6 +500,37 @@ export async function runTuiMode(opts: {
       }
       return tui.addNotice("Usage: /skills · /skills search <topic> · /skills install <url> [project] · /skills remove <name>", "info");
     }
+    if (cmd === "/sessions" || cmd === "/resume") {
+      const rows = listSessions().map((r) => ({ ...r, current: r.id === agent.sessionId() }));
+      return tui.openSessions(rows, path.basename(process.cwd()), openSession, startNewSession);
+    }
+    if (cmd === "/new" || cmd === "/clear") return startNewSession();
+    if (cmd === "/save") {
+      agent.save({ provider });
+      return tui.addNotice(`Session saved in .xyro/sessions (${agent.sessionId()})`, "success");
+    }
+    if (cmd === "/history") {
+      const prompts = agent.sessionPrompts();
+      return tui.addAssistantBlock(prompts.length ? `Your prompts in this session:\n\n${prompts.map((p, i) => `${i + 1}. ${p.replace(/\s+/g, " ").slice(0, 160)}`).join("\n")}` : "No prompts yet in this session.");
+    }
+    if (cmd === "/export") {
+      const file = sub || `xyro-session-${agent.sessionId()}.md`;
+      try {
+        fs.writeFileSync(file, agent.exportMarkdown(), { mode: 0o600 });
+        return tui.addNotice(`Conversation exported to ${file}`, "success");
+      } catch (e) {
+        return tui.addNotice(`Export failed: ${e instanceof Error ? e.message : String(e)}`, "warn");
+      }
+    }
+    if (cmd === "/init") return tui.addNotice(writeAgentsMd(), "info");
+    if (cmd === "/compact") {
+      tui.addNotice("Compacting the conversation…", "info");
+      void agent.compact().then(
+        (sum) => tui.addNotice(sum ? "Compacted: older messages replaced by a summary" : "Nothing to compact yet", "success"),
+        (e: unknown) => tui.addNotice(`Compact failed: ${e instanceof Error ? e.message : String(e)}`, "warn")
+      );
+      return;
+    }
     if (cmd === "/plugins") {
       if (sub === "reload") {
         void reloadPlugins().then((n) => {
@@ -477,17 +541,30 @@ export async function runTuiMode(opts: {
       }
       return tui.openPlugins(pluginStatuses(), getPluginDirectory());
     }
-    if (cmd === "/mcp" && (sub === "add" || sub === "remove")) {
-      const [name, ...target] = rest;
-      const r = sub === "add" ? addUserMcpServer(name ?? "", target.join(" ")) : removeUserMcpServer(name ?? "");
-      tui.addNotice(r.message, r.ok ? "info" : "warn");
-      if (!r.ok) return;
-      void reloadMcpServers().then(() => {
-        tui.setMcpCount(connectedServerCount());
-        if (sub !== "add") return;
-        const st = mcpStatus().find((x) => x.name === name);
-        if (st?.state === "connected") tui.addNotice(`MCP server "${name}" connected: ${st.tools.length} tool${st.tools.length === 1 ? "" : "s"}`, "success");
-        else tui.addNotice(`MCP server "${name}" did not connect${st?.error ? `: ${st.error}` : ""}. Check the command or URL, then /mcp`, "warn");
+    if (cmd === "/mcp" && (sub === "add" || sub === "remove" || sub === "rm" || sub === "list")) {
+      void runMcpCommand(splitArgs(text.trim().slice(4))).then((r) => {
+        tui.addAssistantBlock(r.text);
+        if (!r.changed) return;
+        tui.addNotice("Reconnecting MCP servers…", "info");
+        void reloadMcpServers().then(() => {
+          tui.setMcpCount(connectedServerCount());
+          if (!r.name) return;
+          const st = mcpStatus().find((x) => x.name === r.name);
+          if (st?.state === "connected") tui.addNotice(`MCP server "${r.name}" connected: ${st.tools.length} tool${st.tools.length === 1 ? "" : "s"}`, "success");
+          else tui.addNotice(`MCP server "${r.name}" did not connect${st?.error ? `: ${st.error}` : ""}`, "warn");
+        });
+      });
+      return;
+    }
+    if (cmd === "/plugin") {
+      if (sub === "install" || sub === "add" || (sub === "marketplace" && rest[0] === "add")) tui.addNotice("Downloading…", "info");
+      void runPluginCommand(splitArgs(text.trim().slice(7))).then((r) => {
+        tui.addAssistantBlock(r.text);
+        if (!r.changed) return;
+        // A plugin brings skills, experts and MCP servers: pick them all up now
+        invalidateSkillCache();
+        agent.refreshSystemPrompt();
+        void reloadMcpServers().then(() => tui.setMcpCount(connectedServerCount()));
       });
       return;
     }
@@ -680,6 +757,13 @@ export async function runTuiMode(opts: {
   // First launch with no key: onboarding ends by connecting a provider
   if (needsSetup) tui.setNeedsProvider(true);
   tui.start();
+  if (resumed) {
+    tui.loadTranscript(agent.messages());
+    tui.setPromptHistory(agent.sessionPrompts());
+    tui.addNotice("Resumed this project's last session (/sessions for the others)", "info");
+  } else if (opts.resume) {
+    tui.addNotice("No saved session in this project yet", "info");
+  }
 
   // Providers retire models all the time: refresh the live lists (cached a day)
   // and move off a model that no longer exists

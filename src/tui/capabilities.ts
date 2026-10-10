@@ -36,15 +36,20 @@ export class SkillsModal {
   private reading: { row: SkillRow; text: string } | null = null;
   private offset = 0;
   private loadBody: (name: string) => string | null = () => null;
+  private active = new Set<string>();
+  private onToggleCb: ((name: string, use: boolean) => void) | null = null;
 
   isOpen(): boolean {
     return this.visible;
   }
 
-  open(rows: SkillRow[], loadBody: (name: string) => string | null): void {
+  /** `active`: skills XYRO is using in this session; `onToggle`: Enter starts or stops using one */
+  open(rows: SkillRow[], loadBody: (name: string) => string | null, active: string[] = [], onToggle?: (name: string, use: boolean) => void): void {
     this.visible = true;
     this.rows = rows;
     this.loadBody = loadBody;
+    this.active = new Set(active);
+    this.onToggleCb = onToggle ?? null;
     this.query = "";
     this.cursor = 0;
     this.reading = null;
@@ -86,6 +91,14 @@ export class SkillsModal {
     if (key === "\u001b[A") this.cursor = n ? (this.cursor - 1 + n) % n : 0;
     else if (key === "\u001b[B" || cp === 9) this.cursor = n ? (this.cursor + 1) % n : 0;
     else if (cp === 13 && list[this.cursor]) {
+      // Enter = use it (again = stop using it)
+      const name = list[this.cursor].name;
+      const use = !this.active.has(name);
+      if (use) this.active.add(name);
+      else this.active.delete(name);
+      this.onToggleCb?.(name, use);
+    } else if (key === "\u001b[C" && list[this.cursor]) {
+      // → = read it in full
       const row = list[this.cursor];
       this.reading = { row, text: this.loadBody(row.name) ?? "(this skill has no text)" };
       this.offset = 0;
@@ -128,11 +141,12 @@ export class SkillsModal {
       const more = lines.length - this.offset - room;
       body.push([]);
       body.push([span(`   ${this.offset > 0 ? `↑ ${this.offset} lines above  ` : ""}${more > 0 ? `↓ ${more} more` : "end of skill"}`, { fg: tint(t.textMuted, 0.7) })]);
-      return modalFrame("Skill", boxW, body, "↑↓ scroll · space page · esc back to the list", t.accent);
+      return modalFrame("Skill", boxW, body, "↑↓ scroll · space page · esc back to the list (enter there to use it)", t.accent);
     }
 
     const list = this.filtered();
-    body.push([span(`   ${this.rows.length} skills XYRO and its experts can load when a task needs them.`, { fg: muted })]);
+    for (const w of wrapSpans([span(`${this.rows.length} skills. Enter puts one to work in this session; experts also pick them up when a task matches.`, { fg: muted })], innerW - 6)) body.push([span("   "), ...w.spans]);
+    if (this.active.size) body.push([span(`   In use: ${[...this.active].join(", ")}`, { fg: t.success, bold: true })]);
     body.push([span("   ❯ ", { fg: t.accent, bold: true }), ...(this.query ? [span(this.query, { fg: t.text, bold: true })] : [span("type to filter", { fg: tint(t.textMuted, 0.6), italic: true })]), span("▌", { fg: t.accent })]);
     body.push([]);
     if (!list.length) {
@@ -153,14 +167,15 @@ export class SkillsModal {
       body.push({
         spans: [
           span(sel ? " ▌ " : "   ", { fg: t.accent, bold: true }),
-          span(r.name.slice(0, nameW - 1).padEnd(nameW), { fg: sel ? t.text : tint(t.text, 0.9), bold: sel }),
+          span(this.active.has(r.name) ? "● " : "  ", { fg: t.success, bold: true }),
+          span(r.name.slice(0, nameW - 3).padEnd(nameW - 2), { fg: sel ? t.text : tint(t.text, 0.9), bold: sel || this.active.has(r.name) }),
           span(desc, { fg: sel ? tint(t.text, 0.85) : muted }),
           ...(tail ? [span(tail, { fg: /quarantined/.test(tail) ? t.error : t.success })] : []),
         ],
         bg: sel ? t.backgroundMenu : t.backgroundPanel,
       });
     });
-    return modalFrame("Skills", boxW, body, "enter read · type to filter · /skills search · /skills install <url> · esc close", t.accent);
+    return modalFrame("Skills", boxW, body, "enter use / stop · → read · type to filter · esc close", t.accent);
   }
 }
 
@@ -223,5 +238,97 @@ export class PluginsModal {
     body.push([span(`   ${this.dir}`, { fg: t.accent })]);
     body.push([span("   then /plugins reload", { fg: muted })]);
     return modalFrame("Plugins", boxW, body, "/plugins reload · esc close", t.accent);
+  }
+}
+
+export interface SessionRow {
+  id: string;
+  title: string;
+  updatedAt: string;
+  turns: number;
+  current: boolean;
+}
+
+function ago(iso: string, now = Date.now()): string {
+  const m = Math.max(0, Math.round((now - Date.parse(iso)) / 60_000));
+  if (m < 1) return "just now";
+  if (m < 60) return `${m} min ago`;
+  const h = Math.round(m / 60);
+  if (h < 24) return `${h} h ago`;
+  const d = Math.round(h / 24);
+  return d < 30 ? `${d} day${d === 1 ? "" : "s"} ago` : iso.slice(0, 10);
+}
+
+/** /sessions: this project's conversations; Enter reopens one, n starts a new one. */
+export class SessionsModal {
+  private visible = false;
+  private rows: SessionRow[] = [];
+  private cursor = 0;
+  private project = "";
+  private onOpenCb: ((id: string) => void) | null = null;
+  private onNewCb: (() => void) | null = null;
+
+  isOpen(): boolean {
+    return this.visible;
+  }
+
+  open(rows: SessionRow[], project: string, onOpen: (id: string) => void, onNew: () => void): void {
+    this.visible = true;
+    this.rows = rows;
+    this.project = project;
+    this.cursor = Math.max(0, rows.findIndex((r) => r.current));
+    this.onOpenCb = onOpen;
+    this.onNewCb = onNew;
+  }
+
+  close(): void {
+    this.visible = false;
+  }
+
+  handleKey(key: string): boolean {
+    if (!this.visible) return false;
+    const cp = key.codePointAt(0) ?? 0;
+    const n = this.rows.length;
+    if (key === "\u001b") this.visible = false;
+    else if (key === "\u001b[A") this.cursor = n ? (this.cursor - 1 + n) % n : 0;
+    else if (key === "\u001b[B" || cp === 9) this.cursor = n ? (this.cursor + 1) % n : 0;
+    else if (cp === 13 && this.rows[this.cursor]) {
+      this.visible = false;
+      this.onOpenCb?.(this.rows[this.cursor].id);
+    } else if (key === "n" || key === "N") {
+      this.visible = false;
+      this.onNewCb?.();
+    }
+    return true;
+  }
+
+  render(termWidth: number): RenderLine[] {
+    if (!this.visible) return [];
+    const t = currentTheme();
+    const boxW = Math.max(60, Math.min(96, termWidth - 6));
+    const innerW = boxW - 2;
+    const muted = tint(t.textMuted, 0.9);
+    const body: Body = [];
+    body.push([span(`   Sessions in ${this.project}`, { fg: t.text, bold: true })]);
+    body.push([span("   Each conversation here is saved; pick one up where you left it.", { fg: muted })]);
+    body.push([]);
+    if (!this.rows.length) body.push([span("   No sessions yet: your first message starts one.", { fg: muted })]);
+    this.rows.forEach((r, i) => {
+      const sel = i === this.cursor;
+      const when = ago(r.updatedAt);
+      const meta = `${r.turns} prompt${r.turns === 1 ? "" : "s"} · ${when}`;
+      const titleW = Math.max(10, innerW - 6 - meta.length - 4);
+      const title = r.title.length > titleW ? r.title.slice(0, titleW - 1) + "…" : r.title.padEnd(titleW);
+      body.push({
+        spans: [
+          span(sel ? " ▌ " : "   ", { fg: t.accent, bold: true }),
+          span(r.current ? "● " : "  ", { fg: t.success, bold: true }),
+          span(title, { fg: sel ? t.text : tint(t.text, 0.9), bold: sel }),
+          span(`  ${meta}`, { fg: muted }),
+        ],
+        bg: sel ? t.backgroundMenu : t.backgroundPanel,
+      });
+    });
+    return modalFrame("Sessions", boxW, body, "enter reopen · n new session · esc close", t.accent);
   }
 }

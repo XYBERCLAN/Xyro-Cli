@@ -105,7 +105,7 @@ describe("Free-quota pool", () => {
     const { r, text } = await ask((s) => switches.push(s));
     assert.equal(text, "answered by B");
     assert.equal(r.providerId, "openrouter");
-    assert.equal(hits.a.length, 1, "a per-key limit is not retried on every model of the same provider");
+    assert.ok(hits.a.length <= 3, `Gemini limits are per model: a few others are tried, never all of them (${hits.a.length})`);
     const cross = switches.find((s) => s.crossProvider)!;
     assert.equal(cross.toProvider, "openrouter");
     assert.equal(cross.reason, "free quota used up");
@@ -142,7 +142,7 @@ describe("Free-quota pool", () => {
     behaviourA = () => ({ status: 429, error: "rate limit reached, retry after 120s" });
     await ask();
     const g = poolStatus().find((p) => p.providerId === "google")!;
-    assert.equal(g.rateLimitsToday, 1);
+    assert.ok(g.rateLimitsToday >= 1 && g.rateLimitsToday <= 3);
     assert.ok(g.coolingForMs > 100_000 && g.coolingForMs <= 120_000, `cooldown follows the retry hint: ${g.coolingForMs}`);
     const o = poolStatus().find((p) => p.providerId === "openrouter")!;
     assert.equal(o.requestsToday, 1);
@@ -339,5 +339,39 @@ describe("Daily limits and request budgets", () => {
     assert.match(d.note, /Request budget is tight \(about \d+ requests left today/);
     assert.match(d.note, /batch independent tool calls in ONE response/);
     assert.equal(requestBudget("google").frugal, false, "no known small cap: normal mode");
+  });
+});
+
+describe("Pacing and per-model limits (tester report: Gemini 429)", () => {
+  it("waits for a slot instead of bursting past the per-minute limit, and learns the real limit from a 429", async () => {
+    const { waitForSlot, rpmLimit, noteMinuteLimit } = await import("../providers/pool.js");
+    delete process.env.XYRO_NO_PACING;
+    try {
+      assert.equal(rpmLimit("google"), 10, "Gemini's free tier: about 10 a minute");
+      for (let i = 0; i < 5; i++) await waitForSlot("groq");
+      noteMinuteLimit("groq", Object.assign(new Error("Rate limit reached for requests per minute"), { status: 429 }));
+      assert.equal(rpmLimit("groq"), 4, "five in a minute was one too many");
+      const notices: string[] = [];
+      const ctl = new AbortController();
+      const started = Date.now();
+      const waiting = waitForSlot("groq", (m) => notices.push(m), ctl.signal);
+      await new Promise((r) => setTimeout(r, 150));
+      ctl.abort(); // a stopped turn doesn't keep waiting
+      await waiting;
+      assert.ok(Date.now() - started < 2000);
+      assert.match(notices[0], /Pacing: Groq allows about 4 requests a minute on the free tier, waiting \d+s/);
+      noteMinuteLimit("groq", Object.assign(new Error("free-models-per-day"), { status: 429 }));
+      assert.equal(rpmLimit("groq"), 4, "a daily limit says nothing about the per-minute one");
+    } finally {
+      process.env.XYRO_NO_PACING = "1";
+    }
+  });
+
+  it("a 429 on one Gemini model tries another Gemini model before giving up on Google", async () => {
+    behaviourA = (model) => (model === "gemini-flash-latest" ? { status: 429, error: "Resource has been exhausted (e.g. check quota)." } : { text: `answered by ${model}` });
+    const { r, text } = await ask();
+    assert.equal(r.providerId, "google");
+    assert.match(text, /^answered by gemini-/);
+    assert.equal(hits.b.length, 0, "no need to leave Google");
   });
 });

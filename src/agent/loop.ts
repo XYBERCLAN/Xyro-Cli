@@ -252,9 +252,25 @@ export function prunePastToolResults(turns: Message[][]): Message[][] {
 }
 
 /** Get safe max history tokens based on provider limits */
+/** Context windows learned from "maximum context length is N tokens" errors (per model). */
+const learnedContext = new Map<string, number>();
+
+/** Read the model's real context limit out of a provider's 400 message. */
+export function noteContextLimit(model: string, err: unknown): number | null {
+  const msg = String((err as { message?: string })?.message ?? err);
+  const m = msg.match(/(?:maximum context length|context(?: window| length)?(?: is| of)?|max(?:imum)? tokens?)[^\d]{0,40}(\d{4,7})/i);
+  if (!m) return null;
+  const n = Number(m[1]);
+  if (n >= 1024) learnedContext.set(model, n);
+  return n;
+}
+
 export function getMaxHistoryTokens(baseURL?: string, model?: string): number {
   const url = baseURL || "";
   const m = (model || "").toLowerCase();
+  // A model that told us its window: leave room for the reply (4096) and the fixed prompt + tools (~5k)
+  const learned = learnedContext.get(model ?? "");
+  if (learned) return Math.max(1500, Math.min(MAX_HISTORY_TOKENS, learned - 4096 - 5000));
   // Groq free tier has strict TPM limits (~6K-8K tokens/min)
   if (url.includes("groq.com") || m.startsWith("qwen/")) {
     return 3000;
@@ -307,6 +323,49 @@ export function buildLocalContextSummary(msgs: Message[]): string {
 }
 
 /** Trim history to fit within token limits while preserving schema validity and pruning old tool outputs */
+/**
+ * Make a conversation acceptable to strict providers (a 400 otherwise):
+ * every assistant tool call has its result, no result without its call, no
+ * empty assistant turns. Returns the fixed list and whether anything changed.
+ */
+export function repairHistory(msgs: Message[]): { messages: Message[]; changed: boolean } {
+  const out: Message[] = [];
+  let changed = false;
+  for (let i = 0; i < msgs.length; i++) {
+    const m = msgs[i];
+    if (m.role === "tool") {
+      // A result must answer a call in the closest assistant message before it
+      const prev = [...out].reverse().find((x) => x.role === "assistant");
+      if (!prev?.tool_calls?.some((tc: { id?: string }) => tc.id === m.tool_call_id)) {
+        changed = true;
+        continue;
+      }
+      out.push(m);
+      continue;
+    }
+    if (m.role === "assistant" && !m.tool_calls?.length && !String(m.content ?? "").trim()) {
+      changed = true;
+      continue;
+    }
+    if (m.role === "assistant" && m.tool_calls?.length) {
+      out.push(m);
+      // Every call needs a result right after it
+      const results = new Set<string>();
+      for (let j = i + 1; j < msgs.length && msgs[j].role === "tool"; j++) results.add(String(msgs[j].tool_call_id));
+      for (const tc of m.tool_calls as { id: string }[]) {
+        if (!results.has(tc.id)) {
+          changed = true;
+          // placed right after the assistant message, before the existing results
+          out.push({ role: "tool", tool_call_id: tc.id, content: "(no result was recorded)" });
+        }
+      }
+      continue;
+    }
+    out.push(m);
+  }
+  return { messages: out, changed };
+}
+
 export function trimHistory(msgs: Message[], maxTokens: number = MAX_HISTORY_TOKENS): Message[] {
   if (msgs.length <= 2) return msgs;
 
@@ -442,6 +501,7 @@ export class Agent {
 
     beginTurn(); // Esc stops everything this turn starts
     let toolCallCount = 0;
+    let recoveredThisTurn = false;
     let partial = ""; // text streamed so far in the current model call (kept if the user stops)
     let lastToolRun: { sig: string; run: number } | null = null;
     let doomDetected = false;
@@ -519,6 +579,23 @@ export class Agent {
         if (isStopped()) {
           this.finishStopped(partial, turnStart);
           break;
+        }
+        // A 400 is usually a conversation the model can't take (too long for its window, or a
+        // malformed history after a stop or a crash): repair it, shorten it, and try once more
+        const status = (err as { status?: number }).status;
+        if (status === 400 && !recoveredThisTurn && !partial) {
+          recoveredThisTurn = true;
+          const limit = noteContextLimit(this.model, err);
+          const fixed = repairHistory(this.history.getAll());
+          if (fixed.changed) this.history.replaceAll(fixed.messages);
+          this.output?.onNotice?.(
+            limit
+              ? `${this.model} takes at most ${limit.toLocaleString()} tokens: XYRO shortened the conversation and retried`
+              : `The provider rejected the request (400): XYRO ${fixed.changed ? "repaired the conversation" : "shortened the conversation"} and retried`,
+            "info"
+          );
+          if (!limit && !fixed.changed) learnedContext.set(this.model, Math.max(8000, Math.round(estimateTokens(this.history.getAll()) * 0.6)));
+          continue;
         }
         if (this.output?.onError) {
           this.output.onError(describeError(err));
@@ -779,12 +856,48 @@ export class Agent {
     return this.reflecting;
   }
 
-  save(): void {
-    this.history.save();
+  /** Save the conversation as this project's session (.xyro/sessions). */
+  save(meta: { provider?: string } = {}): void {
+    this.history.save({ model: this.model, ...meta });
   }
 
-  load(): boolean {
-    return this.history.load();
+  /** Open one of this project's sessions (the latest when no id). */
+  load(id?: string): boolean {
+    return this.history.load(id);
+  }
+
+  /** Start a fresh session; the current one stays in /sessions. */
+  newSession(): void {
+    this.compactGen++;
+    this.pendingCompact = null;
+    this.history.newSession();
+  }
+
+  /** /skills → Enter: XYRO follows this skill for the rest of the session. */
+  useSkill(name: string, use: boolean): void {
+    this.history.setSkillInUse(name, use);
+  }
+
+  skillsInUse(): string[] {
+    return this.history.skillsInUse();
+  }
+
+  /** A prompt the user typed (titles the session; up/down in the input walks them). */
+  notePrompt(text: string): void {
+    this.history.notePrompt(text);
+  }
+
+  sessionPrompts(): string[] {
+    return this.history.getPrompts();
+  }
+
+  sessionId(): string {
+    return this.history.currentSessionId();
+  }
+
+  /** The conversation so far (to redraw the chat when a session is reopened). */
+  messages(): Message[] {
+    return this.history.getAll();
   }
 
   reset(): void {

@@ -37,7 +37,7 @@ export interface Expert {
   triggers: string[];
   maxSteps: number;
   model?: string;
-  source: "builtin" | "project" | "user";
+  source: "builtin" | "project" | "user" | "plugin";
 }
 
 // ── tool groups ──────────────────────────────────────────────────────────────
@@ -56,12 +56,20 @@ export const TOOL_GROUPS: Record<string, string[]> = {
 };
 
 /** Expand "read, write, run_command" into concrete tool names. */
+/** Claude Code tool names (plugin agents) → XYRO tools. */
+const CLAUDE_TOOLS: Record<string, string[]> = {
+  read: ["read_file"], grep: ["search_code"], glob: ["glob"], ls: ["list_files"],
+  edit: ["edit_file"], multiedit: ["multi_edit"], write: ["write_file"], notebookedit: ["edit_file"],
+  bash: ["run_command"], webfetch: ["fetch_url"], websearch: ["web_search"], todowrite: ["write_todos"],
+};
+
 export function expandTools(spec: string[]): string[] {
   const out = new Set<string>();
   for (const raw of spec) {
     const s = raw.trim();
     if (!s) continue;
     if (s === "all") Object.values(TOOL_GROUPS).flat().forEach((t) => out.add(t));
+    else if (/^[A-Z]/.test(s) && CLAUDE_TOOLS[s.toLowerCase()]) CLAUDE_TOOLS[s.toLowerCase()].forEach((t) => out.add(t));
     else if (TOOL_GROUPS[s]) TOOL_GROUPS[s].forEach((t) => out.add(t));
     else out.add(s);
   }
@@ -329,7 +337,7 @@ export const BUILTIN_EXPERTS: Expert[] = [
 
 const list = (v?: string) => (v ? v.split(",").map((s) => s.trim()).filter(Boolean) : []);
 
-function loadDir(dir: string, source: "project" | "user"): Expert[] {
+function loadDir(dir: string, source: "project" | "user" | "plugin"): Expert[] {
   if (!existsSync(dir)) return [];
   const out: Expert[] = [];
   let files: string[] = [];
@@ -346,13 +354,14 @@ function loadDir(dir: string, source: "project" | "user"): Expert[] {
       const name = (fields.name || f.replace(/\.md$/, "")).toLowerCase().replace(/\s+/g, "-");
       if (!fields.description) continue; // the router needs a description
       // Project experts never replace a built-in (no hostile "builder" persona)
-      if (source === "project" && BUILTIN_EXPERTS.some((b) => b.name === name)) continue;
+      if ((source === "project" || source === "plugin") && BUILTIN_EXPERTS.some((b) => b.name === name)) continue;
       out.push({
         name,
         title: fields.title || name.replace(/(^|-)(\w)/g, (_, s: string, c: string) => (s ? " " : "") + c.toUpperCase()),
         description: fields.description,
         persona: `${body.trim() || `You are XYRO's ${name} specialist.`}\n${REPORT}`,
-        tools: expandTools(list(fields.tools).length ? list(fields.tools) : ["read"]),
+        // Claude Code agents with no tools listed get every tool; XYRO's own default to reading
+        tools: expandTools(list(fields.tools).length ? list(fields.tools) : source === "plugin" ? ["read", "write", "verify", "shell", "git"] : ["read"]),
         skills: list(fields.skills),
         plugins: list(fields.plugins),
         mcp: list(fields.mcp),
@@ -390,7 +399,14 @@ export function trustProjectExperts(root = process.cwd()): number {
 /** Built-ins, then user experts, then trusted project experts — later ones override by name. */
 export function getExperts(root = process.cwd()): Expert[] {
   const byName = new Map<string, Expert>();
-  for (const e of [...BUILTIN_EXPERTS, ...loadDir(join(getConfigDir(), "agents"), "user"), ...loadDir(join(root, ".xyro", "agents"), "project")]) {
+  // Agents from Claude Code plugins you installed (/plugin install)
+  const pluginAgents: Expert[] = [];
+  try {
+    for (const n of readdirSync(join(getConfigDir(), "claude-plugins"))) pluginAgents.push(...loadDir(join(getConfigDir(), "claude-plugins", n, "agents"), "plugin"));
+  } catch {
+    // no plugins installed
+  }
+  for (const e of [...BUILTIN_EXPERTS, ...pluginAgents, ...loadDir(join(getConfigDir(), "agents"), "user"), ...loadDir(join(root, ".xyro", "agents"), "project")]) {
     byName.set(e.name, e);
   }
   return [...byName.values()];

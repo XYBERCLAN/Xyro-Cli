@@ -1,4 +1,5 @@
-import { SkillsModal, PluginsModal, SkillRow, PluginRow } from "./capabilities.js";
+import { spawn } from "node:child_process";
+import { SkillsModal, PluginsModal, SessionsModal, SkillRow, PluginRow, SessionRow } from "./capabilities.js";
 import { LanguagePicker } from "./language-picker.js";
 import { teamStrip, MINI_H, MINI_W } from "./expert-bots.js";
 import { instinctExpert } from "../agents/instinct.js";
@@ -160,6 +161,21 @@ function detectGitBranch(): string {
 
 type View = { view: "home" } | { view: "session" };
 
+/** Open a web address with the system's browser (only http/https). */
+function openInBrowser(url: string): boolean {
+  if (!/^https?:\/\/[^\s]+$/.test(url)) return false;
+  const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
+  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
+  try {
+    const child = spawn(cmd, args, { detached: true, stdio: "ignore" });
+    child.on("error", () => undefined); // no browser opener installed: never crash XYRO over it
+    child.unref();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Lines the chat moves per mouse-wheel notch. */
 const WHEEL_LINES = 3;
 
@@ -226,6 +242,7 @@ export class TuiApp {
   private themePicker = new ThemePicker();
   private languagePicker = new LanguagePicker();
   private skillsModal = new SkillsModal();
+  private sessionsModal = new SessionsModal();
   private pluginsModal = new PluginsModal();
   private onCapabilityRequestCb: ((text: string) => void) | null = null;
   private onLanguageChangeCb: ((code: string) => void) | null = null;
@@ -329,7 +346,9 @@ export class TuiApp {
       this.onHooksRequestCb?.();
     } else if (cmd === "/intents") {
       this.onIntentsRequestCb?.("");
-    } else if (cmd === "/skills" || cmd === "/plugins") {
+    } else if (cmd === "/sessions" || cmd === "/new") {
+      this.onCapabilityRequestCb?.(cmd);
+    } else if (cmd === "/skills" || cmd === "/plugins" || cmd === "/plugin") {
       this.onCapabilityRequestCb?.(cmd);
     } else if (cmd === "/language") {
       this.onLanguageRequestCb?.();
@@ -478,6 +497,7 @@ export class TuiApp {
     if (this.agentPicker.isOpen()) return this.agentPicker.render(width);
     if (this.languagePicker.isOpen()) return this.languagePicker.render(width);
     if (this.skillsModal.isOpen()) return this.skillsModal.render(width, tuiSize().height - 4);
+    if (this.sessionsModal.isOpen()) return this.sessionsModal.render(width);
     if (this.pluginsModal.isOpen()) return this.pluginsModal.render(width);
     if (this.themePicker.isOpen()) return this.themePicker.render(width);
     if (this.providerPicker.isOpen()) return this.providerPicker.render(width);
@@ -514,7 +534,53 @@ export class TuiApp {
   onLinkRequest(cb: (text: string) => void): void { this.onLinkRequestCb = cb; }
   onLanguageRequest(cb: () => void): void { this.onLanguageRequestCb = cb; }
   onCapabilityRequest(cb: (text: string) => void): void { this.onCapabilityRequestCb = cb; }
-  openSkills(rows: SkillRow[], loadBody: (name: string) => string | null): void { this.skillsModal.open(rows, loadBody); }
+  openSkills(rows: SkillRow[], loadBody: (name: string) => string | null, active: string[] = [], onToggle?: (name: string, use: boolean) => void): void {
+    this.skillsModal.open(rows, loadBody, active, onToggle);
+  }
+  openSessions(rows: SessionRow[], project: string, onOpen: (id: string) => void, onNew: () => void): void {
+    this.sessionsModal.open(rows, project, onOpen, onNew);
+  }
+
+  /** ↑/↓ in the input walks these (the reopened session's prompts). */
+  setPromptHistory(prompts: string[]): void {
+    this.history = prompts.slice(-200);
+    this.historyIdx = -1;
+  }
+
+  /** A fresh, empty chat: transcript, plan, tasks and team all cleared. */
+  resetChat(): void {
+    this.endStream();
+    this.clearThinking();
+    this.scroll = new ScrollRegion();
+    this.todos = [];
+    this.plan = null;
+    this.agents = [];
+    this.liveTools = [];
+    this.instinct.clear();
+    this.headerAt = -1;
+    this.thinkingAt = -1;
+    this.lastKind = "none";
+    this.view = { view: "home" };
+  }
+
+  /** Redraw a reopened session: your prompts and XYRO's answers (tool calls are not replayed). */
+  loadTranscript(messages: { role: string; content: string | null }[]): void {
+    this.resetChat();
+    for (const m of messages) {
+      const text = String(m.content ?? "").trim();
+      if (!text) continue;
+      if (m.role === "user") {
+        if (text.startsWith("[intent guard]") || text.startsWith("[coordinator]")) continue;
+        // The coordinator note rides on the user's own words: show only what they typed
+        this.addUserMessage(text.split("\n\n[coordinator]")[0].split("\n\n[team chat")[0].split("\n\n[context from hooks]")[0]);
+      } else if (m.role === "assistant") {
+        this.ensureHeader();
+        this.scroll.appendAll(assistantText(text, this.contentWidth()));
+        this.headerAt = -1;
+        this.lastKind = "text";
+      }
+    }
+  }
   openPlugins(rows: PluginRow[], dir: string): void { this.pluginsModal.open(rows, dir); }
   /** Esc while busy: stop the running turn (callback returns false when nothing was running). */
   onStop(cb: () => boolean): void { this.onStopCb = cb; }
@@ -1020,6 +1086,17 @@ export class TuiApp {
 
     const changed = this.selection.onMouse(e);
     if (!changed) return;
+
+    // A plain click on a web address opens it in the browser
+    if (e.kind === "release" && this.selection.lastClick) {
+      const url = this.selection.urlAt(this.selection.lastClick.x, this.selection.lastClick.y);
+      this.selection.lastClick = null;
+      if (url) {
+        this.selection.showToast(openInBrowser(url) ? `Opening ${url.slice(0, 50)}` : `Couldn't open a browser: ${url.slice(0, 40)}`, "info");
+        this.render();
+        return;
+      }
+    }
 
     // Auto-copy the moment the user releases the mouse button
     if (e.kind === "release" && this.selection.hasSelection()) {
@@ -1598,7 +1675,7 @@ export class TuiApp {
   private anyOverlayOpen(): boolean {
     return [
       this.permissionModal, this.updatePopup, this.expertsModal, this.rewindModal, this.hooksModal, this.mcpModal, this.quotaModal,
-      this.modelPicker, this.commandPicker, this.agentPicker, this.themePicker, this.languagePicker, this.skillsModal, this.pluginsModal, this.providerPicker, this.statusModal, this.costModal,
+      this.modelPicker, this.commandPicker, this.agentPicker, this.themePicker, this.languagePicker, this.skillsModal, this.sessionsModal, this.pluginsModal, this.providerPicker, this.statusModal, this.costModal,
     ].some((m) => m.isOpen());
   }
 
@@ -1615,6 +1692,7 @@ export class TuiApp {
     if (this.agentPicker.isOpen()) { this.agentPicker.close(); return true; }
     if (this.languagePicker.isOpen()) { this.languagePicker.close(); return true; }
     if (this.skillsModal.isOpen()) { this.skillsModal.close(); return true; }
+    if (this.sessionsModal.isOpen()) { this.sessionsModal.close(); return true; }
     if (this.pluginsModal.isOpen()) { this.pluginsModal.close(); return true; }
     if (this.themePicker.isOpen()) { this.themePicker.close(); return true; }
     if (this.providerPicker.isOpen()) { this.providerPicker.close(); return true; }
@@ -1742,6 +1820,10 @@ export class TuiApp {
       this.skillsModal.handleKey(key);
       return;
     }
+    if (this.sessionsModal.isOpen()) {
+      this.sessionsModal.handleKey(key);
+      return;
+    }
     if (this.pluginsModal.isOpen()) {
       this.pluginsModal.handleKey(key);
       return;
@@ -1854,10 +1936,7 @@ export class TuiApp {
 
     // Up Arrow: history navigation or scroll
     if (key === "\u001b[A") {
-      if (this.view.view === "session" && this.input === "" && this.scroll.length() > 0) {
-        this.scroll.scrollBy(1);
-        return;
-      }
+      // ↑ walks back through the prompts of this session (the chat scrolls with the wheel / PageUp)
       if (this.history.length > 0) {
         if (this.historyIdx === -1) {
           this.savedInput = this.input;
@@ -1873,10 +1952,6 @@ export class TuiApp {
 
     // Down Arrow: history navigation or scroll
     if (key === "\u001b[B") {
-      if (this.view.view === "session" && this.input === "" && !this.scroll.isSticky()) {
-        this.scroll.scrollBy(-1);
-        return;
-      }
       if (this.historyIdx !== -1) {
         this.historyIdx++;
         if (this.historyIdx >= this.history.length) {
@@ -1908,7 +1983,7 @@ export class TuiApp {
         this.onHooksRequestCb?.();
         return;
       }
-      if (/^\/(skills|plugins)(\s|$)/.test(text) || /^\/mcp\s+(add|remove)\b/.test(text)) {
+      if (/^\/(skills|plugins|plugin|sessions|new|resume|clear|history|export|save|init|compact)(\s|$)/.test(text) || /^\/mcp\s+(add|remove|rm|list)\b/.test(text)) {
         this.onCapabilityRequestCb?.(text);
         return;
       }
@@ -1982,7 +2057,7 @@ export class TuiApp {
       }
 
       // Normal command or prompt submission
-      this.history.push(text);
+      if (this.history.at(-1) !== text) this.history.push(text);
       const h = this.submitHandler;
       if (h) Promise.resolve(h(text)).catch((e) => this.addError(e instanceof Error ? e.message : String(e)));
       return;

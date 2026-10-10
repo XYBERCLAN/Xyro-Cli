@@ -20,6 +20,21 @@ export class SelectionManager {
   frameRows: RenderLine[] = [];
 
   private toast: ToastState | null = null;
+  /** Where the last plain click landed (links open on click) */
+  lastClick: { x: number; y: number } | null = null;
+
+  /** The web address under a screen position (1-based), if any. */
+  urlAt(x: number, y: number): string | null {
+    const row = this.frameRows[y - 1];
+    if (!row) return null;
+    const text = linePlainText(row);
+    for (const m of text.matchAll(/https?:\/\/[^\s<>"'`)\]]+/g)) {
+      const start = (m.index ?? 0) + 1;
+      const end = start + m[0].length - 1;
+      if (x >= start && x <= end) return m[0].replace(/[.,;:!?]+$/, "");
+    }
+    return null;
+  }
 
   isSelecting(): boolean {
     return this.active && this.anchor !== null;
@@ -57,12 +72,15 @@ export class SelectionManager {
       }
       this.head = { x: e.x, y: e.y };
       this.active = false;
-      // Zero-width selection (plain click) clears instead of selecting
-      if (this.anchor.x === this.head.x && this.anchor.y === this.head.y) {
+      // A click, or a tiny accidental drag (under 2 characters on one row), is not a selection:
+      // only a real selection gets copied
+      if (this.anchor.y === this.head.y && Math.abs(this.anchor.x - this.head.x) < 2) {
+        this.lastClick = { x: this.head.x, y: this.head.y };
         this.anchor = null;
         this.head = null;
         return true;
       }
+      this.lastClick = null;
       return true;
     }
     return false;

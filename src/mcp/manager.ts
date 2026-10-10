@@ -24,6 +24,7 @@
 // `expertsOnly` keeps a server's tools out of the main agent's context: only
 // experts that declare `mcp: <server>` get them (fights context bloat).
 
+import { pluginMcpServers } from "../plugins/claude-plugins.js";
 import * as fs from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
@@ -336,6 +337,14 @@ export function discoverMcpServers(root = process.cwd()): DiscoveredServer[] {
   };
   for (const src of projectSources(root)) add(src, "project", projectFileTrust(src.path) === "trusted");
   for (const src of userSources(root)) add(src, "user", true);
+  // Servers bundled with Claude Code plugins you installed: trusted like your own config
+  for (const p of pluginMcpServers()) {
+    if (taken.has(slug(p.name))) continue;
+    const config = normalise(p.config);
+    if (!config) continue;
+    taken.add(slug(p.name));
+    out.push({ name: p.name, source: "user", origin: `plugin ${p.plugin}`, trusted: true, config });
+  }
   return out;
 }
 
@@ -370,29 +379,63 @@ export async function disconnectMcpServers(): Promise<void> {
  * URL (remote server) or a command line (local server, e.g. "npx -y @scope/server").
  */
 export function addUserMcpServer(name: string, target: string): { ok: boolean; message: string } {
-  const n = name.trim();
-  if (!/^[A-Za-z0-9][\w.-]{0,40}$/.test(n)) return { ok: false, message: "Give the server a short name: letters, digits, - or _" };
-  const t = target.trim();
-  if (!t) return { ok: false, message: "Usage: /mcp add <name> <command or URL>" };
-  let cfg: McpServerConfig;
-  if (/^https?:\/\//i.test(t)) cfg = { url: t };
-  else {
-    const parts = t.match(/"[^"]*"|'[^']*'|\S+/g) ?? [];
-    const [command, ...args] = parts.map((p) => p.replace(/^["']|["']$/g, ""));
-    cfg = { command, ...(args.length ? { args } : {}) };
+  const parsed = parseMcpAdd([name, ...(target.match(/"[^"]*"|'[^']*'|\S+/g) ?? []).map((p) => p.replace(/^["']|["']$/g, ""))]);
+  if ("error" in parsed) return { ok: false, message: parsed.error };
+  return { ok: true, message: `${saveMcpServer(parsed.name, parsed.config, parsed.scope)} Connecting…` };
+}
+
+/**
+ * `mcp add` with Claude Code's syntax (XYRO's short form works too):
+ *   mcp add [--transport http|sse|stdio] [--scope user|project] [-e KEY=VAL]… [-H "Key: val"]… <name> [--] <command…|url>
+ */
+export function parseMcpAdd(argv: string[]): { name: string; config: McpServerConfig; scope: "user" | "project" } | { error: string } {
+  const env: Record<string, string> = {};
+  const headers: Record<string, string> = {};
+  let transport = "";
+  let scope: "user" | "project" = "user";
+  const rest: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === "--") {
+      rest.push(...argv.slice(i + 1));
+      break;
+    }
+    if (a === "--transport" || a === "-t") transport = argv[++i] ?? "";
+    else if (a === "--scope" || a === "-s") scope = argv[++i] === "project" ? "project" : "user";
+    else if (a === "-e" || a === "--env") {
+      const [k, ...v] = (argv[++i] ?? "").split("=");
+      if (k) env[k] = v.join("=");
+    } else if (a === "-H" || a === "--header") {
+      const [k, ...v] = (argv[++i] ?? "").split(":");
+      if (k) headers[k.trim()] = v.join(":").trim();
+    } else rest.push(a);
   }
-  const p = userMcpPath();
+  const [name, target, ...args] = rest;
+  if (!name || !target) return { error: "Usage: mcp add [--transport http] [--scope project] [-e KEY=VAL] [-H \"Key: val\"] <name> [--] <command or url>" };
+  if (!/^[A-Za-z0-9][\w.-]{0,40}$/.test(name)) return { error: "Give the server a short name: letters, digits, - or _" };
+  const remote = transport === "http" || transport === "sse" || /^https?:\/\//i.test(target);
+  const config: McpServerConfig = remote
+    ? { url: target, ...(Object.keys(headers).length ? { headers } : {}) }
+    : { command: target, ...(args.length ? { args } : {}), ...(Object.keys(env).length ? { env } : {}) };
+  return { name, config, scope };
+}
+
+/** Write a parsed server to your config, or this project's (.xyro/mcp.json, trusted since you added it). */
+export function saveMcpServer(name: string, config: McpServerConfig, scope: "user" | "project", root = process.cwd()): string {
+  const p = scope === "project" ? projectMcpPath(root) : userMcpPath();
   let file: { mcpServers?: Record<string, McpServerConfig> } = {};
   try {
     file = JSON.parse(fs.readFileSync(p, "utf-8"));
   } catch {
     // new file
   }
-  const replaced = Boolean(file.mcpServers?.[n]);
-  file.mcpServers = { ...(file.mcpServers ?? {}), [n]: cfg };
-  fs.mkdirSync(getConfigDir(), { recursive: true });
+  const replaced = Boolean(file.mcpServers?.[name]);
+  file.mcpServers = { ...(file.mcpServers ?? {}), [name]: config };
+  fs.mkdirSync(join(p, ".."), { recursive: true });
   fs.writeFileSync(p, JSON.stringify(file, null, 2), { mode: 0o600 });
-  return { ok: true, message: `${replaced ? "Updated" : "Added"} MCP server "${n}" (${cfg.url ?? [cfg.command, ...(cfg.args ?? [])].join(" ")}). Connecting…` };
+  if (scope === "project") trustProjectFile(p);
+  const what = config.url ?? [config.command, ...(config.args ?? [])].join(" ");
+  return `${replaced ? "Updated" : "Added"} MCP server "${name}" (${what})${scope === "project" ? " for this project" : ""}.`;
 }
 
 /** /mcp remove: only servers in YOUR config (imported ones live in their own tool's settings). */
