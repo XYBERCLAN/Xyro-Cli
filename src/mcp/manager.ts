@@ -119,7 +119,7 @@ function expandEnv(v: string): string {
 }
 
 /** Normalise one foreign server entry to XYRO's shape (null when unusable). */
-function normalise(raw: unknown): McpServerConfig | null {
+export function normalise(raw: unknown): McpServerConfig | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Record<string, unknown>;
   // VS Code prompts for ${input:…} values at runtime; we can't, so skip those servers

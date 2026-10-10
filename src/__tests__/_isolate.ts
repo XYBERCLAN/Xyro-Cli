@@ -12,6 +12,8 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), "xyro-test-home-"));
 process.env.XDG_CONFIG_HOME = path.join(root, "config");
 process.env.XDG_DATA_HOME = path.join(root, "data");
 process.env.XYRO_LINK = "off";
+// Claude Code's plugins and marketplaces: an empty one, not the developer's
+process.env.XYRO_CLAUDE_HOME = path.join(root, "claude");
 // Fake providers answer instantly and get many requests a minute; tests/pacing turns it back on
 process.env.XYRO_NO_PACING = "1";
 for (const key of Object.keys(process.env)) {

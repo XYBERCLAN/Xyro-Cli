@@ -36,7 +36,7 @@ describe("checkForUpdate", () => {
     realFetch = globalThis.fetch;
     oldXdg = process.env.XDG_CONFIG_HOME;
     oldCi = process.env.CI;
-    // Isolated config dir so the 12h cache never leaks between tests
+    // Isolated config dir so the cache never leaks between tests
     process.env.XDG_CONFIG_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "xyro-update-"));
     delete process.env.CI;
   });
@@ -62,14 +62,33 @@ describe("checkForUpdate", () => {
     assert.equal(info!.updateAvailable, false);
   });
 
-  it("returns null when the registry is unreachable", async () => {
+  it("returns null when the registry is unreachable and nothing was saved", async () => {
     globalThis.fetch = (async () => {
       throw new Error("offline");
     }) as typeof fetch;
     assert.equal(await checkForUpdate({ force: true }), null);
   });
 
-  it("uses the cache instead of the network within 12 hours", async () => {
+  it("sees a release published an hour after the last check (tester: no pop-up after 0.9.1)", async () => {
+    const dir = path.join(process.env.XDG_CONFIG_HOME!, "xyro");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "update-check.json"), JSON.stringify({ checkedAt: Date.now() - 60 * 60_000, latest: xyroVersion() }));
+    globalThis.fetch = (async () => new Response(JSON.stringify({ version: "999.0.0" }), { status: 200 })) as typeof fetch;
+    const info = await checkForUpdate();
+    assert.equal(info!.latest, "999.0.0");
+    assert.equal(info!.updateAvailable, true);
+  });
+
+  it("offline, it falls back to the last answer", async () => {
+    globalThis.fetch = (async () => new Response(JSON.stringify({ version: "999.0.0" }), { status: 200 })) as typeof fetch;
+    await checkForUpdate({ force: true });
+    globalThis.fetch = (async () => {
+      throw new Error("offline");
+    }) as typeof fetch;
+    assert.equal((await checkForUpdate({ force: true }))!.latest, "999.0.0");
+  });
+
+  it("launches a few minutes apart reuse the last answer", async () => {
     let calls = 0;
     globalThis.fetch = (async () => {
       calls++;

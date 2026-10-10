@@ -260,6 +260,7 @@ export async function runTuiMode(opts: {
     }
     goneModel = null;
     agent.notePrompt(typed);
+    agent.save({ provider }); // the session exists from the first prompt, even if XYRO is quit mid-turn
     await runTurn(tui, agent, provider, prompt, undefined, undefined, promptForKey);
     agent.save({ provider });
     void runHooks("Stop", { prompt: text });
@@ -541,7 +542,7 @@ export async function runTuiMode(opts: {
       }
       return tui.openPlugins(pluginStatuses(), getPluginDirectory());
     }
-    if (cmd === "/mcp" && (sub === "add" || sub === "remove" || sub === "rm" || sub === "list")) {
+    if (cmd === "/mcp" && (sub === "add" || sub === "add-json" || sub === "get" || sub === "remove" || sub === "rm" || sub === "list")) {
       void runMcpCommand(splitArgs(text.trim().slice(4))).then((r) => {
         tui.addAssistantBlock(r.text);
         if (!r.changed) return;
@@ -557,7 +558,7 @@ export async function runTuiMode(opts: {
       return;
     }
     if (cmd === "/plugin") {
-      if (sub === "install" || sub === "add" || (sub === "marketplace" && rest[0] === "add")) tui.addNotice("Downloading…", "info");
+      if (sub === "install" || sub === "add" || sub === "browse" || (sub === "marketplace" && (rest[0] === "add" || rest[0] === "update"))) tui.addNotice("Downloading…", "info");
       void runPluginCommand(splitArgs(text.trim().slice(7))).then((r) => {
         tui.addAssistantBlock(r.text);
         if (!r.changed) return;

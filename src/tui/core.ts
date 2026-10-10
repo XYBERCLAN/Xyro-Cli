@@ -9,6 +9,9 @@ export interface StyledSpan {
   dim?: boolean;
   italic?: boolean;
   strikethrough?: boolean;
+  underline?: boolean;
+  /** Web address this text opens when clicked (kept on both halves of a wrapped link) */
+  link?: string;
 }
 
 export interface RenderLine {
@@ -280,6 +283,7 @@ function spanToAnsi(s: StyledSpan): string {
   if (s.dim) attrs.push("2");
   if (s.italic) attrs.push("3");
   if (s.strikethrough) attrs.push("9");
+  if (s.underline) attrs.push("4");
   const reset = attrs.length ? `${ESC}0m` : "";
   const pre = attrs.length ? `${ESC}${attrs.join(";")}m` : "";
   let out = pre;

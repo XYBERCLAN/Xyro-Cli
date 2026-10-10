@@ -127,18 +127,34 @@ function inline(text: string, base: Omit<StyledSpan, "text"> = {}): StyledSpan[]
   let last = 0;
   let m: RegExpExecArray | null;
   while ((m = re.exec(text)) !== null) {
-    if (m.index > last) spans.push(span(text.slice(last, m.index), base));
+    if (m.index > last) spans.push(...withLinks(text.slice(last, m.index), base));
     const tok = m[0];
     if (tok.startsWith("`")) spans.push(span(` ${tok.slice(1, -1)} `, { fg: brandOf().code, bg: t.backgroundElement }));
     else if (tok.startsWith("**")) spans.push(span(tok.slice(2, -2), { ...base, bold: true, fg: base.fg ?? t.text }));
     else if (tok.startsWith("[")) {
       const lm = tok.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
-      spans.push(span(lm ? lm[1] : tok, { fg: brandOf().sky, bold: true }));
+      const href = lm && /^https?:\/\//.test(lm[2].trim()) ? lm[2].trim() : undefined;
+      spans.push(span(lm ? lm[1] : tok, { fg: brandOf().sky, bold: true, underline: Boolean(href), link: href }));
     } else spans.push(span(tok.slice(1, -1), { ...base, italic: true }));
     last = m.index + tok.length;
   }
-  if (last < text.length) spans.push(span(text.slice(last), base));
+  if (last < text.length) spans.push(...withLinks(text.slice(last), base));
   return spans.length ? spans : [span(text, base)];
+}
+
+/** Plain text with its web addresses underlined and clickable. */
+function withLinks(text: string, base: Omit<StyledSpan, "text">): StyledSpan[] {
+  const out: StyledSpan[] = [];
+  let last = 0;
+  for (const m of text.matchAll(/https?:\/\/[^\s<>"'`)\]]+/g)) {
+    const url = m[0].replace(/[.,;:!?]+$/, "");
+    const at = m.index ?? 0;
+    if (at > last) out.push(span(text.slice(last, at), base));
+    out.push(span(url, { ...base, fg: brandOf().sky, underline: true, link: url }));
+    last = at + url.length;
+  }
+  if (last < text.length) out.push(span(text.slice(last), base));
+  return out;
 }
 
 /** GitHub-style table → box-drawn grid with a bold sky header. */

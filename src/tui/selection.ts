@@ -27,6 +27,13 @@ export class SelectionManager {
   urlAt(x: number, y: number): string | null {
     const row = this.frameRows[y - 1];
     if (!row) return null;
+    // A link the text carries ([label](url), or an address wrapped onto two lines)
+    let col = 1;
+    for (const s of row.spans) {
+      const w = visualWidth(s.text);
+      if (s.link && x >= col && x < col + w) return s.link;
+      col += w;
+    }
     const text = linePlainText(row);
     for (const m of text.matchAll(/https?:\/\/[^\s<>"'`)\]]+/g)) {
       const start = (m.index ?? 0) + 1;

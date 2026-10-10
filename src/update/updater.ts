@@ -1,8 +1,9 @@
 // Update checks and in-agent updates.
 //
 // checkForUpdate(): asks the npm registry for the latest published version.
-// Never blocks start-up: 3s timeout, result cached for 12h, silent on errors,
-// skipped in CI or with XYRO_NO_UPDATE_CHECK=1.
+// Never blocks start-up: 3s timeout, asked again on each launch (a release is
+// seen right away; the saved answer is used offline or within 10 minutes),
+// silent on errors, skipped in CI or with XYRO_NO_UPDATE_CHECK=1.
 //
 // performUpdate(): installs the latest version the same way XYRO was
 // installed (npm global). From a git checkout it explains how to pull instead.
@@ -16,7 +17,8 @@ import { xyroVersion, compareVersions } from "../version.js";
 
 export const PACKAGE_NAME = "xyro-cli";
 const REGISTRY_URL = `https://registry.npmjs.org/${PACKAGE_NAME}/latest`;
-const CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000;
+/** Launches closer together than this reuse the last answer (a long cache hid new releases for hours). */
+const CHECK_INTERVAL_MS = 10 * 60 * 1000;
 
 export interface UpdateInfo {
   current: string;
@@ -79,8 +81,9 @@ export async function checkForUpdate(opts: { force?: boolean } = {}): Promise<Up
   let latest = !opts.force && cached && Date.now() - cached.checkedAt < CHECK_INTERVAL_MS ? cached.latest : null;
   if (!latest) {
     latest = await fetchLatestVersion();
-    if (!latest) return null;
-    writeCache({ checkedAt: Date.now(), latest });
+    if (latest) writeCache({ checkedAt: Date.now(), latest });
+    else if (cached) latest = cached.latest; // offline: the last answer is better than none
+    else return null;
   }
   return { current, latest, updateAvailable: compareVersions(current, latest) < 0 };
 }

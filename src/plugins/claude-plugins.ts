@@ -20,6 +20,7 @@
 import * as fs from "node:fs";
 import { join, resolve, basename, isAbsolute } from "node:path";
 import { execa } from "execa";
+import { homedir } from "node:os";
 import { getConfigDir } from "../config/platform.js";
 import { parseFrontmatter, invalidateSkillCache } from "../agents/skills-catalog.js";
 
@@ -29,6 +30,8 @@ export interface MarketplaceEntry {
   source: string;
   dir: string;
   addedAt: string;
+  /** Claude Code's own checkout, shared read-only */
+  fromClaude?: boolean;
 }
 
 export interface InstalledPlugin {
@@ -38,6 +41,8 @@ export interface InstalledPlugin {
   description?: string;
   dir: string;
   installedAt: string;
+  /** Installed by Claude Code: XYRO uses it, Claude Code manages it */
+  fromClaude?: boolean;
 }
 
 export interface PluginContents {
@@ -68,12 +73,46 @@ function writeJson(p: string, v: unknown): void {
   fs.writeFileSync(p, JSON.stringify(v, null, 2));
 }
 
+/** Anthropic's own marketplace: there from the start, as in Claude Code. */
+export const OFFICIAL_MARKETPLACE = { name: "claude-plugins-official", source: "anthropics/claude-plugins-official" };
+
+const importEnabled = () => !/^(off|0|false|no)$/i.test(process.env.XYRO_IMPORT ?? "");
+/** Where Claude Code keeps its plugins (XYRO_CLAUDE_HOME for tests). */
+const claudePluginsDir = () => join(process.env.XYRO_CLAUDE_HOME ?? join(homedir(), ".claude"), "plugins");
+const claudeSettings = () => join(process.env.XYRO_CLAUDE_HOME ?? join(homedir(), ".claude"), "settings.json");
+
+/** Marketplaces added in XYRO, then the ones Claude Code already downloaded (used read-only). */
 export function listMarketplaces(): MarketplaceEntry[] {
-  return Object.values(readJson<Record<string, MarketplaceEntry>>(marketsFile(), {}));
+  const own = Object.values(readJson<Record<string, MarketplaceEntry>>(marketsFile(), {}));
+  if (!importEnabled()) return own;
+  const known = readJson<Record<string, { source?: { repo?: string; url?: string; path?: string }; installLocation?: string; lastUpdated?: string }>>(join(claudePluginsDir(), "known_marketplaces.json"), {});
+  const fromClaude = Object.entries(known)
+    .filter(([name, m]) => SAFE_NAME.test(name) && !own.some((o) => o.name === name) && m.installLocation && fs.existsSync(m.installLocation))
+    .map(([name, m]) => ({ name, source: m.source?.repo ?? m.source?.url ?? m.source?.path ?? "Claude Code", dir: m.installLocation!, addedAt: m.lastUpdated ?? "", fromClaude: true }));
+  return [...own, ...fromClaude];
 }
 
-export function listInstalled(): InstalledPlugin[] {
-  return Object.values(readJson<Record<string, InstalledPlugin>>(installedFile(), {})).filter((p) => fs.existsSync(p.dir));
+/** Plugins installed in XYRO, then the ones Claude Code has enabled (for this project or everywhere). */
+export function listInstalled(root = process.cwd()): InstalledPlugin[] {
+  const own = Object.values(readJson<Record<string, InstalledPlugin>>(installedFile(), {})).filter((p) => fs.existsSync(p.dir));
+  return importEnabled() ? [...own, ...claudeCodePlugins(root).filter((c) => !own.some((o) => o.name === c.name))] : own;
+}
+
+/** What Claude Code installed: ~/.claude/plugins/installed_plugins.json, minus the ones switched off in its settings. */
+export function claudeCodePlugins(root = process.cwd()): InstalledPlugin[] {
+  const data = readJson<{ plugins?: Record<string, { scope?: string; projectPath?: string; installPath?: string; version?: string; installedAt?: string }[]> }>(join(claudePluginsDir(), "installed_plugins.json"), {});
+  const enabled = readJson<{ enabledPlugins?: Record<string, boolean> }>(claudeSettings(), {}).enabledPlugins ?? {};
+  const out: InstalledPlugin[] = [];
+  for (const [key, installs] of Object.entries(data.plugins ?? {})) {
+    if (enabled[key] === false) continue;
+    const [name, marketplace = "claude"] = key.split("@");
+    if (!SAFE_NAME.test(name)) continue;
+    const here = (installs ?? []).find((i) => i.scope !== "project" && i.scope !== "local" ? true : i.projectPath && resolve(i.projectPath) === resolve(root));
+    if (!here?.installPath || !fs.existsSync(here.installPath)) continue;
+    const manifest = readJson<{ description?: string }>(join(here.installPath, ".claude-plugin", "plugin.json"), {});
+    out.push({ name, marketplace, version: here.version, description: manifest.description, dir: here.installPath, installedAt: here.installedAt ?? "", fromClaude: true });
+  }
+  return out;
 }
 
 /** owner/repo → GitHub URL; URLs and folders as given. */
@@ -130,8 +169,23 @@ export async function addMarketplace(source: string): Promise<string> {
   return `✅ Added marketplace "${name}" with ${mj.plugins.length} plugin${mj.plugins.length === 1 ? "" : "s"}: ${mj.plugins.map((p) => p.name).join(", ").slice(0, 300)}\nInstall one with /plugin install <plugin>@${name}`;
 }
 
+/** Is a plugin listed in a marketplace XYRO knows? */
+function findInMarketplaces(plugin: string, market?: string): boolean {
+  return listMarketplaces().some((m) => (!market || m.name === market) && Boolean(readMarketplace(m.dir)?.plugins?.some((p) => p.name === plugin)));
+}
+
+/** Download a marketplace again to see new plugins and versions. */
+export async function updateMarketplace(name?: string): Promise<string> {
+  const own = Object.values(readJson<Record<string, MarketplaceEntry>>(marketsFile(), {})).filter((m) => !name || m.name === name);
+  if (!own.length) return name ? `❌ No marketplace named "${name}" added in XYRO (Claude Code's own are updated by Claude Code).` : "Nothing to update: no marketplaces added in XYRO.";
+  const out: string[] = [];
+  for (const m of own) out.push((await addMarketplace(m.source)).split("\n")[0]);
+  return out.join("\n");
+}
+
 export function removeMarketplace(name: string): string {
   const all = readJson<Record<string, MarketplaceEntry>>(marketsFile(), {});
+  if (!all[name] && listMarketplaces().some((m) => m.name === name)) return `❌ "${name}" belongs to Claude Code: XYRO only reads it. Remove it in Claude Code.`;
   if (!all[name]) return `❌ No marketplace named "${name}".`;
   fs.rmSync(all[name].dir, { recursive: true, force: true });
   delete all[name];
@@ -152,24 +206,28 @@ export function pluginContents(dir: string): PluginContents {
       return [];
     }
   };
-  const mcp = readJson<{ mcpServers?: Record<string, unknown> }>(join(dir, ".mcp.json"), {});
   return {
     skills: list("skills", (f) => fs.existsSync(join(dir, "skills", f, "SKILL.md"))),
     agents: list("agents", (f) => f.endsWith(".md")).map((f) => f.replace(/\.md$/, "")),
     commands: list("commands", (f) => f.endsWith(".md")).map((f) => f.replace(/\.md$/, "")),
-    mcpServers: Object.keys(mcp.mcpServers ?? {}),
+    mcpServers: Object.keys(pluginMcpConfig(dir)),
     hooks: fs.existsSync(join(dir, "hooks", "hooks.json")),
   };
 }
 
 export async function installPlugin(spec: string): Promise<string> {
   const [pluginName, marketName] = spec.trim().split("@");
-  if (!pluginName) return "❌ Usage: /plugin install <plugin>@<marketplace>";
+  if (!pluginName) return "❌ Usage: /plugin install <plugin>[@marketplace]";
   // The name becomes a folder: never a path (a marketplace could list "../../something")
   if (!SAFE_NAME.test(pluginName)) return `❌ "${pluginName}" is not a valid plugin name.`;
+  // Like Claude Code, Anthropic's marketplace is there without adding it
+  if ((!marketName || marketName === OFFICIAL_MARKETPLACE.name) && !listMarketplaces().some((m) => m.name === OFFICIAL_MARKETPLACE.name) && !findInMarketplaces(pluginName, marketName)) {
+    const added = await addMarketplace(OFFICIAL_MARKETPLACE.source);
+    if (added.startsWith("❌")) return added;
+  }
   const markets = listMarketplaces();
   const candidates = markets.filter((m) => !marketName || m.name === marketName);
-  if (!candidates.length) return markets.length ? `❌ No marketplace named "${marketName}". Known: ${markets.map((m) => m.name).join(", ")}` : "❌ Add a marketplace first: /plugin marketplace add <owner/repo>";
+  if (!candidates.length) return `❌ No marketplace named "${marketName}". Known: ${markets.map((m) => m.name).join(", ")}`;
   let found: { market: MarketplaceEntry; entry: NonNullable<MarketplaceJson["plugins"]>[number] } | null = null;
   for (const m of candidates) {
     const e = readMarketplace(m.dir)?.plugins?.find((p) => p.name === pluginName);
@@ -229,8 +287,10 @@ export async function installPlugin(spec: string): Promise<string> {
 }
 
 export function uninstallPlugin(name: string): string {
+  name = name.split("@")[0];
   if (!SAFE_NAME.test(name)) return `❌ "${name}" is not a valid plugin name.`;
   const all = readJson<Record<string, InstalledPlugin>>(installedFile(), {});
+  if (!all[name] && claudeCodePlugins().some((p) => p.name === name)) return `❌ "${name}" was installed by Claude Code: XYRO uses it, Claude Code manages it. Remove it there (/plugin uninstall ${name}).`;
   if (!all[name]) return `❌ "${name}" is not installed. /plugin list shows what is.`;
   fs.rmSync(all[name].dir, { recursive: true, force: true });
   delete all[name];
@@ -255,13 +315,28 @@ export function pluginAgentDirs(): string[] {
 export function pluginMcpServers(): { name: string; plugin: string; config: Record<string, unknown> }[] {
   const out: { name: string; plugin: string; config: Record<string, unknown> }[] = [];
   for (const p of listInstalled()) {
-    const raw = readJson<{ mcpServers?: Record<string, Record<string, unknown>> }>(join(p.dir, ".mcp.json"), {});
-    for (const [name, cfg] of Object.entries(raw.mcpServers ?? {})) {
+    for (const [name, cfg] of Object.entries(pluginMcpConfig(p.dir))) {
       const text = JSON.stringify(cfg).replace(/\$\{CLAUDE_PLUGIN_ROOT\}/g, p.dir.replace(/\\/g, "\\\\"));
       out.push({ name, plugin: p.name, config: JSON.parse(text) });
     }
   }
   return out;
+}
+
+/** A plugin's MCP servers: .mcp.json, or "mcpServers" in its plugin.json (inline, or a file inside the plugin). */
+function pluginMcpConfig(dir: string): Record<string, Record<string, unknown>> {
+  const fromFile = (f: string) => {
+    const j = readJson<Record<string, unknown>>(f, {});
+    return ((j.mcpServers ?? j) as Record<string, Record<string, unknown>>) ?? {};
+  };
+  const manifest = readJson<{ mcpServers?: string | Record<string, Record<string, unknown>> }>(join(dir, ".claude-plugin", "plugin.json"), {});
+  const own = fs.existsSync(join(dir, ".mcp.json")) ? fromFile(join(dir, ".mcp.json")) : {};
+  let declared: Record<string, Record<string, unknown>> = {};
+  if (typeof manifest.mcpServers === "string") {
+    const f = resolve(dir, manifest.mcpServers);
+    if (isPathInside(f, dir)) declared = fromFile(f);
+  } else if (manifest.mcpServers && typeof manifest.mcpServers === "object") declared = manifest.mcpServers;
+  return Object.fromEntries(Object.entries({ ...declared, ...own }).filter(([, v]) => v && typeof v === "object"));
 }
 
 export interface PluginCommand {

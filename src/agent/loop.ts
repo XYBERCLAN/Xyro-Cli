@@ -366,6 +366,32 @@ export function repairHistory(msgs: Message[]): { messages: Message[]; changed: 
   return { messages: out, changed };
 }
 
+/** Tool results of the current turn kept whole when it has to be shortened. */
+const KEEP_RECENT_RESULTS = 4;
+
+function shrinkLongTurn(turn: Message[]): Message[] {
+  const toolIdx = turn.map((m, i) => (m.role === "tool" ? i : -1)).filter((i) => i >= 0);
+  const old = new Set(toolIdx.slice(0, -KEEP_RECENT_RESULTS));
+  return turn.map((m, i) =>
+    old.has(i) && (m.content ?? "").length > 300 ? { ...m, content: `${(m.content ?? "").slice(0, 200)}… [older output shortened to fit the context window]` } : m
+  );
+}
+
+/**
+ * The exact shape strict providers accept (OpenRouter routes to Anthropic, Google…,
+ * each with its own rules, and answers 400 otherwise): one system message first,
+ * a user message before the first reply, every tool call answered.
+ */
+export function prepareForProvider(msgs: Message[]): Message[] {
+  const systems = msgs.filter((m) => m.role === "system");
+  const rest = repairHistory(msgs.filter((m) => m.role !== "system")).messages;
+  const out: Message[] = [];
+  if (systems.length) out.push({ role: "system", content: systems.map((m) => m.content ?? "").join("\n\n") });
+  if (rest.length && rest[0].role !== "user") out.push({ role: "user", content: "(Continue from where the conversation above left off.)" });
+  out.push(...rest);
+  return out;
+}
+
 export function trimHistory(msgs: Message[], maxTokens: number = MAX_HISTORY_TOKENS): Message[] {
   if (msgs.length <= 2) return msgs;
 
@@ -384,6 +410,11 @@ export function trimHistory(msgs: Message[], maxTokens: number = MAX_HISTORY_TOK
     }
     turns.shift();
   }
+
+  // One long turn (a task with dozens of steps) is never dropped, so it can outgrow the
+  // model's window on its own (a 400 "after a while"): keep its latest results whole and
+  // shorten the older ones it already acted on
+  if (turns.length === 1 && estimateTokens([systemMsg, ...turns[0]]) > maxTokens) turns = [shrinkLongTurn(turns[0])];
 
   const result = [systemMsg, ...turns.flat()];
 
@@ -546,7 +577,7 @@ export class Agent {
       const llmStart = performance.now();
       try {
         // Use streaming for real-time output
-        const msgs = trimHistory(this.history.getAll(), getMaxHistoryTokens(this.client.baseURL, this.model));
+        const msgs = prepareForProvider(trimHistory(this.history.getAll(), getMaxHistoryTokens(this.client.baseURL, this.model)));
         if (this.output) {
           response = await callLLMStream(
             this.client,

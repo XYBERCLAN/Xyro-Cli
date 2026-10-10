@@ -64,6 +64,24 @@ import { loadPlugins } from "../config/plugins.js";
 import { runHooks } from "../agent/hooks.js";
 import { pathsTouchedBy, recordBeforeChange } from "../agent/checkpoints.js";
 
+/**
+ * Models often send `null` for an option they don't use, or a number as "2000":
+ * read those the way they were meant instead of failing the call.
+ */
+export function lenientArgs(schema: z.ZodTypeAny, args: Record<string, unknown>): Record<string, unknown> {
+  const shape = schema instanceof z.ZodObject ? (schema.shape as Record<string, z.ZodTypeAny>) : {};
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(args)) {
+    if (v === null) continue;
+    let field = shape[k];
+    while (field instanceof z.ZodOptional || field instanceof z.ZodDefault || field instanceof z.ZodNullable) field = field._def.innerType;
+    if (field instanceof z.ZodNumber && typeof v === "string" && v.trim() !== "" && !isNaN(Number(v))) out[k] = Number(v);
+    else if (field instanceof z.ZodBoolean && (v === "true" || v === "false")) out[k] = v === "true";
+    else out[k] = v;
+  }
+  return out;
+}
+
 function defineTool<T extends z.ZodTypeAny>(
   name: string,
   description: string,
@@ -83,7 +101,7 @@ function defineTool<T extends z.ZodTypeAny>(
       },
     },
     execute: async (rawArgs: Record<string, unknown>) => {
-      const parsed = schema.safeParse(rawArgs || {});
+      const parsed = schema.safeParse(lenientArgs(schema, rawArgs || {}));
       if (!parsed.success) {
         const issues = parsed.error.issues
           .map((i) => `${i.path.join(".") || "input"}: ${i.message}`)

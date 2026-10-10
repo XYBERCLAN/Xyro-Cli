@@ -2001,7 +2001,7 @@ export class TuiApp {
         this.onHooksRequestCb?.();
         return;
       }
-      if (/^\/(skills|plugins|plugin|sessions|new|resume|clear|history|export|save|init|compact)(\s|$)/.test(text) || /^\/mcp\s+(add|remove|rm|list)\b/.test(text)) {
+      if (/^\/(skills|plugins|plugin|sessions|new|resume|clear|history|export|save|init|compact)(\s|$)/.test(text) || /^\/mcp\s+(add|add-json|get|remove|rm|list)\b/.test(text)) {
         this.onCapabilityRequestCb?.(text);
         return;
       }

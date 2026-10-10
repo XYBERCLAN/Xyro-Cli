@@ -4,7 +4,7 @@ import type { Candidate } from "./pool.js";
 import { shouldShield, redactMessages, restoreResponse, restoreText, restoringStream } from "./privacy.js";
 import OpenAI from "openai";
 import Anthropic from "@anthropic-ai/sdk";
-import { buildCandidates, isFallbackableError, isAuthError, noteRejectedKey, noteBorrowFailure, shouldAnnounceSwitch, waitForSlot, noteMinuteLimit, noteRateLimit, noteSuccess, noteFirstToken, hedgeDelayMs, providerIdForBaseURL } from "./pool.js";
+import { buildCandidates, isFallbackableError, isAuthError, noteRejectedKey, noteBorrowFailure, shouldAnnounceSwitch, waitForSlot, noteMinuteLimit, noteRateLimit, noteSuccess, noteFirstToken, hedgeDelayMs, providerIdForBaseURL, isMinuteLimitError, retryHintMs } from "./pool.js";
 export { getFallbackChain, isFallbackableError } from "./pool.js";
 import { Message } from "../agent/types.js";
 import { getToolDefinitions } from "../tools/registry.js";
@@ -152,8 +152,12 @@ export function extractRetryDelay(err: unknown, attempt: number): number {
     }
   }
 
-  // Check error message for duration patterns like "try again in 12.5s" or "wait 3000ms"
+  // Google: "Please retry in 37.4s" / "retryDelay": "37s" (waiting less only earns another 429)
   const msg = err instanceof Error ? err.message : String(err);
+  const hint = retryHintMs(msg);
+  if (hint !== null && hint > 0) return Math.min(60_000, Math.max(1000, Math.ceil(hint)));
+
+  // Check error message for duration patterns like "try again in 12.5s" or "wait 3000ms"
   const secMatch = msg.match(/(?:try again in|wait|after)\s*([0-9]+(?:\.[0-9]+)?)\s*(?:s|seconds)/i);
   if (secMatch && secMatch[1]) {
     const sec = parseFloat(secMatch[1]);
@@ -418,6 +422,36 @@ export async function callLLMStream(
   onChunk: StreamChunkHandler,
   toolsOverride?: OpenAI.Chat.Completions.ChatCompletionTool[],
   opts: { onSwitch?: (s: ModelSwitch) => void; pool?: boolean; hedge?: boolean } = {}
+): Promise<LLMResponse> {
+  // Every model hit a PER-MINUTE limit (Gemini's free tier after a burst of steps):
+  // that clears within a minute, so wait it out instead of ending the turn
+  for (let waits = 0; ; waits++) {
+    let emitted = false;
+    try {
+      return await callLLMStreamOnce(client, model, messages, (c) => {
+        emitted = true;
+        onChunk(c);
+      }, toolsOverride, opts);
+    } catch (err) {
+      if (emitted || waits >= MINUTE_LIMIT_WAITS || isStopped() || !isRateLimitError(err) || !isMinuteLimitError(err)) throw err;
+      const waitMs = Math.min(65_000, Math.max(5_000, retryHintMs(String((err as Error)?.message ?? err)) ?? 30_000));
+      retryReporter(`${providerLabel((err as { xyroProvider?: string }).xyroProvider ?? providerIdForBaseURL(client.baseURL) ?? "")} hit its per-minute limit, waiting ${Math.ceil(waitMs / 1000)}s and continuing`);
+      await stoppableSleep(waitMs);
+      if (turnSignal().aborted) throw new StoppedByUser();
+    }
+  }
+}
+
+/** Waits for a per-minute limit to pass before a turn gives up. */
+const MINUTE_LIMIT_WAITS = 2;
+
+async function callLLMStreamOnce(
+  client: OpenAI,
+  model: string,
+  messages: Message[],
+  onChunk: StreamChunkHandler,
+  toolsOverride: OpenAI.Chat.Completions.ChatCompletionTool[] | undefined,
+  opts: { onSwitch?: (s: ModelSwitch) => void; pool?: boolean; hedge?: boolean }
 ): Promise<LLMResponse> {
   if (isAnthropicModel(model) && process.env["ANTHROPIC_API_KEY"] && !isOpenRouter(client.baseURL)) {
     return shieldedAnthropic(model, messages, onChunk);

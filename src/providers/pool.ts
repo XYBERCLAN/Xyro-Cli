@@ -184,10 +184,35 @@ export function isFallbackableError(err: unknown): boolean {
   );
 }
 
+const errText = (err: unknown) => (err instanceof Error ? err.message : String((err as { message?: string })?.message ?? err)).toLowerCase();
+
+/**
+ * A per-minute limit, even when it is worded like a used-up quota: Google says
+ * "You exceeded your current quota … Quota exceeded for metric …" for a burst
+ * of requests too, and names the real limit in the quota id
+ * (GenerateRequestsPerMinutePerProjectPerModel) or asks to "retry in 37s".
+ */
+export function isMinuteLimitError(err: unknown): boolean {
+  const msg = errText(err);
+  if (/per ?minute|per_minute|requests per min|tokens per min|\b[rt]pm\b/.test(msg)) return true;
+  if (/per ?day|per_day/.test(msg)) return false;
+  const hint = retryHintMs(msg);
+  return hint !== null && hint <= 15 * 60_000;
+}
+
 /** The provider's free allowance for TODAY is used up (not a per-minute rate limit). */
 export function isDailyLimitError(err: unknown): boolean {
-  const msg = (err instanceof Error ? err.message : String((err as { message?: string })?.message ?? err)).toLowerCase();
-  return /per[- ]?day|daily|free-models-per-day|requests per day|rpd|limit reached for the day|quota exceeded for metric/.test(msg);
+  if (isMinuteLimitError(err)) return false;
+  return /per ?day|per_day|daily|free-models-per-day|requests per day|\brpd\b|limit reached for the day|quota exceeded for metric/.test(errText(err));
+}
+
+/** "retry in 37.4s", "retryDelay": "37s", "try again in 2m" → milliseconds. */
+export function retryHintMs(text: string): number | null {
+  const m = text.match(/(?:retry|try again)[^\d]{0,20}(\d+(?:\.\d+)?)\s*(ms|s|sec|seconds|m|min|minutes)?\b/i);
+  if (!m) return null;
+  const n = parseFloat(m[1]);
+  const unit = (m[2] || "s").toLowerCase();
+  return unit === "ms" ? n : unit.startsWith("m") ? n * 60_000 : n * 1000;
 }
 
 /** When a provider's daily allowance comes back (OpenRouter: 00:00 UTC; Google: midnight Pacific). */
@@ -249,8 +274,8 @@ export function dailyLimitMessage(providerId: string, err: unknown, now = Date.n
 }
 
 function isQuotaExhausted(err: unknown): boolean {
-  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
-  return /quota|exhausted|per day|daily|insufficient credits|limit reached for the day/.test(msg) || (err as { status?: number })?.status === 402;
+  if (isMinuteLimitError(err)) return false;
+  return /quota|exhausted|per day|daily|insufficient credits|limit reached for the day/.test(errText(err)) || (err as { status?: number })?.status === 402;
 }
 
 /** Cooldown from a Retry-After / "retry in Ns" hint, else a sensible default. */
@@ -258,13 +283,8 @@ function cooldownMs(err: unknown): number {
   const headers = (err as { headers?: Record<string, string> | { get?: (k: string) => string | null } })?.headers;
   const ra = headers && (typeof (headers as { get?: unknown }).get === "function" ? (headers as { get: (k: string) => string | null }).get("retry-after") : (headers as Record<string, string>)["retry-after"]);
   if (ra && !isNaN(Number(ra))) return Math.min(Number(ra) * 1000, 6 * 3600_000);
-  const msg = err instanceof Error ? err.message : String(err);
-  const m = msg.match(/(?:retry|try again)[^\d]{0,20}(\d+(?:\.\d+)?)\s*(ms|s|sec|seconds|m|min|minutes)?/i);
-  if (m) {
-    const n = parseFloat(m[1]);
-    const unit = (m[2] || "s").toLowerCase();
-    return Math.min(unit.startsWith("ms") ? n : unit.startsWith("m") && unit !== "ms" ? n * 60_000 : n * 1000, 6 * 3600_000);
-  }
+  const hint = retryHintMs(err instanceof Error ? err.message : String(err));
+  if (hint !== null) return Math.min(hint, 6 * 3600_000);
   return isQuotaExhausted(err) ? 60 * 60_000 : 60_000;
 }
 
