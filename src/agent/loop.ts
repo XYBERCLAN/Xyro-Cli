@@ -8,7 +8,7 @@ import OpenAI from "openai";
 import pc from "picocolors";
 import { Message, AgentOptions } from "./types.js";
 import { HistoryManager } from "./history.js";
-import { createClient, callLLM, callLLMStream, summarizeHistory, LLMResponse, ModelSwitch } from "../providers/llm.js";
+import { createClient, callLLM, callLLMStream, summarizeHistory, LLMResponse, ModelSwitch, describeError } from "../providers/llm.js";
 import { executeTool, getPlanModeToolDefinitions } from "../tools/registry.js";
 import { END_TURN_TOOL_NAMES } from "../tools/end_turn.js";
 import { requestPermission, shouldAskPermission, describeToolCall, PERMISSION_DENIED_RESULT } from "../tools/permissions.js";
@@ -521,7 +521,7 @@ export class Agent {
           break;
         }
         if (this.output?.onError) {
-          this.output.onError(err instanceof Error ? err.message : String(err));
+          this.output.onError(describeError(err));
           break;
         }
         throw err;

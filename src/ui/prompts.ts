@@ -70,14 +70,7 @@ export const FREE_PROVIDERS: Provider[] = [
   {
     id: "openrouter",
     name: "OpenRouter (USA)",
-    models: [
-      "google/gemini-2.0-flash-exp:free",
-      "meta-llama/llama-3.3-70b-instruct:free",
-      "deepseek/deepseek-r1:free",
-      "deepseek/deepseek-chat:free",
-      "qwen/qwen-2.5-coder-32b-instruct:free",
-      "mistralai/mistral-small-24b-instruct-2501:free",
-    ],
+    models: ["cohere/north-mini-code:free", "nvidia/nemotron-3-super-120b-a12b:free", "google/gemma-4-31b-it:free", "poolside/laguna-s-2.1:free", "thinkingmachines/inkling:free", "nvidia/nemotron-3.5-lightning:free"],
     defaultModel: "cohere/north-mini-code:free",
     baseURL: "https://openrouter.ai/api/v1",
     keyURL: "https://openrouter.ai/keys",
@@ -117,9 +110,9 @@ export const FREE_PROVIDERS: Provider[] = [
   {
     id: "github",
     name: "GitHub Models (USA)",
-    models: ["gpt-4o", "gpt-4o-mini", "o3-mini"],
-    defaultModel: "gpt-4o-mini",
-    baseURL: "https://models.inference.ai.azure.com",
+    models: ["openai/gpt-4.1-mini", "openai/gpt-4.1", "deepseek/deepseek-v3-0324"],
+    defaultModel: "openai/gpt-4.1-mini",
+    baseURL: "https://models.github.ai/inference",
     keyURL: "https://github.com/marketplace/models",
     steps: [
       "Go to https://github.com/marketplace/models",
@@ -133,8 +126,8 @@ export const FREE_PROVIDERS: Provider[] = [
   {
     id: "nvidia",
     name: "NVIDIA NIM (USA)",
-    models: ["meta/llama-3.3-70b-instruct", "deepseek-ai/deepseek-r1", "nvidia/llama-3.1-nemotron-70b-instruct"],
-    defaultModel: "meta/llama-3.3-70b-instruct",
+    models: ["deepseek-ai/deepseek-v4.1-flash", "moonshotai/kimi-k3", "z-ai/glm-5.3", "nvidia/nemotron-3-super-120b-a12b"],
+    defaultModel: "deepseek-ai/deepseek-v4.1-flash",
     baseURL: "https://integrate.api.nvidia.com/v1",
     keyURL: "https://build.nvidia.com/",
     steps: [
@@ -181,9 +174,9 @@ export const FREE_PROVIDERS: Provider[] = [
   {
     id: "huggingface",
     name: "HuggingFace Inference (USA/France)",
-    models: ["meta-llama/Llama-3.3-70B-Instruct", "Qwen/Qwen2.5-Coder-32B-Instruct"],
+    models: ["meta-llama/Llama-3.3-70B-Instruct", "Qwen/Qwen3.8-27B"],
     defaultModel: "meta-llama/Llama-3.3-70B-Instruct",
-    baseURL: "https://api-inference.huggingface.co/v1",
+    baseURL: "https://router.huggingface.co/v1",
     keyURL: "https://huggingface.co/settings/tokens",
     steps: [
       "Go to https://huggingface.co/settings/tokens",
@@ -197,7 +190,7 @@ export const FREE_PROVIDERS: Provider[] = [
   {
     id: "sambanova",
     name: "SambaNova Cloud (USA)",
-    models: ["Meta-Llama-3.3-70B-Instruct", "Meta-Llama-3.1-405B-Instruct", "Qwen2.5-Coder-32B-Instruct"],
+    models: ["Meta-Llama-3.3-70B-Instruct", "DeepSeek-V3.2", "gpt-oss-120b", "gemma-4-31B-it"],
     defaultModel: "Meta-Llama-3.3-70B-Instruct",
     baseURL: "https://api.sambanova.ai/v1",
     keyURL: "https://cloud.sambanova.ai/",
@@ -265,7 +258,7 @@ export const FREE_PROVIDERS: Provider[] = [
     name: "OVHcloud AI Endpoints (France)",
     models: ["Qwen/Qwen2.5-Coder-32B-Instruct", "mistralai/Mistral-7B-Instruct-v0.3"],
     defaultModel: "Qwen/Qwen2.5-Coder-32B-Instruct",
-    baseURL: "https://endpoints.ai.cloud.ovh.net/v1",
+    baseURL: "https://oai.endpoints.kepler.ai.cloud.ovh.net/v1",
     keyURL: "https://www.ovhcloud.com/en/public-cloud/ai-endpoints/",
     steps: [
       "Go to https://www.ovhcloud.com/en/public-cloud/ai-endpoints/",
@@ -281,7 +274,7 @@ export const FREE_PROVIDERS: Provider[] = [
     name: "Cohere (Canada)",
     models: ["command-r-plus", "command-r"],
     defaultModel: "command-r-plus",
-    baseURL: "https://api.cohere.com/v1",
+    baseURL: "https://api.cohere.ai/compatibility/v1",
     keyURL: "https://dashboard.cohere.com/",
     steps: [
       "Go to https://dashboard.cohere.com/",

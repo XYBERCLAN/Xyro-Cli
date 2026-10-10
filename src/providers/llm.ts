@@ -606,6 +606,24 @@ export function hedgedAttempt(
   });
 }
 
+/**
+ * Never show an empty error: some failures (dropped connections, aborted
+ * streams, bare HTTP errors) carry no message at all.
+ */
+export function describeError(err: unknown): string {
+  const e = err as { message?: string; status?: number; name?: string; code?: string; cause?: { message?: string; code?: string }; xyroProvider?: string };
+  const where = e?.xyroProvider ? `${providerLabel(e.xyroProvider)}: ` : "";
+  const text = String(e?.message ?? (typeof err === "string" ? err : "")).trim();
+  const cause = e?.cause?.message || e?.cause?.code || e?.code || "";
+  if (text && !/^\d{3}( status code)?( \(no body\))?$/i.test(text)) return `${where}${text}${cause && !text.includes(cause) ? ` (${cause})` : ""}`;
+  if (e?.status) {
+    const meaning: Record<number, string> = { 400: "the request was rejected (often a bad key or an unsupported model)", 401: "the API key was rejected", 403: "access denied for this key", 404: "model or endpoint not found", 408: "the request timed out", 413: "the conversation is too long for this model", 429: "rate limit or quota reached", 500: "the provider had an internal error", 502: "the provider is unreachable (bad gateway)", 503: "the provider is overloaded or down", 504: "the provider timed out" };
+    return `${where}HTTP ${e.status}: ${meaning[e.status] ?? "request failed"}${cause ? ` (${cause})` : ""}`;
+  }
+  if (cause) return `${where}connection problem: ${cause}`;
+  return `${where}${e?.name && e.name !== "Error" ? e.name : "the request failed"} with no details from the provider. Check your connection, or try another model with /model.`;
+}
+
 /** Remember which provider an error came from (the UI names it, and asks for the right key). */
 function tagProvider(err: unknown, providerId: string): unknown {
   if (err && typeof err === "object" && !("xyroProvider" in err)) (err as { xyroProvider?: string }).xyroProvider = providerId;

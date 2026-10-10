@@ -1,0 +1,41 @@
+name: Provider health
+
+# Providers move endpoints and retire models all the time. Every Monday this
+# checks every built-in provider's address and, where model lists are public,
+# that the default and listed models still exist. If something broke it opens
+# (or updates) an issue, so it is fixed before users run into it.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - name: Check every provider
+        id: check
+        run: |
+          set +e
+          npx tsx scripts/check-providers.ts > report.md
+          echo "status=$?" >> "$GITHUB_OUTPUT"
+          cat report.md
+      - name: Open or update the issue
+        if: steps.check.outputs.status != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TITLE="Provider health: some providers need updating"
+          NUM=$(gh issue list --state open --search "$TITLE in:title" --json number -q '.[0].number')
+          if [ -n "$NUM" ]; then gh issue comment "$NUM" --body-file report.md; else gh issue create --title "$TITLE" --body-file report.md; fi

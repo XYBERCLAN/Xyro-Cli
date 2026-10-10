@@ -26,11 +26,11 @@ import { untrustedProjectWorkflows, trustProjectWorkflows } from "../agents/work
 import { runHooks, loadHooks, projectHooksStatus, trustProjectHooks, HOOK_EVENTS } from "../agent/hooks.js";
 import { mcpStatus, onMcpChange, connectedServerCount, projectMcpTrust, trustProjectMcp, reloadMcpServers } from "../mcp/manager.js";
 import { getAllModels } from "../models/catalog.js";
-import { canonicalProviderId } from "../models/live.js";
+import { canonicalProviderId, refreshConnectedProviders, healModel } from "../models/live.js";
 import { recordModelUse } from "../models/recents.js";
 import { checkForUpdate, performUpdate, installMethod, PACKAGE_NAME, shouldAnnounce, markAnnounced, fetchReleaseNotes } from "../update/updater.js";
 import { xyroVersion } from "../version.js";
-import { setRetryReporter, providerLabel } from "../providers/llm.js";
+import { setRetryReporter, providerLabel, describeError } from "../providers/llm.js";
 import { isDailyLimitError, dailyLimitMessage } from "../providers/pool.js";
 import { TuiApp } from "./app.js";
 import { interactiveSetup, FREE_PROVIDERS } from "../ui/prompts.js";
@@ -308,6 +308,19 @@ export async function runTuiMode(opts: {
     tui.addNotice(`Theme applied: **${themeId}** — scanner colors will update immediately.`);
   });
 
+  // The active model was retired by its provider: switch to the best live one, once, and say so
+  function healActiveModel(): void {
+    if (needsSetup || !currentModel) return;
+    const replacement = healModel(providerIdFor(provider), currentModel);
+    if (!replacement) return;
+    const old = currentModel;
+    currentModel = replacement;
+    agent.setModel(replacement);
+    tui.setMeta(replacement, provider);
+    savePersistedConfig({ model: replacement });
+    tui.addNotice(`${old} is no longer offered by ${provider}. Switched to **${replacement}** (/model to choose another).`, "info");
+  }
+
   tui.onProviderChange((prov, newApiKey, newModel, newBaseUrl) => {
     const finishedSetup = needsSetup && Boolean(newApiKey);
     if (finishedSetup) needsSetup = false;
@@ -328,6 +341,7 @@ export async function runTuiMode(opts: {
     savePersistedConfig({ provider, model: newModel, baseURL, apiKey });
     tui.addNotice(`Configured provider: **${prov.name}** with model **${newModel}**`);
     if (finishedSetup) tui.addNotice("You're all set. Ask XYRO anything about this project.", "success");
+    void refreshConnectedProviders({ force: true }).then(healActiveModel, () => undefined);
     syncStats();
   });
 
@@ -595,6 +609,10 @@ export async function runTuiMode(opts: {
   if (needsSetup) tui.setNeedsProvider(true);
   tui.start();
 
+  // Providers retire models all the time: refresh the live lists (cached a day)
+  // and move off a model that no longer exists
+  void refreshConnectedProviders().then(healActiveModel, () => undefined);
+
   // Quietly look for a newer release (cached 12h, 3s timeout, never blocks).
   // A new version gets a pop-up once (again after a few days if dismissed).
   void checkForUpdate().then(async (info) => {
@@ -638,11 +656,9 @@ async function runTurn(
     // Name the provider that actually failed (the free-quota pool may have moved to another one)
     const failed = e.xyroProvider ? providerLabel(e.xyroProvider) : provider;
     const ownProvider = !e.xyroProvider || provider.toLowerCase().startsWith(failed.toLowerCase());
-    const msg = e.status
-      ? `${ownProvider ? provider : failed} API error (${e.status}): ${e.message ?? ""}`
-      : err instanceof Error
-        ? err.message
-        : String(err);
+    // The heading already names the provider: don't repeat it in the detail
+    const detail = describeError({ ...(err as object), message: (err as Error)?.message, xyroProvider: undefined });
+    const msg = e.status ? `${ownProvider ? provider : failed} API error (${e.status}): ${detail}` : describeError(err);
     // The free allowance for today is gone: say so plainly, with when it comes back and what to do
     if (isDailyLimitError(err)) {
       tui.addError(dailyLimitMessage(e.xyroProvider ?? providerIdFor(provider), err));

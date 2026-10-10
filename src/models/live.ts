@@ -61,8 +61,15 @@ export function providerLoadState(providerId: string): ProviderLoadState {
   return state.get(canonicalProviderId(providerId)) ?? "idle";
 }
 
+/** Models that can't hold a conversation: never offered as XYRO's brain. */
+const NON_CHAT = /embed|safety|guard|reward|rerank|parse|whisper|tts|speech|transcri|moderation|ocr|bge-|retriev/i;
+
+export function isChatModel(id: string): boolean {
+  return !NON_CHAT.test(id);
+}
+
 function toEntries(p: Provider, models: DiscoveredModel[]): ModelEntry[] {
-  return models.map((m) => ({
+  return models.filter((m) => isChatModel(m.id)).map((m) => ({
     id: m.id,
     name: m.name,
     provider: p.name,
@@ -75,6 +82,22 @@ function toEntries(p: Provider, models: DiscoveredModel[]): ModelEntry[] {
 }
 
 /** Register every cached model list (instant, no network). */
+/**
+ * The model you use no longer exists on its provider (providers retire
+ * models every few weeks): the best live replacement, or null when your
+ * model is fine or the live list is unknown.
+ */
+export function healModel(providerId: string, model: string): string | null {
+  const id = canonicalProviderId(providerId);
+  const live = (readCache()[id]?.models ?? []).filter((m) => isChatModel(m.id));
+  if (!live.length || live.some((m) => m.id === model)) return null;
+  const preferred = providerById(id)?.defaultModel;
+  if (preferred && live.some((m) => m.id === preferred)) return preferred;
+  const free = live.filter((m) => m.isFree);
+  const pool = free.length ? free : live;
+  return (pool.find((m) => /coder|code/i.test(m.id)) ?? pool.find((m) => /instruct|chat|flash|turbo/i.test(m.id)) ?? pool[0]).id;
+}
+
 /** Free models the provider itself listed most recently (newest truth; [] when never fetched). */
 export function liveFreeModels(providerId: string): string[] {
   const entry = readCache()[canonicalProviderId(providerId)];
@@ -85,7 +108,7 @@ export function loadCachedModels(): void {
   const cache = readCache();
   for (const [pid, entry] of Object.entries(cache)) {
     if (entry?.models?.length) {
-      registerDiscoveredModels(entry.models);
+      registerDiscoveredModels(entry.models.filter((m) => isChatModel(m.id)));
       if (!state.has(pid)) state.set(pid, "ok");
     }
   }
