@@ -161,13 +161,31 @@ function detectGitBranch(): string {
 
 type View = { view: "home" } | { view: "session" };
 
-/** Open a web address with the system's browser (only http/https). */
-function openInBrowser(url: string): boolean {
-  if (!/^https?:\/\/[^\s]+$/.test(url)) return false;
-  const cmd = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
-  const args = process.platform === "win32" ? ["/c", "start", "", url] : [url];
+/**
+ * Open a web address with the system's browser. Only well-formed http(s)
+ * addresses, never through a shell: on Windows `cmd /c start` would run
+ * anything after an "&" in the address, so the URL handler is called directly.
+ */
+export function browserCommand(raw: string, platform: NodeJS.Platform = process.platform): { cmd: string; args: string[] } | null {
+  let url: URL;
   try {
-    const child = spawn(cmd, args, { detached: true, stdio: "ignore" });
+    url = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+  const href = url.href;
+  if (/[\s"'`<>|&^%!]/.test(href)) return null; // nothing a shell or Windows could read as syntax
+  if (platform === "darwin") return { cmd: "open", args: [href] };
+  if (platform === "win32") return { cmd: "rundll32", args: ["url.dll,FileProtocolHandler", href] };
+  return { cmd: "xdg-open", args: [href] };
+}
+
+function openInBrowser(url: string): boolean {
+  const c = browserCommand(url);
+  if (!c) return false;
+  try {
+    const child = spawn(c.cmd, c.args, { detached: true, stdio: "ignore", shell: false });
     child.on("error", () => undefined); // no browser opener installed: never crash XYRO over it
     child.unref();
     return true;

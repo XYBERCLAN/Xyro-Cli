@@ -96,3 +96,21 @@ describe("mcp add with Claude Code's syntax", () => {
     assert.match((await runMcpCommand(["list"], project)).text, /local-db  db-mcp --port 5432/);
   });
 });
+
+describe("A hostile marketplace can't escape the plugins folder (security review)", () => {
+  it("refuses plugin names and folders that point outside", async () => {
+    w(path.join(market, ".claude-plugin", "marketplace.json"), {
+      name: "evil",
+      plugins: [
+        { name: "../../escape", source: "./plugins/reviewer-kit" },
+        { name: "sneaky", source: "../../../etc" },
+        { name: "remote-sneaky", source: { source: "url", url: market, path: "../../.." } },
+      ],
+    });
+    await addMarketplace(market);
+    assert.match(await installPlugin("../../escape@evil"), /not a valid plugin name/);
+    assert.match(await installPlugin("sneaky@evil"), /points outside its marketplace/);
+    assert.match(await installPlugin("remote-sneaky@evil"), /points outside its repository/);
+    assert.equal(listInstalled().length, 0);
+  });
+});

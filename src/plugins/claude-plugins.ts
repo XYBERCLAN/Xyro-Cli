@@ -48,6 +48,8 @@ export interface PluginContents {
   hooks: boolean;
 }
 
+const SAFE_NAME = /^[A-Za-z0-9][\w.-]{0,63}$/;
+
 const marketsFile = () => join(getConfigDir(), "plugin-marketplaces.json");
 const installedFile = () => join(getConfigDir(), "claude-plugins.json");
 const marketsDir = () => join(getConfigDir(), "marketplaces");
@@ -163,6 +165,8 @@ export function pluginContents(dir: string): PluginContents {
 export async function installPlugin(spec: string): Promise<string> {
   const [pluginName, marketName] = spec.trim().split("@");
   if (!pluginName) return "❌ Usage: /plugin install <plugin>@<marketplace>";
+  // The name becomes a folder: never a path (a marketplace could list "../../something")
+  if (!SAFE_NAME.test(pluginName)) return `❌ "${pluginName}" is not a valid plugin name.`;
   const markets = listMarketplaces();
   const candidates = markets.filter((m) => !marketName || m.name === marketName);
   if (!candidates.length) return markets.length ? `❌ No marketplace named "${marketName}". Known: ${markets.map((m) => m.name).join(", ")}` : "❌ Add a marketplace first: /plugin marketplace add <owner/repo>";
@@ -182,13 +186,18 @@ export async function installPlugin(spec: string): Promise<string> {
   if (typeof src === "string" && !gitUrlFor(src)) {
     // A folder inside the marketplace ("./plugins/foo")
     const from = resolve(found.market.dir, src);
-    if (!from.startsWith(resolve(found.market.dir))) return "❌ That plugin's folder points outside its marketplace.";
+    if (!isPathInside(from, found.market.dir) || !fs.existsSync(from) || !isPathInside(fs.realpathSync(from), fs.realpathSync(found.market.dir))) return "❌ That plugin's folder points outside its marketplace.";
     err = await fetchInto(from, dest);
   } else {
     const remote = typeof src === "string" ? src : src.repo ?? src.url ?? "";
     err = await fetchInto(remote, dest);
     if (!err && typeof src === "object" && src.path) {
-      const inner = join(dest, src.path);
+      // A sub-folder of the downloaded repository: it must stay inside it
+      const inner = resolve(dest, src.path);
+      if (isAbsolute(src.path) || src.path.split(/[\\/]/).includes("..") || !isPathInside(inner, dest) || inner === resolve(dest) || !fs.existsSync(inner) || !isPathInside(fs.realpathSync(inner), fs.realpathSync(dest))) {
+        fs.rmSync(dest, { recursive: true, force: true });
+        return `❌ ${pluginName}'s folder points outside its repository.`;
+      }
       const tmp = `${dest}.inner`;
       fs.renameSync(inner, tmp);
       fs.rmSync(dest, { recursive: true, force: true });
@@ -220,6 +229,7 @@ export async function installPlugin(spec: string): Promise<string> {
 }
 
 export function uninstallPlugin(name: string): string {
+  if (!SAFE_NAME.test(name)) return `❌ "${name}" is not a valid plugin name.`;
   const all = readJson<Record<string, InstalledPlugin>>(installedFile(), {});
   if (!all[name]) return `❌ "${name}" is not installed. /plugin list shows what is.`;
   fs.rmSync(all[name].dir, { recursive: true, force: true });

@@ -38,3 +38,16 @@ describe("Links and copying in the chat", () => {
     assert.equal(s.lastClick, null);
   });
 });
+
+describe("Opening links safely (security review)", () => {
+  it("only well-formed http(s) addresses, never through a shell", async () => {
+    const { browserCommand } = await import("../tui/app.js");
+    assert.deepEqual(browserCommand("https://openrouter.ai/keys", "win32"), { cmd: "rundll32", args: ["url.dll,FileProtocolHandler", "https://openrouter.ai/keys"] });
+    assert.deepEqual(browserCommand("https://openrouter.ai/keys", "linux"), { cmd: "xdg-open", args: ["https://openrouter.ai/keys"] });
+    assert.equal(browserCommand("https://x.example/a&calc.exe", "win32"), null, "an & would run a command through cmd");
+    assert.equal(browserCommand("https://x.example/^|whoami", "win32"), null);
+    assert.equal(browserCommand("file:///etc/passwd", "linux"), null);
+    assert.equal(browserCommand("javascript:alert(1)", "linux"), null);
+    assert.equal(browserCommand("not a url", "linux"), null);
+  });
+});
