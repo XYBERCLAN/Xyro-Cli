@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFile } from "../tools/read.js";
 import { writeTodos } from "../tools/todos.js";
 import { glob } from "../tools/glob.js";
-import { getToolDefinitions } from "../tools/registry.js";
+import { getAllToolDefinitions } from "../tools/registry.js";
 import { writeFileSync, mkdirSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
@@ -80,7 +80,7 @@ describe("glob pattern matching", () => {
 
 describe("Tool Registry completeness", () => {
   it("registers all upgraded tools in definitions", () => {
-    const defs = getToolDefinitions();
+    const defs = getAllToolDefinitions(); // registered (some load on demand for the coordinator)
     const names = defs.map((d) => d.function.name);
 
     assert.ok(names.includes("read_file"));

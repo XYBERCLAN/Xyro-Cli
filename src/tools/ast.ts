@@ -19,7 +19,7 @@ function createProject(): Project {
 const SUPPORTED_EXTS = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]);
 
 export async function astInspectFile(args: { path: string }): Promise<string> {
-  const resolved = resolveProjectPath(args.path);
+  const resolved = resolveProjectPath(args.path, "read");
   if (!resolved.ok) return resolved.message;
   const filePath = resolved.path;
   if (!existsSync(filePath)) {
@@ -129,7 +129,7 @@ export async function astFindSymbol(args: { symbol: string; path?: string }): Pr
   const symbol = args.symbol.trim();
   if (!symbol) return "❌ Symbol name is required";
 
-  const resolved = resolveProjectPath(args.path || ".");
+  const resolved = resolveProjectPath(args.path || ".", "read");
   if (!resolved.ok) return resolved.message;
   const dir = resolved.path;
   const ignorePatterns = Array.from(IGNORED_DIRS).flatMap((d) => [`**/${d}/**`, `**/${d}`]);

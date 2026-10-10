@@ -1,3 +1,4 @@
+import { toolGroupsPrompt } from "../tools/registry.js";
 import { profilePrompt } from "./learning.js";
 import { intentsPrompt } from "./intents.js";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
@@ -6,7 +7,7 @@ import { Message } from "./types.js";
 import { SYSTEM_PROMPT, PLAN_MODE_INSTRUCTIONS } from "../config/constants.js";
 import { getHistoryDir, getEnvironmentContext } from "../config/platform.js";
 import { loadProjectContext } from "../config/loader.js";
-import { skillsIndex } from "../agents/skills-catalog.js";
+import { skillsIndex, shortDesc } from "../agents/skills-catalog.js";
 import { loadSkills } from "../config/skills.js";
 import { getExperts } from "../agents/experts.js";
 import { historyToMarkdown } from "./usage.js";
@@ -53,7 +54,7 @@ export class HistoryManager {
     }
     // Team roster: the experts XYRO can activate with delegate / delegate_team
     const roster = getExperts()
-      .map((e) => `- ${e.name}: ${e.description}${e.source !== "builtin" ? ` (${e.source})` : ""}`)
+      .map((e) => `- ${e.name}: ${shortDesc(e.description, 60)}${e.source !== "builtin" ? ` (${e.source})` : ""}`)
       .join("\n");
     systemContent += `\n\n## Your team\n${roster}`;
     // Loose SKILL.md files are project guidance: always in the prompt (small, capped)
@@ -61,6 +62,9 @@ export class HistoryManager {
     if (guidance) {
       systemContent += `\n\n${guidance}`;
     }
+    // Specialised tool groups are loaded on demand (keeps every request small)
+    const groups = toolGroupsPrompt();
+    if (groups) systemContent += `\n\n${groups}`;
     // What XYRO learned about how this user works (evidence-backed, capped)
     const profile = profilePrompt();
     if (profile) systemContent += `\n\n${profile}`;

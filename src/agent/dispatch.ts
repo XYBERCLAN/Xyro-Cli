@@ -23,6 +23,8 @@ export interface Dispatch {
   multiStep: boolean;
   /** Coordinator note added to the user's message (empty when none is needed) */
   note: string;
+  /** Tight request budget: no plan reminder, fewer expert steps */
+  frugal?: boolean;
 }
 
 const QUESTION = /^(what|why|how|who|where|when|which|is|are|does|do|can|could|should|explain|tell me|show me)\b/i;
@@ -40,7 +42,7 @@ export function looksMultiStep(text: string): boolean {
   return actions >= 2 || (actions >= 1 && (joined >= 2 || t.length > 160));
 }
 
-export function dispatchFor(text: string): Dispatch | null {
+export function dispatchFor(text: string, budget: { frugal: boolean; left?: number } = { frugal: false }): Dispatch | null {
   const t = text.trim();
   if (!t || t.startsWith("[") || t.startsWith("/")) return null;
   const ranked = routeTask(t).filter((r) => r.score > 0 && r.expert.name !== "verifier");
@@ -58,6 +60,13 @@ export function dispatchFor(text: string): Dispatch | null {
       const e = getExperts().find((x) => x.name === n);
       if (e) team.push({ name: e.name, title: e.title, why: "general work" });
     }
+  }
+
+  // A tight daily request budget changes the play: fewer, fuller steps, little delegation
+  if (budget.frugal) {
+    const left = budget.left !== undefined ? ` (about ${budget.left} requests left today on this provider)` : "";
+    const frugalNote = `[coordinator] Request budget is tight${left}. Every step costs one request, and every expert step costs one too. Work directly in as few steps as possible: batch independent tool calls in ONE response, write whole files instead of many small edits, skip write_todos unless the job is long, and delegate only what you truly cannot do yourself.`;
+    return { team, multiStep, note: multiStep || budget.left !== undefined ? frugalNote : "", frugal: true };
   }
 
   const note = multiStep

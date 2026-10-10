@@ -48,11 +48,20 @@ export function savePersistedConfig(config: PersistedConfig): void {
 // Keys are stored per providerId so switching models/providers never sends
 // one provider's key to another provider's endpoint (401 "User not found").
 
+const keyListeners: ((providerId: string) => void)[] = [];
+
+/** Hear about a NEW key being saved for a provider (the quota pool forgets that provider's old trouble). */
+export function onProviderKeyChanged(fn: (providerId: string) => void): void {
+  keyListeners.push(fn);
+}
+
 export function saveProviderKey(providerId: string, apiKey: string): void {
   const id = providerId.trim();
   const key = apiKey.trim();
   if (!id || !key) return;
+  const changed = getProviderKey(id) !== key;
   savePersistedConfig({ providerKeys: { [id]: key } });
+  if (changed) for (const fn of keyListeners) fn(id);
 }
 
 export function getProviderKey(providerId: string): string | undefined {

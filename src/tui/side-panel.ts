@@ -53,12 +53,20 @@ function moodColor(mood: PanelMood): string {
   return { idle: BRAND.ramp[1], thinking: BRAND.ramp[0], happy: t.success, error: t.error, asking: BRAND.lemon }[mood];
 }
 
+/** The robots to draw: delegated experts, then experts who recognised the work, else the resting team. */
+export function teamBots(state: Pick<PanelState, "agents" | "instinct" | "roster">): { team: { status: string }[]; bots: ReturnType<typeof botsFor> } {
+  const delegated = state.agents ?? [];
+  const instinct = (state.instinct ?? []).filter((i) => !delegated.some((a) => a.expert === i.expert && a.status === "running"));
+  const team = [...delegated, ...instinct];
+  return { team, bots: botsFor(team, state.roster ?? []) };
+}
+
 export function renderSidePanel(
   state: PanelState,
   width: number,
   height: number,
   tick: number,
-  opts: { mascot?: boolean; reducedMotion?: boolean } = {}
+  opts: { mascot?: boolean; reducedMotion?: boolean; team?: boolean } = {}
 ): { rows: RenderLine[]; hits: PanelHit[]; used: number } {
   const t = currentTheme();
   const innerW = width - 3; // "│ " on the left, 1 space on the right
@@ -184,11 +192,9 @@ export function renderSidePanel(
 
   // ── the team, animated, in whatever space is left at the bottom ─────────
   // Delegated experts first; then whoever recognised XYRO's own work as theirs
-  const delegated = state.agents ?? [];
-  const instinct = (state.instinct ?? []).filter((i) => !delegated.some((a) => a.expert === i.expert && a.status === "running"));
-  const team = [...delegated, ...instinct];
-  const bots = botsFor(team, state.roster ?? []);
-  const grid = teamGrid(bots, innerW, opts.reducedMotion ? 0 : tick, height - body.length - 2);
+  const { team, bots } = teamBots(state);
+  // (When the team has its own strip beside the input box, the panel keeps its space for the plan)
+  const grid = opts.team === false ? [] : teamGrid(bots, innerW, opts.reducedMotion ? 0 : tick, height - body.length - 2);
   if (grid.length) {
     while (body.length < height - grid.length - 1) blank();
     const working = team.filter((a) => a.status === "running").length;

@@ -7,7 +7,7 @@ export async function readFile(args: {
   start_line?: number;
   end_line?: number;
 }): Promise<string> {
-  const resolveResult = resolveProjectPath(args.path);
+  const resolveResult = resolveProjectPath(args.path, "read");
   if (!resolveResult.ok) return resolveResult.message;
   const filePath = resolveResult.path;
   const content = readFileSync(filePath, { encoding: "utf-8", flag: "r" });

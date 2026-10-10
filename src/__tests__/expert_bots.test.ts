@@ -114,3 +114,29 @@ describe("XYRO mascot wakes up and works", () => {
     }
   });
 });
+
+describe("Team strip beside the input box", () => {
+  it("always the same size, robots sit on the bottom edge, extras become +N", async () => {
+    const { teamStrip, miniBotFrame, MINI_W, MINI_H } = await import("../tui/expert-bots.js");
+    for (const state of ["running", "ready", "done", "failed", "idle"] as const) {
+      for (let tick = 0; tick < 30; tick++) {
+        const f = miniBotFrame({ name: "builder", title: "builder", state, since: tick * 100 }, tick);
+        assert.equal(f.length, MINI_H);
+        for (const r of f) assert.equal(width(r), MINI_W, `${state}@${tick}`);
+      }
+    }
+    const many = ["scout", "architect", "builder", "tester", "reviewer", "security"].map((n) => ({ name: n, title: n, state: "idle" as const }));
+    const strip = teamStrip(many, 36, 5, 0);
+    assert.equal(strip.length, 5);
+    assert.ok(strip.every((r) => width(r) <= 36));
+    assert.match(text(strip), /\+3/);
+    assert.equal(text([strip[0]]).trim(), "", "the robots sit on the bottom edge");
+  });
+
+  it("the side panel leaves the team out when it has its own strip", () => {
+    const state = { mood: "idle" as const, caption: "", todos: [], plan: null, roster: [{ name: "scout", title: "scout" }] };
+    const panelText = (opts: { mascot: boolean; team?: boolean }) => text(renderSidePanel(state, 40, 40, 0, opts).rows.map((r) => r.spans));
+    assert.match(panelText({ mascot: false }), /TEAM/);
+    assert.doesNotMatch(panelText({ mascot: false, team: false }), /TEAM/);
+  });
+});

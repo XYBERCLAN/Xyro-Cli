@@ -1,5 +1,7 @@
 // TUI-mode entry: config resolution + full-screen XYRO terminal interface.
 
+import { homedir } from "node:os";
+import { resolve as resolvePath } from "node:path";
 import pc from "picocolors";
 import OpenAI from "openai";
 import { Agent, AgentOutput } from "../agent/loop.js";
@@ -28,6 +30,7 @@ import { recordModelUse } from "../models/recents.js";
 import { checkForUpdate, performUpdate, installMethod, PACKAGE_NAME, shouldAnnounce, markAnnounced, fetchReleaseNotes } from "../update/updater.js";
 import { xyroVersion } from "../version.js";
 import { setRetryReporter, providerLabel } from "../providers/llm.js";
+import { isDailyLimitError, dailyLimitMessage } from "../providers/pool.js";
 import { TuiApp } from "./app.js";
 import { interactiveSetup, FREE_PROVIDERS } from "../ui/prompts.js";
 import { loadPersistedConfig, savePersistedConfig, saveProviderKey, getProviderKey } from "../config/persist.js";
@@ -449,6 +452,11 @@ export async function runTuiMode(opts: {
       void reloadMcpServers();
     })
   );
+  // XYRO treats the folder it starts in as the project: warn when that is the home folder or the disk root
+  const startDir = resolvePath(process.cwd());
+  if (startDir === resolvePath(homedir()) || startDir === resolvePath("/")) {
+    tui.setHomeNotice({ label: "folder", text: `XYRO started in ${startDir === "/" ? "the root folder" : "your home folder"}, so it treats everything in it as the project. Open it inside a project: cd my-project && xyro` });
+  }
   if (projectHooksStatus() === "untrusted") {
     tui.setHomeNotice({ label: "hooks", text: "This project defines hooks — review and enable them with /hooks" });
   }
@@ -583,6 +591,11 @@ export async function runTuiMode(opts: {
   });
 }
 
+/** Provider id from its display name ("OpenRouter (USA)" → "openrouter"). */
+function providerIdFor(name: string): string {
+  return FREE_PROVIDERS.find((p) => p.name === name || name.toLowerCase().startsWith(p.name.replace(/\s*\(.*\)$/, "").toLowerCase()))?.id ?? name.toLowerCase();
+}
+
 async function runTurn(
   tui: TuiApp,
   agent: Agent,
@@ -612,6 +625,11 @@ async function runTurn(
       : err instanceof Error
         ? err.message
         : String(err);
+    // The free allowance for today is gone: say so plainly, with when it comes back and what to do
+    if (isDailyLimitError(err)) {
+      tui.addError(dailyLimitMessage(e.xyroProvider ?? providerIdFor(provider), err));
+      return;
+    }
     tui.addError(msg);
     // Only ask for a new key when YOUR provider rejected yours
     if ((e.status === 401 || e.status === 403) && ownProvider) onAuthError?.(e.status);

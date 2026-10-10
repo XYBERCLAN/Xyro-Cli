@@ -9,7 +9,7 @@ import { GitIgnoreMatcher } from "./gitignore.js";
 export async function searchCode(args: { pattern: string; path?: string }): Promise<string> {
   const pattern = args.pattern.toLowerCase();
   const dir = args.path || ".";
-  const resolved = resolveProjectPath(dir);
+  const resolved = resolveProjectPath(dir, "read");
   if (!resolved.ok) return resolved.message;
   const matcher = new GitIgnoreMatcher(resolved.path);
 

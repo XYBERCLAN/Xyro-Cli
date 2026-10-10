@@ -28,7 +28,7 @@ function walk(dir: string, depth = 0, maxDepth = 3, matcher?: GitIgnoreMatcher):
 }
 
 export async function listFiles(args: { path?: string }): Promise<string> {
-  const resolveResult = resolveProjectPath(args.path || ".");
+  const resolveResult = resolveProjectPath(args.path || ".", "read");
   if (!resolveResult.ok) return resolveResult.message;
   const dir = resolveResult.path;
   const matcher = new GitIgnoreMatcher(dir);

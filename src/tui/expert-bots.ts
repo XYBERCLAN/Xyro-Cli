@@ -199,3 +199,69 @@ export function botsFor(agents: { expert: string; title: string; status: "runnin
   }
   return roster.map((r) => ({ name: r.name, title: r.name, state: "idle" as const }));
 }
+
+// ─── compact robots: the strip beside the input box ─────────────────────────
+
+export const MINI_W = 7;
+export const MINI_H = 4;
+
+/**
+ * A 4-row robot for the always-visible strip: helmet with emblem, eyes,
+ * mouth, name. Same moods as the big one; work shows as eyes following the
+ * job and a spark running along the helmet.
+ */
+export function miniBotFrame(bot: Bot, tick: number, seed = 0): StyledSpan[][] {
+  const t = currentTheme();
+  const color = bot.state === "failed" ? t.error : bot.state === "idle" ? tint(botColor(bot.name), 0.55) : botColor(bot.name);
+  const local = tick + seed * 7;
+  const since = bot.since ?? WAKE_MS;
+  const waking = (bot.state === "running" || bot.state === "ready") && since < WAKE_MS;
+  const phase = since < WAKE_MS * 0.33 ? "doze" : since < WAKE_MS * 0.66 ? "pop" : "hop";
+
+  let eyes = " ● ● ";
+  if (waking) eyes = phase === "doze" ? " - - " : phase === "pop" ? " O O " : " ^ ^ ";
+  else if (bot.state === "running") {
+    eyes = workBeat(workStyle(bot.name), Math.floor(local / 4)).eyes;
+    if (local % 37 === 0) eyes = " ─ ─ ";
+  } else if (bot.state === "ready") eyes = local % 41 === 0 ? " ─ ─ " : " ● ● ";
+  else if (bot.state === "done") eyes = " ^ ^ ";
+  else if (bot.state === "failed") eyes = " x x ";
+  else eyes = Math.floor(local / 12) % 4 === 0 ? " - z " : " - - "; // dozing
+
+  // Helmet: a spark runs along it while working; the emblem glows
+  const spark = bot.state === "running" && !waking ? Math.floor(local / 2) % 6 : -1;
+  const edge = (i: number) => (i === spark ? "•" : "─");
+  const left = edge(0) + edge(1);
+  const right = edge(3) + edge(4);
+  const mouth = bot.state === "done" || (waking && phase === "hop") ? "╰──‿──╯" : bot.state === "failed" ? "╰──^──╯" : waking && phase === "pop" ? "╰──o──╯" : "╰─────╯";
+  const label = (bot.worker ? `·${bot.title.replace(/ worker.*$/i, "")}` : bot.title).toLowerCase().slice(0, MINI_W);
+  const pad = Math.floor((MINI_W - label.length) / 2);
+  return [
+    [span("╭" + left, { fg: color }), span(emblem(bot.name, bot.worker), { fg: bot.state === "idle" ? color : "#FFFFFF", bold: true }), span(right + "╮", { fg: color })],
+    [span("│", { fg: color }), span(eyes, { fg: bot.state === "failed" ? t.error : bot.state === "idle" ? tint(t.text, 0.5) : "#FFFFFF", bold: true }), span("│", { fg: color })],
+    [span(mouth, { fg: color })],
+    [span(" ".repeat(pad) + label + " ".repeat(MINI_W - pad - label.length), { fg: bot.state === "running" ? t.text : tint(t.textMuted, 0.8), bold: bot.state === "running" })],
+  ];
+}
+
+/** Robots side by side in `width` × `height` cells (extra robots become "+N"). Always exactly `height` rows. */
+export function teamStrip(bots: Bot[], width: number, height: number, tick: number): StyledSpan[][] {
+  const rows: StyledSpan[][] = Array.from({ length: height }, () => []);
+  if (height < MINI_H || !bots.length) return rows;
+  const fit = Math.max(1, Math.floor((width + 1) / (MINI_W + 1)));
+  const shown = bots.length > fit ? bots.slice(0, fit - 1) : bots;
+  const extra = bots.length - shown.length;
+  const top = height - MINI_H; // sit on the bottom edge, next to the input box
+  shown.forEach((b, i) => {
+    const f = miniBotFrame(b, tick, i);
+    for (let r = 0; r < MINI_H; r++) {
+      if (i) rows[top + r].push(span(" "));
+      rows[top + r].push(...f[r]);
+    }
+  });
+  if (extra > 0) {
+    const t = currentTheme();
+    rows[top + 1].push(span(`  +${extra}`, { fg: tint(t.textMuted, 0.9), bold: true }));
+  }
+  return rows;
+}

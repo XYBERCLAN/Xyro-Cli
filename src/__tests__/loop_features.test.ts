@@ -11,7 +11,7 @@ import {
   canonicalSummaryHeader,
 } from "../agent/loop.js";
 import { HistoryManager } from "../agent/history.js";
-import { getPlanModeToolDefinitions, getToolDefinitions, executeTool } from "../tools/registry.js";
+import { getPlanModeToolDefinitions, getToolDefinitions, getAllToolDefinitions, executeTool } from "../tools/registry.js";
 import { shouldAskPermission, requestPermission } from "../tools/permissions.js";
 import { findFiles } from "../tools/find_files.js";
 import { clearSkillsCache, loadSkills } from "../config/skills.js";
@@ -147,7 +147,8 @@ describe("Paquet C — plan mode tool restriction", () => {
 
   it("keeps read-only tools and excludes mutating ones", () => {
     const planNames = getPlanModeToolDefinitions().map((t) => t.function.name);
-    const allNames = getToolDefinitions().map((t) => t.function.name);
+    // Every registered tool (the coordinator loads some groups on demand)
+    const allNames = getAllToolDefinitions().map((t) => t.function.name);
 
     for (const name of ["read_file", "list_files", "glob", "search_code", "find_files", "write_todos", "end_turn"]) {
       assert.ok(planNames.includes(name), `plan mode should keep ${name}`);

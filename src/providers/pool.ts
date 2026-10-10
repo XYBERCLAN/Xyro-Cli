@@ -11,7 +11,7 @@
 import * as fs from "node:fs";
 import { join } from "node:path";
 import { getConfigDir } from "../config/platform.js";
-import { getProviderKey } from "../config/persist.js";
+import { getProviderKey, onProviderKeyChanged } from "../config/persist.js";
 import { FREE_PROVIDERS } from "../ui/prompts.js";
 import { getAllModels } from "../models/catalog.js";
 import { liveFreeModels } from "../models/live.js";
@@ -184,6 +184,70 @@ export function isFallbackableError(err: unknown): boolean {
   );
 }
 
+/** The provider's free allowance for TODAY is used up (not a per-minute rate limit). */
+export function isDailyLimitError(err: unknown): boolean {
+  const msg = (err instanceof Error ? err.message : String((err as { message?: string })?.message ?? err)).toLowerCase();
+  return /per[- ]?day|daily|free-models-per-day|requests per day|rpd|limit reached for the day|quota exceeded for metric/.test(msg);
+}
+
+/** When a provider's daily allowance comes back (OpenRouter: 00:00 UTC; Google: midnight Pacific). */
+export function dailyResetAt(providerId: string, now = Date.now()): number {
+  if (providerId === "google") {
+    // Midnight in America/Los_Angeles, expressed in UTC
+    const parts = new Intl.DateTimeFormat("en-US", { timeZone: "America/Los_Angeles", hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" }).formatToParts(new Date(now));
+    const get = (t: string) => Number(parts.find((p) => p.type === t)?.value ?? 0) % 24;
+    const sinceMidnight = (get("hour") * 3600 + get("minute") * 60 + get("second")) * 1000;
+    return now - sinceMidnight + 24 * 3600_000;
+  }
+  const d = new Date(now);
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1);
+}
+
+function inWords(ms: number): string {
+  const m = Math.max(1, Math.round(ms / 60_000));
+  return m >= 60 ? `${Math.floor(m / 60)}h ${m % 60}m` : `${m} min`;
+}
+
+/** Known free daily request allowances (OpenRouter: 50 without credit, 1000 with $10+). */
+const KNOWN_DAILY_CAPS: Record<string, number> = { openrouter: 50 };
+
+export interface RequestBudget {
+  /** Requests a day, when known */
+  cap?: number;
+  /** Requests left today, when the cap is known */
+  left?: number;
+  /** Tight budget: work in as few requests as possible */
+  frugal: boolean;
+}
+
+/** How many requests this provider is likely to allow for the rest of today. */
+export function requestBudget(providerId: string): RequestBudget {
+  const u = usage(providerId);
+  let cap: number | undefined = u.learnedDailyRequests || KNOWN_DAILY_CAPS[providerId];
+  // More successful requests than the known free cap today: this account has a bigger allowance
+  if (cap && !u.learnedDailyRequests && u.requests > cap + 10) cap = undefined;
+  if (!cap) return { frugal: false };
+  return { cap, left: Math.max(0, cap - u.requests), frugal: cap <= 200 };
+}
+
+/** One clear message when a provider's free daily allowance is used up. */
+export function dailyLimitMessage(providerId: string, err: unknown, now = Date.now()): string {
+  const name = FREE_PROVIDERS.find((p) => p.id === providerId)?.name.replace(/\s*\(.*\)$/, "") ?? providerId;
+  const reset = dailyResetAt(providerId, now);
+  const used = usage(providerId).requests;
+  const others = FREE_PROVIDERS.filter((p) => p.id !== providerId && p.id !== "local" && getProviderKey(p.id) && !isKeyRejected(p.id, getProviderKey(p.id)!) && !isCoolingDown(p.id, now));
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  const lines = [
+    `Your free daily limit on ${name} is used up${used ? ` (${used} requests today)` : ""}.`,
+    `It resets in ${inWords(reset - now)} (${new Date(reset).toISOString().slice(11, 16)} UTC).`,
+    "Until then you can:",
+    ...(others.length ? [`- keep going: XYRO switches to ${others.map((p) => p.name.replace(/\s*\(.*\)$/, "")).join(", ")} automatically`] : ["- connect another free provider with /provider (Google AI Studio and Groq have free keys): XYRO then switches by itself"]),
+    ...(providerId === "openrouter" || /credits/.test(msg) ? ["- add $10 of credit on openrouter.ai to raise the free limit to 1000 requests a day"] : []),
+    "- or wait for the reset",
+  ];
+  return lines.join("\n");
+}
+
 function isQuotaExhausted(err: unknown): boolean {
   const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
   return /quota|exhausted|per day|daily|insufficient credits|limit reached for the day/.test(msg) || (err as { status?: number })?.status === 402;
@@ -204,13 +268,20 @@ function cooldownMs(err: unknown): number {
   return isQuotaExhausted(err) ? 60 * 60_000 : 60_000;
 }
 
+/** Cooldown for an error, knowing the provider: a used-up DAILY allowance rests until it resets. */
+function cooldownFor(providerId: string, err: unknown): number {
+  return isDailyLimitError(err) ? Math.max(60_000, dailyResetAt(providerId) - Date.now()) : cooldownMs(err);
+}
+
 /** Record a rate-limit / quota error and put the provider on cooldown. */
 export function noteRateLimit(providerId: string, err: unknown): void {
   if (!providerId) return;
   const u = usage(providerId);
   u.rateLimits++;
-  u.cooldownUntil = Date.now() + cooldownMs(err);
+  u.cooldownUntil = Date.now() + cooldownFor(providerId, err);
   if (isQuotaExhausted(err)) u.learnedDailyRequests = Math.max(u.learnedDailyRequests ?? 0, u.requests);
+  // "Add 10 credits to unlock 1000 free model requests per day" → this account is on the 50/day tier
+  if (/unlock 1000 free model requests/i.test(String((err as { message?: string })?.message ?? err))) u.learnedDailyRequests = KNOWN_DAILY_CAPS.openrouter;
   save();
 }
 
@@ -317,7 +388,8 @@ export function hedgeDelayMs(providerId: string): number {
   const env = Number(process.env.XYRO_HEDGE_MS);
   if (env > 0) return env;
   const t = usage(providerId).ttftMs;
-  return t === undefined ? 8000 : Math.min(15_000, Math.max(2500, Math.round(t * 2.5)));
+  // Free tiers count requests: hedge only genuinely stuck requests, never a model that is just thinking
+  return t === undefined ? 15_000 : Math.min(30_000, Math.max(12_000, Math.round(t * 3)));
 }
 
 export interface ProviderCapacity {
@@ -371,6 +443,20 @@ export function shouldAnnounceSwitch(key: string, now = Date.now()): boolean {
   announced.set(key, now);
   return true;
 }
+
+/**
+ * A new key (or a new account) starts fresh: the old key's rate limit, rest
+ * period and "rejected" mark don't apply to it.
+ */
+export function resetProviderState(providerId: string): void {
+  const u = load()[providerId];
+  if (!u) return;
+  u.cooldownUntil = 0;
+  u.badKey = undefined;
+  u.rateLimits = 0;
+  save();
+}
+onProviderKeyChanged(resetProviderState);
 
 export function _resetPool(): void {
   cache = {};

@@ -73,7 +73,7 @@ function walkDir(dir: string, root: string, results: string[], matcher: GitIgnor
 }
 
 export async function glob(args: { pattern: string; path?: string }): Promise<string> {
-  const resolveResult = resolveProjectPath(args.path || ".");
+  const resolveResult = resolveProjectPath(args.path || ".", "read");
   if (!resolveResult.ok) return resolveResult.message;
   const root = resolveResult.path;
   const pattern = args.pattern;

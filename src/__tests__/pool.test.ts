@@ -217,11 +217,11 @@ describe("Hedged requests", () => {
   it("learns each provider's usual first-token time to decide when to hedge", async () => {
     delete process.env.XYRO_HEDGE_MS;
     try {
-      assert.equal(hedgeDelayMs("google"), 8000, "unknown provider: patient default");
+      assert.equal(hedgeDelayMs("google"), 15_000, "unknown provider: patient default");
       await ask();
       const learned = poolStatus().find((p) => p.providerId === "google")!.typicalFirstTokenMs!;
       assert.ok(learned >= 0 && learned < 1000, String(learned));
-      assert.equal(hedgeDelayMs("google"), 2500, "fast provider: hedge after the floor");
+      assert.equal(hedgeDelayMs("google"), 12_000, "never hedges a model that is merely thinking");
     } finally {
       process.env.XYRO_HEDGE_MS = "150";
     }
@@ -301,5 +301,43 @@ describe("Model switch notices", () => {
     assert.equal(switches.length, 1);
     assert.equal(switches[0].from, "gemini-flash-latest");
     assert.equal(switches[0].reason, "model unavailable");
+  });
+});
+
+describe("Daily limits and request budgets", () => {
+  const dailyErr = Object.assign(new Error("429 Rate limit exceeded: free-models-per-day. Add 10 credits to unlock 1000 free model requests per day"), { status: 429 });
+
+  it("recognises a used-up daily allowance and rests the provider until it resets", async () => {
+    const { isDailyLimitError, dailyResetAt } = await import("../providers/pool.js");
+    assert.equal(isDailyLimitError(dailyErr), true);
+    assert.equal(isDailyLimitError(Object.assign(new Error("Rate limit exceeded: 20 per minute"), { status: 429 })), false);
+    noteRateLimit("openrouter", dailyErr);
+    const st = poolStatus().find((p) => p.providerId === "openrouter")!;
+    const reset = dailyResetAt("openrouter");
+    assert.ok(Math.abs(Date.now() + st.coolingForMs - reset) < 5000, "rests until 00:00 UTC");
+    assert.equal(new Date(reset).getUTCHours(), 0);
+  });
+
+  it("says clearly that today's free requests are gone, when they come back, and what to do", async () => {
+    const { dailyLimitMessage } = await import("../providers/pool.js");
+    const now = Date.UTC(2026, 9, 10, 20, 30);
+    const msg = dailyLimitMessage("openrouter", dailyErr, now);
+    assert.match(msg, /^Your free daily limit on OpenRouter is used up/);
+    assert.match(msg, /resets in 3h 30m \(00:00 UTC\)/);
+    assert.match(msg, /add \$10 of credit/);
+    assert.match(msg, /continuing|keep going|\/provider/);
+  });
+
+  it("a small daily allowance switches XYRO to request-saving mode", async () => {
+    const { requestBudget } = await import("../providers/pool.js");
+    const { dispatchFor } = await import("../agent/dispatch.js");
+    const b = requestBudget("openrouter");
+    assert.equal(b.frugal, true);
+    assert.equal(b.cap, 50);
+    const d = dispatchFor("add a login page, write tests for it and update the README", b)!;
+    assert.equal(d.frugal, true);
+    assert.match(d.note, /Request budget is tight \(about \d+ requests left today/);
+    assert.match(d.note, /batch independent tool calls in ONE response/);
+    assert.equal(requestBudget("google").frugal, false, "no known small cap: normal mode");
   });
 });

@@ -78,7 +78,7 @@ export async function findFiles(args: {
   const query = (args.query || "").trim();
   if (!query) return "❌ find_files: query is required";
 
-  const resolveResult = resolveProjectPath(args.path || ".");
+  const resolveResult = resolveProjectPath(args.path || ".", "read");
   if (!resolveResult.ok) return resolveResult.message;
   const root = resolveResult.path;
 

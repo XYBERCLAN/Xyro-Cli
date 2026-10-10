@@ -1,17 +1,12 @@
 /**
  * write_todos — In-session task tracker.
- * Persists a todo list to ~/.xyro/todos.json for the duration of the session.
+ * Keeps the task list in memory for this session (shown live in the side panel).
  * The LLM can update it to plan multi-step tasks and avoid losing track.
  */
 
 import { getExpert } from "../agents/experts.js";
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
-import { join } from "node:path";
-import { homedir } from "node:os";
 import { emitTodos, TodoStatus } from "../agent/ui-bridge.js";
 
-const TODOS_DIR = join(homedir(), ".xyro");
-const TODOS_FILE = join(TODOS_DIR, "todos.json");
 
 export interface TodoItem {
   id: number;
@@ -26,19 +21,16 @@ function statusOf(t: TodoItem): TodoStatus {
   return t.done ? "done" : t.status ?? "pending";
 }
 
+// The task list belongs to this session and this project only. (It used to live in
+// one global file, so a plan from another project or an old session leaked in.)
+let sessionTodos: TodoItem[] = [];
+
 function loadTodos(): TodoItem[] {
-  try {
-    if (!existsSync(TODOS_FILE)) return [];
-    const raw = readFileSync(TODOS_FILE, "utf-8");
-    return JSON.parse(raw) as TodoItem[];
-  } catch {
-    return [];
-  }
+  return sessionTodos.map((t) => ({ ...t }));
 }
 
 function saveTodos(todos: TodoItem[]): void {
-  if (!existsSync(TODOS_DIR)) mkdirSync(TODOS_DIR, { recursive: true });
-  writeFileSync(TODOS_FILE, JSON.stringify(todos, null, 2), "utf-8");
+  sessionTodos = todos.map((t) => ({ ...t }));
   emitTodos(todos.map((t) => ({ text: t.text, status: statusOf(t), ...(t.expert ? { expert: t.expert } : {}) })));
 }
 

@@ -54,7 +54,7 @@ function extractDefs(file: string, text: string): FileSymbols {
 }
 
 export async function repoMap(args: { path?: string; focus?: string; budget_tokens?: number }): Promise<string> {
-  const base = resolveProjectPath(args.path || ".");
+  const base = resolveProjectPath(args.path || ".", "read");
   if (!base.ok) return base.message;
   const budgetChars = Math.max(400, Math.min(args.budget_tokens ?? 1500, 8000)) * 4;
   const matcher = new GitIgnoreMatcher(base.path);

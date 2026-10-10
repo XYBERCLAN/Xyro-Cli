@@ -1,6 +1,7 @@
 // Expert runtime — runs one specialist on one task with its own context,
 // tools, skills and plugins, under the same approval rules as XYRO itself.
 
+import { requestBudget, providerIdForBaseURL } from "../providers/pool.js";
 import { isStopped } from "../agent/cancel.js";
 import OpenAI from "openai";
 import { createClient, callLLMStream } from "../providers/llm.js";
@@ -19,6 +20,7 @@ import { FREE_PROVIDERS } from "../ui/prompts.js";
 import { getProviderKey } from "../config/persist.js";
 
 const EXPERT_TIMEOUT_MS = 4 * 60_000;
+const FRUGAL_EXPERT_STEPS = 6;
 const MAX_TOOL_RESULT = 6000;
 /** Tools only the coordinator may use (no recursion, no plan approvals from experts). */
 const COORDINATOR_ONLY = new Set(["council", "skill_forge", "tournament", "delegate", "delegate_team", "spawn_agent", "spawn_agents", "propose_plan", "heal", "run_workflow"]);
@@ -234,7 +236,10 @@ export async function runExpert(expert: Expert, task: string, opts: RunExpertOpt
   let finished = false;
   let error = "";
 
-  while (activity.step < expert.maxSteps && Date.now() < deadline) {
+  // A tight daily request budget: each expert step is a request, so keep experts short
+  const maxSteps = requestBudget(providerIdForBaseURL(session.baseURL)).frugal ? Math.min(expert.maxSteps, FRUGAL_EXPERT_STEPS) : expert.maxSteps;
+  activity.maxSteps = maxSteps;
+  while (activity.step < maxSteps && Date.now() < deadline) {
     if (isStopped()) {
       error = "stopped by the user";
       break;

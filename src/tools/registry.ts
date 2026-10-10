@@ -1,3 +1,8 @@
+import { isOutsideProject, approveOutsideRead } from "./safety.js";
+import { getToolApprover } from "../agent/ui-bridge.js";
+import { canPromptUser, requestPermission } from "./permissions.js";
+import { workspaceRoot } from "../agent/workspace.js";
+import { resolve as resolvePath, dirname } from "node:path";
 import { council } from "../agents/council.js";
 import { forgeSkill } from "../agents/skill-forge.js";
 import { trackRecord } from "../agents/skill-stats.js";
@@ -415,6 +420,12 @@ const builtinTools: Tool[] = [
     async () => formatNotes()
   ),
   defineTool(
+    "load_tools",
+    "Load extra tool groups for the rest of the session: git, team, files, background, intents, skills.",
+    z.object({ groups: z.array(z.string()).describe("Group names, e.g. [\"git\"]") }),
+    async (args) => loadToolGroups(args.groups ?? [])
+  ),
+  defineTool(
     "skill_search",
     "Search every installed skill (project, XYRO, ~/.claude/skills, Claude Code plugins) by topic. Returns names to pass to delegate's `skills`, with paths you can read_file.",
     z.object({ query: z.string().describe("Topic, e.g. 'react testing' or 'pdf'") }),
@@ -709,9 +720,98 @@ function findTool(name: string): Tool | undefined {
 }
 
 /** Tools the main agent sees: built-ins, plugins, and MCP servers not marked experts-only. */
+/** Tools only experts use: never sent to the coordinator (it can't call them). */
+const EXPERT_ONLY = new Set(["assign_workers"]);
+
+const TOOL_DESC_MAX = 180;
+const PARAM_DESC_MAX = 70;
+
+function clip(text: string, max: number): string {
+  if (text.length <= max) return text;
+  // Keep whole sentences when possible
+  const cut = text.slice(0, max);
+  const end = Math.max(cut.lastIndexOf(". "), cut.lastIndexOf("; "));
+  return end > max * 0.5 ? cut.slice(0, end + 1) : cut.trimEnd() + "…";
+}
+
+function compactSchema(schema: unknown): unknown {
+  if (!schema || typeof schema !== "object") return schema;
+  if (Array.isArray(schema)) return schema.map(compactSchema);
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(schema as Record<string, unknown>)) {
+    if (k === "description" && typeof v === "string") out[k] = clip(v, PARAM_DESC_MAX);
+    else if (k === "$schema" || k === "additionalProperties") continue; // noise for the model
+    else out[k] = compactSchema(v);
+  }
+  return out;
+}
+
+/**
+ * The same tools, written compactly: tool definitions travel with EVERY
+ * request, and on free tiers every token and every request counts.
+ */
+export function compactTool(t: OpenAI.ChatCompletionTool): OpenAI.ChatCompletionTool {
+  return {
+    ...t,
+    function: {
+      ...t.function,
+      description: clip(t.function.description ?? "", TOOL_DESC_MAX),
+      parameters: compactSchema(t.function.parameters) as OpenAI.FunctionParameters,
+    },
+  };
+}
+
+/**
+ * Tools on demand. Every tool definition travels with every request, so the
+ * coordinator gets an everyday core and loads a group (load_tools) only when
+ * the work needs it. Loaded groups stay for the rest of the session.
+ */
+export const CORE_TOOLS = new Set([
+  "read_file", "list_files", "glob", "search_code", "repo_map",
+  "edit_file", "multi_edit", "write_file", "run_command", "run_tests", "diagnostics",
+  "write_todos", "delegate", "delegate_team", "end_turn",
+  "git_status", "git_diff", "git_commit", "web_search", "fetch_url", "skill_load", "load_tools",
+]);
+
+export const TOOL_GROUPS: Record<string, { about: string; tools: string[] }> = {
+  git: { about: "branches, log, push, pull requests, stash, rebase", tools: ["git_log", "git_branch", "git_checkout", "git_init", "git_stash", "git_stash_pop", "git_push", "git_create_pr", "git_pr_view", "git_add", "git_diff_staged", "git_diff_unstaged", "git_reset", "git_show", "git_create_branch", "git_pull", "git_fetch", "git_remote", "git_rebase", "git_pr_list", "git_pr_status"] },
+  team: { about: "council, workflows, tournament, plans to approve, healing tests, team board", tools: ["council", "run_workflow", "tournament", "propose_plan", "heal", "team_note", "team_notes", "spawn_agent", "spawn_agents"] },
+  files: { about: "symbols (AST), ranked file search, review-then-write, undo", tools: ["ast_inspect_file", "ast_find_symbol", "find_files", "propose_write_file", "revert_file"] },
+  background: { about: "dev servers and watchers", tools: ["bg_start", "bg_output", "bg_stop", "bg_list"] },
+  intents: { about: "saved requirements that are re-checked after changes", tools: ["intent_save", "intent_check", "intent_remove"] },
+  skills: { about: "find, install and create skills", tools: ["skill_search", "skill_find_online", "skill_install", "skill_forge"] },
+};
+
+const loadedGroups = new Set<string>();
+
+export function loadToolGroups(groups: string[]): string {
+  const known = groups.map((g) => g.trim().toLowerCase()).filter((g) => TOOL_GROUPS[g]);
+  if (!known.length) return `❌ Unknown group. Available: ${Object.keys(TOOL_GROUPS).join(", ")}`;
+  for (const g of known) loadedGroups.add(g);
+  return `Loaded ${known.map((g) => `${g} (${TOOL_GROUPS[g].tools.join(", ")})`).join("; ")}. They are available from your next step.`;
+}
+
+/** One line for the system prompt: what can be loaded. */
+export function toolGroupsPrompt(): string {
+  const rest = Object.entries(TOOL_GROUPS).filter(([g]) => !loadedGroups.has(g));
+  if (!rest.length) return "";
+  return `## More tools on demand\nCall load_tools with a group when you need it: ${rest.map(([g, v]) => `${g} (${v.about})`).join("; ")}.`;
+}
+
+export function _resetToolGroups(): void {
+  loadedGroups.clear();
+}
+
 export function getToolDefinitions(): OpenAI.ChatCompletionTool[] {
+  const grouped = new Set(Object.values(TOOL_GROUPS).flatMap((g) => g.tools));
+  const active = new Set([...CORE_TOOLS, ...[...loadedGroups].flatMap((g) => TOOL_GROUPS[g].tools)]);
   const ext = [...externalTools.values()].filter((e) => e.mainVisible).map((e) => e.tool.definition);
-  return [...allTools.map((t) => t.definition), ...ext];
+  const builtin = allTools
+    .map((t) => t.definition)
+    .filter((d) => !EXPERT_ONLY.has(d.function.name))
+    // Core and loaded groups; anything not sorted into a group stays visible (never hide a tool by accident)
+    .filter((d) => active.has(d.function.name) || !grouped.has(d.function.name));
+  return [...builtin, ...ext].map(compactTool);
 }
 
 /** Read-only tools: what XYRO may use in plan mode (no writes, no commands, no network). */
@@ -727,7 +827,19 @@ export function getPlanModeToolDefinitions(): OpenAI.ChatCompletionTool[] {
 
 /** Every tool, including experts-only MCP tools (experts filter this by their own list). */
 export function getAllToolDefinitions(): OpenAI.ChatCompletionTool[] {
-  return [...allTools.map((t) => t.definition), ...[...externalTools.values()].map((e) => e.tool.definition)];
+  return [...allTools.map((t) => t.definition), ...[...externalTools.values()].map((e) => e.tool.definition)].map(compactTool);
+}
+
+/** Tools that only read, by `path` (outside the project they ask first). */
+const READ_PATH_TOOLS = new Set(["read_file", "list_files", "glob", "search_code", "find_files", "repo_map", "ast_inspect_file", "ast_find_symbol"]);
+
+async function askOutsideRead(folder: string): Promise<boolean> {
+  const label = `Read outside the project: ${folder}`;
+  const ui = getToolApprover();
+  if (ui) return ui(label);
+  if (process.env.XYRO_ALLOW_OUTSIDE === "1") return true;
+  if (!canPromptUser()) return false; // scripts / CI: never wander off
+  return (await requestPermission("read_outside_project", { path: folder })) === "allow";
 }
 
 export async function executeTool(name: string, args: Record<string, unknown>): Promise<string> {
@@ -737,6 +849,16 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
   // Reflexes first: a PreToolUse hook may veto the call
   const pre = await runHooks("PreToolUse", { tool: name, args });
   if (pre.blocked) return `⛔ Blocked by a hook: ${pre.reason}`;
+
+  // Stay in the project: reading anywhere else needs the user's OK (once per folder, per session)
+  if (READ_PATH_TOOLS.has(name) && typeof args.path === "string" && args.path.trim() && isOutsideProject(args.path)) {
+    const target = resolvePath(workspaceRoot(), args.path);
+    const folder = name === "read_file" || name === "ast_inspect_file" ? dirname(target) : target;
+    if (!(await askOutsideRead(folder))) {
+      return `⛔ Not read: ${args.path} is outside the project (${workspaceRoot()}) and the user did not allow it. Stay inside the project unless the user asks otherwise.`;
+    }
+    approveOutsideRead(folder);
+  }
 
   // Checkpoint: remember files as they were before this turn changed them
   for (const p of pathsTouchedBy(name, args)) recordBeforeChange(p);

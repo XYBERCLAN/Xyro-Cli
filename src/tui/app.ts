@@ -1,3 +1,4 @@
+import { teamStrip, MINI_H, MINI_W } from "./expert-bots.js";
 import { instinctExpert } from "../agents/instinct.js";
 import { fitToScreen } from "./fit.js";
 import { readFileSync, existsSync } from "node:fs";
@@ -41,7 +42,7 @@ import { logoRows, introRows, isReducedMotion } from "./logo.js";
 import { hasSeenIntro, markIntroSeen, hasOnboarded, markOnboarded } from "../config/persist.js";
 import { MascotMood } from "./mascot.js";
 import { composeModal, MODAL_OPEN_MS, MODAL_CLOSE_MS } from "./modal.js";
-import { renderSidePanel, panelVisible, panelWidth, PanelHit, PlanView } from "./side-panel.js";
+import { renderSidePanel, teamBots, panelVisible, panelWidth, PanelHit, PlanView } from "./side-panel.js";
 import type { TodoView, PlanRequest, PlanDecision, AgentActivity } from "../agent/ui-bridge.js";
 import { getExperts } from "../agents/experts.js";
 import { readMemory } from "../agents/router.js";
@@ -1197,13 +1198,22 @@ export class TuiApp {
       const viewH = Math.max(1, height - bottom.length - 1);
       const chat = this.scroll.visible(viewH);
       const status = this.panelStatus();
+      const teamState = { agents: this.agents, instinct: [...this.instinct.values()], roster: this.restingTeam() };
+      // The team lives in the strip beside the input box (always visible, even with a long plan)
+      const promptRows = bottom.slice(0, -1);
+      const stripW = width - chatW - 2;
+      const useStrip = promptRows.length >= MINI_H && stripW >= MINI_W;
       const panel = renderSidePanel(
-        { ...status, todos: this.todos, plan: this.plan, agents: this.agents, instinct: [...this.instinct.values()], roster: this.restingTeam(), workingFor: this.busy ? Date.now() - this.turnStart : undefined },
+        { ...status, todos: this.todos, plan: this.plan, ...teamState, workingFor: this.busy ? Date.now() - this.turnStart : undefined },
         pw,
         viewH,
         this.animTick,
-        { reducedMotion: isReducedMotion() }
+        { reducedMotion: isReducedMotion(), team: !useStrip }
       );
+      if (useStrip) {
+        const strip = teamStrip(teamBots(teamState).bots, stripW, promptRows.length, isReducedMotion() ? 0 : this.animTick);
+        for (let r = 0; r < promptRows.length; r++) bottom[r] = line(...fitSpans(promptRows[r].spans, chatW), span("  "), ...strip[r]);
+      }
       const composed = new ScrollRegion();
       for (let r = 0; r < viewH; r++) {
         composed.append(line(...fitSpans(chat[r]?.spans ?? [], chatW), ...panel.rows[r].spans));

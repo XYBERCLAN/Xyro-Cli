@@ -16,8 +16,8 @@ export interface SkillInfo {
   source: "project" | "user" | "claude" | "plugin";
 }
 
-/** Skills the prompt index lists by name; the rest are found with skill_search. */
-const INDEX_LIMIT = 30;
+/** Your own skills listed in the prompt; everything else is found with skill_search. */
+const OWN_INDEX_LIMIT = 12;
 
 const PROJECT_DIRS = [".agents/skills", ".claude/skills", ".xyro/skills", "skills"];
 const MAX_BODY_LINES = 400;
@@ -209,16 +209,22 @@ export function searchSkills(query: string, limit = 8): SkillInfo[] {
 export function skillsIndex(root = process.cwd()): string | null {
   const skills = discoverSkills(root);
   if (!skills.length) return null;
-  const order = { project: 0, user: 1, claude: 2, plugin: 3 } as const;
-  const sorted = [...skills].sort((a, b) => order[a.source] - order[b.source]);
-  const shown = sorted.slice(0, INDEX_LIMIT);
+  // Every request carries this text: list your own skills briefly, count the imported ones
+  const own = skills.filter((s) => s.source === "project" || s.source === "user");
   const stats = loadSkillStats();
+  const shown = own.slice(0, OWN_INDEX_LIMIT);
   const lines = shown.map((s) => {
-    const tags = [s.source !== "project" ? s.source : "", trackRecord(s.name, stats)].filter(Boolean).join(", ");
-    return `- ${s.name}: ${s.description.slice(0, 120)}${tags ? ` (${tags})` : ""}`;
+    const record = trackRecord(s.name, stats);
+    return `- ${s.name}: ${shortDesc(s.description)}${record ? ` (${record})` : ""}`;
   });
-  const more = skills.length - shown.length;
-  return `## Skills available to your experts\nLoad one yourself with skill_load, pass \`skills\` to delegate, or let experts match them automatically. Nothing fits? skill_find_online, then skill_install.${more > 0 ? ` ${skills.length} skills in total: find others with skill_search.` : ""}\n${lines.join("\n")}`;
+  const hidden = skills.length - shown.length;
+  return `## Skills\nskill_load <name> to use one; pass \`skills\` to delegate; experts also match them automatically.${hidden > 0 ? ` ${skills.length} skills in total: find others with skill_search.` : ""}${lines.length ? `\n${lines.join("\n")}` : ""}`;
+}
+
+/** First clause of a description, short (the index is sent with every request). */
+export function shortDesc(d: string, max = 70): string {
+  const first = d.replace(/\s+/g, " ").split(/(?<=[.;:])\s|\s[-–—]\s/)[0].replace(/[.;:]$/, "");
+  return first.length > max ? first.slice(0, max - 1).trimEnd() + "…" : first;
 }
 
 /** Path relative to the project, for display. */

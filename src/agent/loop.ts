@@ -1,3 +1,4 @@
+import { requestBudget, providerIdForBaseURL } from "../providers/pool.js";
 import { dispatchFor } from "./dispatch.js";
 import { beginTurn, cancelTurn, isStopped } from "./cancel.js";
 import { recordEvent, classifyMessage, reflect, reflectionDue, formatReflection } from "./learning.js";
@@ -430,7 +431,7 @@ export class Agent {
       this.pendingCompact = null;
     }
     // Dispatch: the experts for this request get ready now; multi-step work is planned first
-    const dispatch = dispatchFor(input);
+    const dispatch = dispatchFor(input, requestBudget(providerIdForBaseURL(this.client.baseURL)));
     this.history.add({ role: "user", content: dispatch?.note ? `${input}\n\n${dispatch.note}` : input });
     if (!process.stdin.isTTY && !this.output) renderUserMessage(input);
     this.output?.onUserMessage?.(input);
@@ -676,7 +677,7 @@ export class Agent {
 
       // Plan first: a multi-step request that started without a plan gets one reminder
       if (response.tool_calls.some((tc) => PLANNING_TOOLS.has(tc.function.name))) planned = true;
-      if (dispatch?.multiStep && !planned && !planNudged) {
+      if (dispatch?.multiStep && !dispatch.frugal && !planned && !planNudged) {
         planNudged = true;
         this.history.add({ role: "user", content: "[coordinator] Plan before going further: call write_todos with the remaining steps (each with its expert, one in_progress), then continue and delegate the specialised steps." });
       }

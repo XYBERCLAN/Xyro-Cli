@@ -21,6 +21,7 @@ import { mcpNeedsApproval } from "../mcp/approvals.js";
 /** Tools that never prompt (pure reads, planning, bookkeeping). */
 const ALLOW_ALWAYS = new Set([
   "read_file",
+  "load_tools",
   "skill_load",
   "council",
   "assign_workers",
@@ -51,13 +52,13 @@ const ALLOW_ALWAYS = new Set([
   "git_diff",
   "git_log",
   "git_branch",
-  "git_init",
   "git_pr_view",
 ]);
 
 /** Tools that prompt for approval in an interactive terminal. */
 const ASK_ALWAYS = new Set([
   "write_file",
+  "git_init",
   "skill_install",
   "skill_find_online",
   "web_search",
