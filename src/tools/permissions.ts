@@ -73,6 +73,7 @@ const ASK_ALWAYS = new Set([
   "multi_edit",
   "run_tests",
   "propose_write_file",
+  "apply_patch",
   // Runs the project's own tsc/eslint (eslint configs are code) — ask first
   "diagnostics",
   "bg_start",

@@ -60,6 +60,7 @@ import { postNote, formatNotes } from "../agents/team-board.js";
 import { bgStart, bgOutput, bgStop, bgList } from "./background.js";
 import { webSearch } from "./websearch.js";
 import { proposePlan } from "./plan.js";
+import { applyPatch } from "./patch.js";
 import { loadPlugins } from "../config/plugins.js";
 import { runHooks } from "../agent/hooks.js";
 import { pathsTouchedBy, recordBeforeChange } from "../agent/checkpoints.js";
@@ -322,6 +323,22 @@ const builtinTools: Tool[] = [
       reason: z.string().optional().describe("Why this change is needed"),
     }),
     (args) => proposeWriteFile(args)
+  ),
+  defineTool(
+    "apply_patch",
+    "Apply changes to one or more files in a single step with diff preview and backups. All paths are validated before writing (all-or-nothing). Prefer for multi-file edits.",
+    z.object({
+      files: z
+        .array(
+          z.object({
+            path: z.string().describe("File path relative to project root"),
+            content: z.string().describe("Complete new file content"),
+          })
+        )
+        .describe("Files to update or create"),
+      reason: z.string().optional().describe("Why this patch is needed"),
+    }),
+    (args) => applyPatch(args)
   ),
   defineTool(
     "end_turn",
@@ -802,7 +819,7 @@ export const CORE_TOOLS = new Set([
 export const TOOL_GROUPS: Record<string, { about: string; tools: string[] }> = {
   git: { about: "branches, log, push, pull requests, stash, rebase", tools: ["git_log", "git_branch", "git_checkout", "git_init", "git_stash", "git_stash_pop", "git_push", "git_create_pr", "git_pr_view", "git_add", "git_diff_staged", "git_diff_unstaged", "git_reset", "git_show", "git_create_branch", "git_pull", "git_fetch", "git_remote", "git_rebase", "git_pr_list", "git_pr_status"] },
   team: { about: "council, workflows, tournament, plans to approve, healing tests, team board", tools: ["council", "run_workflow", "tournament", "propose_plan", "heal", "team_note", "team_notes", "spawn_agent", "spawn_agents"] },
-  files: { about: "symbols (AST), ranked file search, review-then-write, undo", tools: ["ast_inspect_file", "ast_find_symbol", "find_files", "propose_write_file", "revert_file"] },
+  files: { about: "symbols (AST), ranked file search, review-then-write, undo", tools: ["ast_inspect_file", "ast_find_symbol", "find_files", "propose_write_file", "apply_patch", "revert_file"] },
   background: { about: "dev servers and watchers", tools: ["bg_start", "bg_output", "bg_stop", "bg_list"] },
   intents: { about: "saved requirements that are re-checked after changes", tools: ["intent_save", "intent_check", "intent_remove"] },
   skills: { about: "find, install and create skills", tools: ["skill_search", "skill_find_online", "skill_install", "skill_forge"] },
