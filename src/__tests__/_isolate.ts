@@ -17,5 +17,5 @@ process.env.XYRO_CLAUDE_HOME = path.join(root, "claude");
 // Fake providers answer instantly and get many requests a minute; tests/pacing turns it back on
 process.env.XYRO_NO_PACING = "1";
 for (const key of Object.keys(process.env)) {
-  if (/^(OPENAI|ANTHROPIC|GEMINI|GOOGLE|GROQ|OPENROUTER|XYRO)_API_KEY$|^XYRO_(BASE_URL|MODEL)$/.test(key)) delete process.env[key];
+  if (/^(OPENAI|ANTHROPIC|GEMINI|GOOGLE|GROQ|OPENROUTER|XYRO)_API_KEY$|^XYRO_(BASE_URL|MODEL)$|^OPENAI_BASE_URL$/.test(key)) delete process.env[key];
 }
