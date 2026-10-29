@@ -41,6 +41,20 @@ function isOpenRouter(baseURL?: string): boolean {
   return !!baseURL?.includes("openrouter");
 }
 
+const configuredBaseURLs = new WeakMap<OpenAI, string | undefined>();
+
+function useDirectAnthropic(client: OpenAI, model: string): boolean {
+  if (!isAnthropicModel(model) || !process.env["ANTHROPIC_API_KEY"]) return false;
+  const baseURL = configuredBaseURLs.has(client) ? configuredBaseURLs.get(client) : client.baseURL;
+  if (!baseURL) return true;
+  try {
+    const url = new URL(baseURL);
+    return url.protocol === "https:" && url.hostname === "api.anthropic.com" && !url.port;
+  } catch {
+    return false;
+  }
+}
+
 export function createClient(baseURL?: string, apiKey?: string): OpenAI {
   // Only fall back to the OPENAI_API_KEY env var when the endpoint is actually
   // OpenAI (or no baseURL given). Sending an OpenAI key to OpenRouter/Groq/etc.
@@ -70,7 +84,9 @@ export function createClient(baseURL?: string, apiKey?: string): OpenAI {
     };
   }
 
-  return new OpenAI(config as any);
+  const client = new OpenAI(config as any);
+  configuredBaseURLs.set(client, baseURL || process.env["OPENAI_BASE_URL"] || undefined);
+  return client;
 }
 
 /** Sleep for ms milliseconds */
@@ -109,7 +125,7 @@ export function isTransientNetworkError(err: unknown): boolean {
   if (!err) return false;
   if ((err as any)?.name === "APIConnectionTimeoutError") return true;
   const status = (err as any)?.status || (err as any)?.response?.status;
-  if (status === 500 || status === 502 || status === 503 || status === 504) {
+  if (status === 500 || status === 502 || status === 503 || status === 504 || status === 529) {
     return true;
   }
   const msg = err instanceof Error ? err.message : String(err);
@@ -181,7 +197,7 @@ export function extractRetryDelay(err: unknown, attempt: number): number {
 }
 
 /** Retry wrapper for rate-limited and transient API calls */
-export async function withRetry<T>(fn: () => Promise<T>, maxRetries = 4, opts: { retryRateLimit?: boolean } = {}): Promise<T> {
+export async function withRetry<T>(fn: () => Promise<T>, maxRetries = 4, opts: { retryRateLimit?: boolean; shouldRetry?: () => boolean } = {}): Promise<T> {
   let lastError: unknown;
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -196,7 +212,7 @@ export async function withRetry<T>(fn: () => Promise<T>, maxRetries = 4, opts: {
 
       // With the free-quota pool, a rate limit is better handled by switching provider
       const retryable = isNetwork || (isRateLimit && opts.retryRateLimit !== false);
-      if (retryable && attempt < maxRetries) {
+      if (retryable && attempt < maxRetries && (opts.shouldRetry?.() ?? true)) {
         const waitMs = extractRetryDelay(err, attempt);
         const reason = isRateLimit ? "rate limited" : "connection issue";
         retryReporter(`${reason}, waiting ${(waitMs / 1000).toFixed(1)}s (retry ${attempt + 1}/${maxRetries})...`);
@@ -295,23 +311,24 @@ async function callAnthropicStream(
     input_schema: (t.function.parameters || { type: "object", properties: {} }) as Anthropic.Tool.InputSchema,
   }));
 
-  const stream = anthropic.messages.stream({
-    model,
-    max_tokens: 4096,
-    ...(systemPrompt ? { system: systemPrompt } : {}),
-    messages: anthropicMessages,
-    tools,
-  });
-
   let fullContent = "";
   const toolCalls: OpenAI.Chat.Completions.ChatCompletionMessageToolCall[] = [];
-
-  stream.on("text", (text: string) => {
-    fullContent += text;
-    onChunk(text);
-  });
-
-  const finalMessage = await withRetry(() => stream.finalMessage());
+  let emitted = false;
+  const finalMessage = await withRetry(() => {
+    const stream = anthropic.messages.stream({
+      model,
+      max_tokens: 4096,
+      ...(systemPrompt ? { system: systemPrompt } : {}),
+      messages: anthropicMessages,
+      tools,
+    });
+    stream.on("text", (text: string) => {
+      emitted = true;
+      fullContent += text;
+      onChunk(text);
+    });
+    return stream.finalMessage();
+  }, 4, { shouldRetry: () => !emitted });
 
   for (const block of finalMessage.content) {
     if (block.type === "tool_use") {
@@ -340,7 +357,7 @@ export async function callLLM(
   tools?: OpenAI.ChatCompletionTool[],
   onModelSwitched?: (newModel: string, reason: string) => void
 ): Promise<LLMResponse> {
-  if (isAnthropicModel(model) && process.env["ANTHROPIC_API_KEY"] && !isOpenRouter(client.baseURL)) {
+  if (useDirectAnthropic(client, model)) {
     return shieldedAnthropic(model, messages, () => {});
   }
   const toolDefs = tools ?? getToolDefinitions();
@@ -423,6 +440,9 @@ export async function callLLMStream(
   toolsOverride?: OpenAI.Chat.Completions.ChatCompletionTool[],
   opts: { onSwitch?: (s: ModelSwitch) => void; pool?: boolean; hedge?: boolean } = {}
 ): Promise<LLMResponse> {
+  if (useDirectAnthropic(client, model)) {
+    return shieldedAnthropic(model, messages, onChunk);
+  }
   // Every model hit a PER-MINUTE limit (Gemini's free tier after a burst of steps):
   // that clears within a minute, so wait it out instead of ending the turn
   for (let waits = 0; ; waits++) {
@@ -453,9 +473,6 @@ async function callLLMStreamOnce(
   toolsOverride: OpenAI.Chat.Completions.ChatCompletionTool[] | undefined,
   opts: { onSwitch?: (s: ModelSwitch) => void; pool?: boolean; hedge?: boolean }
 ): Promise<LLMResponse> {
-  if (isAnthropicModel(model) && process.env["ANTHROPIC_API_KEY"] && !isOpenRouter(client.baseURL)) {
-    return shieldedAnthropic(model, messages, onChunk);
-  }
   const candidates = buildCandidates(client.baseURL, model, { pool: opts.pool });
   let lastError: unknown;
   let sessionError: unknown;
