@@ -2,6 +2,7 @@ import { isOutsideProject, approveOutsideRead } from "./safety.js";
 import { getToolApprover } from "../agent/ui-bridge.js";
 import { canPromptUser, requestPermission } from "./permissions.js";
 import { workspaceRoot } from "../agent/workspace.js";
+import { turnSignal } from "../agent/cancel.js";
 import { resolve as resolvePath, dirname } from "node:path";
 import { council } from "../agents/council.js";
 import { forgeSkill } from "../agents/skill-forge.js";
@@ -889,6 +890,7 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
 
   // Reflexes first: a PreToolUse hook may veto the call
   const pre = await runHooks("PreToolUse", { tool: name, args });
+  if (turnSignal().aborted) return "⛔ Not run: the task was stopped.";
   if (pre.blocked) return `⛔ Blocked by a hook: ${pre.reason}`;
 
   // Stay in the project. Searching or listing elsewhere is never done; reading one
@@ -902,8 +904,11 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
     if (!(await askOutsideRead(folder))) {
       return `⛔ Not read: ${args.path} is outside the project (${workspaceRoot()}) and the user did not allow it. Stay inside the project unless the user asks otherwise.`;
     }
+    if (turnSignal().aborted) return "⛔ Not run: the task was stopped.";
     approveOutsideRead(folder);
   }
+
+  if (turnSignal().aborted) return "⛔ Not run: the task was stopped.";
 
   // Checkpoint: remember files as they were before this turn changed them
   for (const p of pathsTouchedBy(name, args)) recordBeforeChange(p);
@@ -915,6 +920,8 @@ export async function executeTool(name: string, args: Record<string, unknown>): 
     const msg = err instanceof Error ? err.message : String(err);
     result = `❌ ${name} error: ${msg}`;
   }
+
+  if (turnSignal().aborted) return result;
 
   const post = await runHooks("PostToolUse", { tool: name, args, result });
   if (post.output) result += `\n\n[hook output]\n${post.output}`;

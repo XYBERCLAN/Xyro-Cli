@@ -321,7 +321,7 @@ async function callAnthropicStream(
       ...(systemPrompt ? { system: systemPrompt } : {}),
       messages: anthropicMessages,
       tools,
-    });
+    }, { signal: turnSignal() });
     stream.on("text", (text: string) => {
       emitted = true;
       fullContent += text;
