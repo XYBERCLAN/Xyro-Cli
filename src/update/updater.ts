@@ -73,7 +73,7 @@ export async function fetchLatestVersion(timeoutMs = 3000): Promise<string | nul
   }
 }
 
-/** Compare the running version with npm, using a 12h cache unless `force`. */
+/** Compare the running version with npm, reusing the last answer for 10 minutes unless `force`. */
 export async function checkForUpdate(opts: { force?: boolean } = {}): Promise<UpdateInfo | null> {
   if (!opts.force && updateChecksDisabled()) return null;
   const current = xyroVersion();

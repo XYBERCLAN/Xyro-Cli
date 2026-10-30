@@ -17,7 +17,7 @@ XYRO is written in TypeScript and tested in CI on Node.js 20 and 22.
 
 ```bash
 git clone https://github.com/XYBERCLAN/Xyro-Cli.git
-cd Xyro-cli
+cd Xyro-Cli
 ```
 
 ### Create a New Branch
