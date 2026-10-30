@@ -27,7 +27,7 @@ const SECRET_PATTERNS: { kind: string; re: RegExp }[] = [
   { kind: "hard-coded secret", re: /\b(?:password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token)\b\s*[:=]\s*["'][^"'\s]{12,}["']/i },
 ];
 
-const CONFLICT_RE = /^(?:<{7}|>{7}) |^={7}$/;
+const CONFLICT_RE = /^(?:<{7}|>{7})(?: |$)/;
 
 /** Hide the middle of a secret so the warning itself never leaks it. */
 function mask(line: string): string {
@@ -40,6 +40,7 @@ function mask(line: string): string {
 export function scanText(file: string, text: string): SentinelFinding[] {
   const findings: SentinelFinding[] = [];
   const lines = text.split(/\r?\n/);
+  let conflictActive = false;
   lines.forEach((l, i) => {
     for (const p of SECRET_PATTERNS) {
       if (p.re.test(l) && !/example|placeholder|your[_-]?key|xxxx|<.*>|\$\{|process\.env|getenv/i.test(l)) {
@@ -47,7 +48,13 @@ export function scanText(file: string, text: string): SentinelFinding[] {
         break;
       }
     }
-    if (CONFLICT_RE.test(l)) findings.push({ file, line: i + 1, kind: "merge conflict marker", severity: "high", excerpt: l.slice(0, 40) });
+    const conflictStart = /^<{7}/.test(l);
+    const conflictEnd = /^>{7}/.test(l);
+    if (conflictStart) conflictActive = true;
+    if (CONFLICT_RE.test(l) || (l === "=======" && conflictActive)) {
+      findings.push({ file, line: i + 1, kind: "merge conflict marker", severity: "high", excerpt: l.slice(0, 40) });
+    }
+    if (conflictEnd) conflictActive = false;
   });
   return findings;
 }

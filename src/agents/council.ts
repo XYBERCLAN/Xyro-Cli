@@ -58,7 +58,7 @@ export function parseAssignments(text: string): Assignment[] {
 export function tallyVotes(members: string[], ballots: string[]): { winner: string; votes: Record<string, number> } {
   const votes: Record<string, number> = Object.fromEntries(members.map((m) => [m, 0]));
   for (const b of ballots) {
-    const m = b.match(/VOTE:\s*([a-z][a-z0-9-]*)/i);
+    const m = [...b.matchAll(/VOTE:\s*([a-z][a-z0-9-]*)/gi)].at(-1);
     const name = m ? getExpert(m[1])?.name : undefined;
     if (name && name in votes) votes[name]++;
   }

@@ -115,6 +115,11 @@ describe("Sentinel", () => {
     assert.equal(scanText("a.ts", 'const key = process.env.OPENAI_API_KEY;\napiKey = "your-api-key-here-xxxx"').length, 0);
   });
 
+  it("ignores a setext heading underline as a conflict marker", () => {
+    const findings = scanText("README.md", "Section\n=======\n");
+    assert.equal(findings.filter((x) => x.kind === "merge conflict marker").length, 0);
+  });
+
   it("flags conflict markers and un-ignored .env files", () => {
     fs.writeFileSync(".env", "TOKEN=1");
     fs.writeFileSync("m.ts", "<<<<<<< HEAD\na\n=======\nb\n>>>>>>> branch\n");

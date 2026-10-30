@@ -80,6 +80,13 @@ describe("Council", () => {
     assert.ok(listNotes().some((n) => n.text.startsWith("Decision:")), "decision shared on the team board");
   });
 
+  it("counts the last VOTE marker in a ballot", () => {
+    const result = tallyVotes(["architect", "security"], [
+      "I would VOTE: architect only if the risks are addressed.\nVOTE: security",
+    ]);
+    assert.deepEqual(result, { winner: "security", votes: { architect: 0, security: 1 } });
+  });
+
   it("parses assignments and breaks vote ties by router order", () => {
     assert.deepEqual(parseAssignments("DECISION: x\nASSIGNMENTS:\n- Builder: do a\n* tester — do b\n- ghost: no"), [
       { expert: "builder", task: "do a" },
