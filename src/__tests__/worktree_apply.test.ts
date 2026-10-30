@@ -19,14 +19,19 @@ describe("applyWorkingTreePatch", () => {
     execSync("git init -q", { cwd: repo });
     execSync("git config user.name test && git config user.email test@example.com", { cwd: repo });
     fs.writeFileSync(path.join(repo, "a.txt"), "one\n");
-    execSync("git add a.txt && git commit -q -m init", { cwd: repo });
+    execSync("git add a.txt && git -c commit.gpgsign=false commit -q -m init", { cwd: repo });
   });
+
+  const resetToBase = () => {
+    execSync("git checkout -- a.txt", { cwd: repo });
+  };
 
   after(() => {
     fs.rmSync(repo, { recursive: true, force: true });
   });
 
   it("returns null when the patch applies", async () => {
+    resetToBase();
     const patch = [
       "diff --git a/a.txt b/a.txt",
       "index 5626abf..f719efd 100644",
@@ -42,6 +47,7 @@ describe("applyWorkingTreePatch", () => {
   });
 
   it("returns git's reason when the patch does not apply", async () => {
+    resetToBase();
     const patch = [
       "diff --git a/a.txt b/a.txt",
       "index 5626abf..f719efd 100644",
@@ -56,6 +62,6 @@ describe("applyWorkingTreePatch", () => {
     assert.ok(reason, "expected a failure reason");
     assert.match(reason, /patch|apply|error/i);
     // The worktree keeps its previous content instead of a half-applied patch
-    assert.strictEqual(read(path.join(repo, "a.txt")), "two\n");
+    assert.strictEqual(read(path.join(repo, "a.txt")), "one\n");
   });
 });

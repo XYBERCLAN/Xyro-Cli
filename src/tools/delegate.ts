@@ -116,15 +116,25 @@ export async function delegateTeam(args: { tasks: DelegateArgs[]; isolate?: bool
   const writers = jobs.map(canWrite);
   const isolate = args.isolate !== false && writers.filter(Boolean).length >= 2 && (await isGitRepo());
   const trees: (Worktree | null)[] = new Array(jobs.length).fill(null);
+  const results: string[] = new Array(jobs.length);
   if (isolate) {
-    for (let i = 0; i < jobs.length; i++) if (writers[i]) trees[i] = await createWorktree(jobs[i].expert || `task-${i + 1}`);
+    for (let i = 0; i < jobs.length; i++) {
+      if (!writers[i]) continue;
+      try {
+        trees[i] = await createWorktree(jobs[i].expert || `task-${i + 1}`);
+      } catch (err) {
+        // The uncommitted changes could not be replayed into a fresh worktree.
+        // Report it for this job instead of aborting the whole team.
+        results[i] = `❌ ${err instanceof Error ? err.message : String(err)}`;
+      }
+    }
   }
 
-  const results: string[] = new Array(jobs.length);
   let next = 0;
   const worker = async () => {
     while (next < jobs.length) {
       const i = next++;
+      if (results[i] !== undefined) continue;
       try {
         const tree = trees[i];
         results[i] = tree ? await runInWorkspace(tree.path, () => runOne(jobs[i])) : await runOne(jobs[i]);
