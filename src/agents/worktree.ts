@@ -5,8 +5,8 @@
 // checkpointing the affected files so /rewind still works. On conflict the
 // worktree is kept and reported instead of losing work.
 
-import { existsSync, mkdirSync, copyFileSync, appendFileSync, readFileSync, readdirSync, symlinkSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { existsSync, mkdirSync, copyFileSync, appendFileSync, readFileSync, readdirSync, symlinkSync, lstatSync, readlinkSync, unlinkSync } from "node:fs";
+import { join, dirname, resolve } from "node:path";
 import { execa } from "execa";
 import { recordBeforeChange } from "../agent/checkpoints.js";
 
@@ -14,6 +14,7 @@ export interface Worktree {
   path: string;
   branch: string;
   base: string;
+  linkedDependencies?: string[];
 }
 
 async function git(cwd: string, args: string[], input?: string) {
@@ -137,11 +138,11 @@ export async function createWorktree(label: string, root = process.cwd()): Promi
       // skip unreadable
     }
   }
-  await linkDependencies(root, path);
+  const linkedDependencies = await linkDependencies(root, path);
   await git(path, ["add", "-A"]);
   await git(path, ["-c", "user.name=XYRO", "-c", "user.email=xyro@localhost", "commit", "-q", "--allow-empty", "--no-verify", "-m", "xyro: snapshot of working tree"]);
   const base = String((await git(path, ["rev-parse", "HEAD"])).stdout).trim();
-  return { path, branch, base };
+  return { path, branch, base, linkedDependencies };
 }
 
 export interface MergeResult {
@@ -149,17 +150,25 @@ export interface MergeResult {
   files: string[];
   conflict?: string;
   keptAt?: string;
+  warning?: string;
 }
 
 /** Apply the worktree's own changes onto the user's working tree, then clean up. */
 export async function mergeWorktree(wt: Worktree, root = process.cwd()): Promise<MergeResult> {
+  const finish = async (files: string[]): Promise<MergeResult> => {
+    try {
+      await removeWorktree(wt, root);
+      return { applied: true, files };
+    } catch (error) {
+      return { applied: true, files, warning: `Could not clean worktree ${wt.path}: ${String(error)}` };
+    }
+  };
   await git(wt.path, ["add", "-A"]);
   const patch = String((await git(wt.path, ["diff", "--cached", "--binary", wt.base])).stdout);
   const files = String((await git(wt.path, ["diff", "--cached", "--name-only", wt.base])).stdout).split("\n").filter(Boolean);
 
   if (!patch.trim()) {
-    await removeWorktree(wt, root);
-    return { applied: true, files: [] };
+    return finish([]);
   }
   // Checkpoint the files we are about to change so /rewind can undo the merge
   for (const f of files) recordBeforeChange(join(root, f));
@@ -170,11 +179,29 @@ export async function mergeWorktree(wt: Worktree, root = process.cwd()): Promise
   }
   // --3way stages the result; leave the user's index as it was
   await git(root, ["reset", "-q", "--", ...files]);
-  await removeWorktree(wt, root);
-  return { applied: true, files };
+  return finish(files);
 }
 
 export async function removeWorktree(wt: Worktree, root = process.cwd()): Promise<void> {
-  await git(root, ["worktree", "remove", "--force", wt.path]);
-  await git(root, ["branch", "-D", wt.branch]);
+  for (const rel of wt.linkedDependencies ?? []) {
+    const link = join(wt.path, rel);
+    let stat;
+    try {
+      stat = lstatSync(link);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw error;
+    }
+    if (!stat.isSymbolicLink()) continue;
+    const target = resolve(dirname(link), readlinkSync(link));
+    const expected = resolve(root, rel);
+    if (process.platform === "win32" ? target.toLowerCase() !== expected.toLowerCase() : target !== expected) {
+      throw new Error(`Refusing to remove worktree: dependency link changed at ${link}`);
+    }
+    unlinkSync(link);
+  }
+  const removed = await git(root, ["worktree", "remove", "--force", wt.path]);
+  if (removed.exitCode !== 0) throw new Error(String(removed.stderr || removed.stdout).trim());
+  const branch = await git(root, ["branch", "-D", wt.branch]);
+  if (branch.exitCode !== 0) throw new Error(String(branch.stderr || branch.stdout).trim());
 }

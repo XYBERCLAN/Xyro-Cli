@@ -5,11 +5,12 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { execSync } from "node:child_process";
-import { tournament, rank, Score } from "../agents/tournament.js";
+import { tournament, rank, Score, withTournamentWorktrees } from "../agents/tournament.js";
 import { setExpertSession } from "../agents/runtime.js";
-import { createWorktree, removeWorktree } from "../agents/worktree.js";
+import { createWorktree, mergeWorktree, removeWorktree } from "../agents/worktree.js";
 import { FREE_PROVIDERS } from "../ui/prompts.js";
 import { _resetPool } from "../providers/pool.js";
+import { beginTurn, cancelTurn } from "../agent/cancel.js";
 
 // The fake provider answers per model: what each contestant writes
 let plan: Record<string, string | { path: string; content: string } | null> = {};
@@ -17,6 +18,7 @@ const called: string[] = [];
 let server: http.Server;
 let url = "";
 let savedGoogle = "";
+let stopTournament = false;
 
 before(async () => {
   server = http.createServer((req, res) => {
@@ -27,9 +29,9 @@ before(async () => {
       const last = j.messages[j.messages.length - 1];
       called.push(j.model);
       const p = plan[j.model];
+      if (stopTournament) cancelTurn();
       const file = typeof p === "string" ? { path: "answer.txt", content: p } : p;
-      const delta =
-        last.role === "user" && file
+      const delta = last.role === "user" && file
           ? { role: "assistant", tool_calls: [{ index: 0, id: "w", type: "function", function: { name: "write_file", arguments: JSON.stringify(file) } }] }
           : { role: "assistant", content: "done" };
       res.writeHead(200, { "Content-Type": "text/event-stream" });
@@ -53,25 +55,86 @@ after(() => {
 let tmp: string;
 let oldCwd: string;
 let oldXdg: string | undefined;
+let oldAppData: string | undefined;
 beforeEach(() => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), "xyro-tourney-"));
   oldCwd = process.cwd();
   oldXdg = process.env.XDG_CONFIG_HOME;
+  oldAppData = process.env.APPDATA;
   process.env.XDG_CONFIG_HOME = path.join(tmp, ".cfg");
+  process.env.APPDATA = path.join(tmp, ".cfg");
   process.chdir(tmp);
   _resetPool();
   called.length = 0;
+  stopTournament = false;
+  beginTurn();
   execSync("git init -q && git config user.email t@t && git config user.name t && echo start > answer.txt && echo '.cfg/' > .gitignore && git add . && git commit -qm init", { cwd: tmp });
 });
 afterEach(() => {
   process.chdir(oldCwd);
   if (oldXdg === undefined) delete process.env.XDG_CONFIG_HOME;
   else process.env.XDG_CONFIG_HOME = oldXdg;
+  if (oldAppData === undefined) delete process.env.APPDATA;
+  else process.env.APPDATA = oldAppData;
 });
 
 const worktrees = () => execSync("git worktree list", { cwd: tmp }).toString().trim().split("\n").length;
 
 describe("Tournament", () => {
+  it("reports cleanup failure after applying a worktree", async () => {
+    const tree = (await createWorktree("locked", tmp))!;
+    fs.writeFileSync(path.join(tree.path, "answer.txt"), "merged");
+    execSync(`git worktree lock "${tree.path}"`, { cwd: tmp });
+    try {
+      const result = await mergeWorktree(tree, tmp);
+      assert.equal(result.applied, true);
+      assert.match(result.warning ?? "", /Could not clean/);
+      assert.equal(fs.readFileSync(path.join(tmp, "answer.txt"), "utf8"), "merged");
+    } finally {
+      execSync(`git worktree unlock "${tree.path}"`, { cwd: tmp });
+      await removeWorktree(tree, tmp);
+    }
+  });
+
+  it("reports cleanup errors without replacing a successful result", async () => {
+    const warnings: string[] = [];
+    const tree = { path: path.join(tmp, "missing-tree"), branch: "missing", base: "HEAD" };
+    const result = await withTournamentWorktrees(path.join(tmp, "missing-root"), [tree], new Set(), new Map(), async () => "merged", warnings);
+    assert.equal(result, "merged");
+    assert.match(warnings.join(" "), /Could not clean/);
+  });
+
+  it("cleans created worktrees if judging or merging throws", async () => {
+    const first = (await createWorktree("first", tmp))!;
+    const second = (await createWorktree("second", tmp))!;
+    await assert.rejects(withTournamentWorktrees(tmp, [first, second], new Set(), new Map(), async () => {
+      throw new Error("judge failed");
+    }), /judge failed/);
+    assert.equal(worktrees(), 1);
+    assert.equal(execSync("git branch --list xyro/*", { cwd: tmp }).toString().trim(), "");
+  });
+
+  it("does not remove a worktree while its stopped tool is still running", async () => {
+    const tree = (await createWorktree("pending", tmp))!;
+    let finish!: () => void;
+    const outstanding = new Promise<void>((resolve) => { finish = resolve; });
+    await withTournamentWorktrees(tmp, [tree], new Set(), new Map([[tree, outstanding]]), async () => {});
+    assert.ok(fs.existsSync(tree.path));
+    finish();
+    for (let i = 0; i < 100 && fs.existsSync(tree.path); i++) await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(fs.existsSync(tree.path), false);
+    assert.equal(worktrees(), 1);
+  });
+
+  it("cleans all worktrees when the user stops the tournament", async () => {
+    plan = { "gemini-flash-latest": "first", "gemini-3.5-flash": "second" };
+    stopTournament = true;
+    const result = await tournament({ task: "write", check: "echo ok", expert: "builder", contestants: 2 });
+    assert.match(result, /stopped by the user/i);
+    assert.equal(worktrees(), 1);
+    assert.equal(execSync("git branch --list xyro/*", { cwd: tmp }).toString().trim(), "");
+  });
+
   it("runs models in parallel, judges locally, merges only the winner and remembers it", async () => {
     plan = { "gemini-flash-latest": "wrong answer", "gemini-3.5-flash": "the correct answer", "gemini-3.6-flash": null };
     const out = await tournament({ task: "write the correct answer", check: "grep -q correct answer.txt", expert: "builder" });
@@ -111,6 +174,34 @@ describe("Tournament", () => {
 });
 
 describe("Worktree dependencies", () => {
+  it("removes a real dependency directory that replaced a link", async () => {
+    fs.mkdirSync(path.join(tmp, "node_modules"));
+    fs.appendFileSync(path.join(tmp, ".gitignore"), "node_modules/\n");
+    const wt = (await createWorktree("deps-real", tmp))!;
+    fs.unlinkSync(path.join(wt.path, "node_modules"));
+    fs.mkdirSync(path.join(wt.path, "node_modules"));
+    fs.writeFileSync(path.join(wt.path, "node_modules", "local"), "local");
+    await removeWorktree(wt, tmp);
+    assert.ok(!fs.existsSync(wt.path));
+    assert.ok(fs.existsSync(path.join(tmp, "node_modules")));
+  });
+
+  it("keeps a worktree if its dependency link points somewhere unexpected", async () => {
+    fs.mkdirSync(path.join(tmp, "node_modules"));
+    fs.appendFileSync(path.join(tmp, ".gitignore"), "node_modules/\n");
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "xyro-other-deps-"));
+    fs.writeFileSync(path.join(outside, "keep"), "keep");
+    const wt = (await createWorktree("deps-changed", tmp))!;
+    const link = path.join(wt.path, "node_modules");
+    fs.unlinkSync(link);
+    fs.symlinkSync(outside, link, process.platform === "win32" ? "junction" : "dir");
+    await assert.rejects(removeWorktree(wt, tmp), /dependency link changed/);
+    assert.ok(fs.existsSync(path.join(outside, "keep")));
+    assert.ok(fs.existsSync(wt.path));
+    fs.unlinkSync(link);
+    await removeWorktree(wt, tmp);
+  });
+
   it("links ignored dependency folders and never stages them", async () => {
     fs.mkdirSync(path.join(tmp, "node_modules", "lib"), { recursive: true });
     fs.writeFileSync(path.join(tmp, "node_modules", "lib", "index.js"), "1");

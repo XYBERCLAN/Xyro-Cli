@@ -2,7 +2,7 @@
 // tools, skills and plugins, under the same approval rules as XYRO itself.
 
 import { requestBudget, providerIdForBaseURL } from "../providers/pool.js";
-import { isStopped } from "../agent/cancel.js";
+import { isStopped, runWithSignal, turnSignal, throwIfStopped } from "../agent/cancel.js";
 import OpenAI from "openai";
 import { createClient, callLLMStream } from "../providers/llm.js";
 import { executeTool, getAllToolDefinitions } from "../tools/registry.js";
@@ -86,6 +86,8 @@ export interface ExpertReport {
   budgetHit: boolean;
   /** Successful file changes made during this run (drives verification) */
   writes: number;
+  /** Operations that did not settle when cancellation was requested. */
+  pending?: Promise<void>;
 }
 
 const WRITE_TOOLS = new Set(["write_file", "edit_file", "multi_edit", "revert_file"]);
@@ -122,6 +124,7 @@ async function approve(name: string, args: Record<string, unknown>, autoApprove?
   const ui = getToolApprover();
   if (ui) {
     const answer = await ui(describeToolCall(name, args));
+    throwIfStopped();
     if (answer === "always") {
       addAllowRule(ruleFor(name, args));
       return true;
@@ -145,6 +148,8 @@ export interface RunExpertOptions {
   toolFilter?: (name: string) => boolean;
   /** Set when this run is a worker under a lead expert (workers can't lead) */
   worker?: boolean;
+  /** Maximum duration for this expert, including its model and tool calls. */
+  timeoutMs?: number;
 }
 
 /** Experts lead; workers obey. Lead → workers is one level deep. */
@@ -175,12 +180,46 @@ async function runWorkers(lead: Expert, session: LLMSession, args: Record<string
       return runExpert(worker, t.task!, { session, worker: true, autoApprove: opts.autoApprove, label: `for ${lead.title}` });
     })
   );
+  await Promise.all(reports.map((report) => report.pending));
   const writes = reports.reduce((n, r) => n + r.writes, 0);
   const text = reports.map((r, i) => `── worker ${i + 1}: ${tasks[i].task!.slice(0, 80)} [${r.ok ? "done" : "incomplete"}]\n${r.output.slice(0, 3000)}`).join("\n\n");
   return { text: `${text}${writes ? `\n(workers changed ${writes} file${writes === 1 ? "" : "s"})` : ""}`, writes };
 }
 
 export async function runExpert(expert: Expert, task: string, opts: RunExpertOptions = {}): Promise<ExpertReport> {
+  const timeout = new AbortController();
+  const timer = setTimeout(() => timeout.abort(new Error("expert deadline exceeded")), opts.timeoutMs ?? EXPERT_TIMEOUT_MS);
+  const signal = AbortSignal.any([turnSignal(), timeout.signal]);
+  const pending: Promise<unknown>[] = [];
+  try {
+    const report = await runWithSignal(signal, () => runExpertScoped(expert, task, opts, pending));
+    if (pending.length) report.pending = Promise.allSettled(pending).then(() => undefined);
+    if (timeout.signal.aborted) report.timedOut = true;
+    return report;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function interruptible<T>(operation: Promise<T>, pending?: Promise<unknown>[]): Promise<T> {
+  const signal = turnSignal();
+  if (signal.aborted) {
+    pending?.push(operation);
+    void operation.catch(() => {});
+    throw signal.reason;
+  }
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => {
+      signal.removeEventListener("abort", abort);
+      pending?.push(operation);
+      reject(signal.reason);
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    operation.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
+  });
+}
+
+async function runExpertScoped(expert: Expert, task: string, opts: RunExpertOptions, pending: Promise<unknown>[]): Promise<ExpertReport> {
   const session = opts.session ?? resolveSession(expert);
   const skills = skillsFor(expert, task, opts.skills);
   const budget = expertBudget(expert.name);
@@ -240,7 +279,6 @@ export async function runExpert(expert: Expert, task: string, opts: RunExpertOpt
   emitAgentActivity(activity);
 
   const client = createClient(session.baseURL, session.apiKey);
-  const deadline = Date.now() + EXPERT_TIMEOUT_MS;
   let lastContent = "";
   let finished = false;
   let error = "";
@@ -248,9 +286,10 @@ export async function runExpert(expert: Expert, task: string, opts: RunExpertOpt
   // A tight daily request budget: each expert step is a request, so keep experts short
   const maxSteps = requestBudget(providerIdForBaseURL(session.baseURL)).frugal ? Math.min(expert.maxSteps, FRUGAL_EXPERT_STEPS) : expert.maxSteps;
   activity.maxSteps = maxSteps;
-  while (activity.step < maxSteps && Date.now() < deadline) {
+  while (activity.step < maxSteps) {
     if (isStopped()) {
-      error = "stopped by the user";
+      const reason = turnSignal().reason;
+      error = reason instanceof Error ? reason.message : String(reason ?? "stopped by the user");
       break;
     }
     if (base.tokens >= budget) {
@@ -263,7 +302,7 @@ export async function runExpert(expert: Expert, task: string, opts: RunExpertOpt
 
     let response;
     try {
-      response = await callLLMStream(client, session.model, messages as never, () => {}, tools);
+      response = await interruptible(callLLMStream(client, session.model, messages as never, () => {}, tools));
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
       break;
@@ -296,23 +335,30 @@ export async function runExpert(expert: Expert, task: string, opts: RunExpertOpt
         if (COORDINATOR_ONLY.has(tc.function.name) || !tools.some((t) => t.function.name === tc.function.name)) {
           result = `❌ ${tc.function.name} is not available to the ${expert.title}.`;
         } else if (tc.function.name === "assign_workers") {
-          const w = await runWorkers(expert, session, args, opts);
+          const w = await interruptible(runWorkers(expert, session, args, opts), pending);
           base.writes += w.writes;
           result = w.text;
-        } else if (!(await approve(tc.function.name, args, opts.autoApprove))) {
+        } else if (!(await interruptible(approve(tc.function.name, args, opts.autoApprove), pending))) {
           result = permissionVerdict(tc.function.name, args) === "deny" ? PERMISSION_BLOCKED_RESULT : PERMISSION_DENIED_RESULT;
         } else {
-          result = await executeTool(tc.function.name, args);
+          throwIfStopped();
+          result = await interruptible(executeTool(tc.function.name, args), pending);
         }
       } catch (e) {
+        if (isStopped()) {
+          error = e instanceof Error ? e.message : String(e);
+          break;
+        }
         result = `❌ Tool error: ${e instanceof Error ? e.message : String(e)}`;
       }
       if (result.startsWith("❌")) base.toolErrors++;
       else if (WRITE_TOOLS.has(tc.function.name) && !result.startsWith("⛔")) base.writes++;
       messages.push({ role: "tool", content: result.length > MAX_TOOL_RESULT ? result.slice(0, MAX_TOOL_RESULT) + "\n… (truncated)" : result, tool_call_id: tc.id } as never);
     }
+    if (error) break;
   }
 
+  if (isStopped() && !error) error = String(turnSignal().reason ?? "stopped by the user");
   const timedOut = !finished && !error && !base.budgetHit;
   const ok = finished && Boolean(lastContent) && base.toolErrors <= Math.max(1, Math.floor(base.toolCalls / 2));
   activity.status = ok ? "done" : "failed";

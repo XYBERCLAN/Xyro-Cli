@@ -102,6 +102,7 @@ async function git(cwd: string, args: string[]) {
 
 async function judge(wt: Worktree, c: Contestant, root: string, check: string | null, report?: ExpertReport, error?: string): Promise<Score> {
   const score: Score = { contestant: c, report, error, changed: [], diffLines: 0, checkPassed: null, testsPassed: null, testsFailed: null, intentsBroken: 0, typeErrors: null, checkTail: "" };
+  if (error || report?.pending) return score;
   await git(wt.path, ["add", "-A"]);
   const numstat = String((await git(wt.path, ["diff", "--cached", "--numstat", wt.base])).stdout).split("\n").filter(Boolean);
   for (const line of numstat) {
@@ -153,6 +154,28 @@ function row(s: Score, i: number, winner: Score | null): string {
   return `${i + 1}. ${tag}${c.model} (${c.providerId || "current provider"}) — ${parts.join(" · ")}${s.checkTail ? `\n     ${s.checkTail}` : ""}`;
 }
 
+/** Dispose of every unkept tree even when tournament setup or judging fails. */
+export async function withTournamentWorktrees<T>(root: string, trees: Worktree[], kept: Set<Worktree>, pending: Map<Worktree, Promise<void>>, run: () => Promise<T>, warnings: string[] = []): Promise<T> {
+  try {
+    return await run();
+  } finally {
+    for (const tree of trees) {
+      if (kept.has(tree)) continue;
+      const outstanding = pending.get(tree);
+      if (outstanding) {
+        void outstanding.then(() => removeWorktree(tree, root)).catch((error: unknown) => console.warn(`Could not clean ${tree.path}: ${String(error)}`));
+      } else {
+        try {
+          await removeWorktree(tree, root);
+        } catch (error) {
+          warnings.push(`Could not clean ${tree.path}: ${String(error)}`);
+        }
+      }
+    }
+    if (warnings.length) console.warn(warnings.join("; "));
+  }
+}
+
 export async function tournament(args: TournamentArgs): Promise<string> {
   const task = (args.task || "").trim();
   if (!task) return "❌ tournament: `task` is required.";
@@ -177,10 +200,13 @@ export async function tournament(args: TournamentArgs): Promise<string> {
   if (contestants.length < 2) return "❌ tournament needs at least 2 models: connect another provider (/provider) or pick a provider with several free models.";
 
   const trees: Worktree[] = [];
+  const kept = new Set<Worktree>();
+  const pending = new Map<Worktree, Promise<void>>();
+  const warnings: string[] = [];
+  const result = await withTournamentWorktrees(root, trees, kept, pending, async () => {
   for (const c of contestants) {
     const wt = await createWorktree(`t-${c.model.split("/").pop()}`, root);
     if (!wt) {
-      for (const t of trees) await removeWorktree(t, root);
       return "❌ tournament: could not create git worktrees.";
     }
     trees.push(wt);
@@ -214,10 +240,13 @@ export async function tournament(args: TournamentArgs): Promise<string> {
       )
     )
   );
+  for (let i = 0; i < trees.length; i++) {
+    if (runs[i].report?.pending) pending.set(trees[i], runs[i].report!.pending!);
+  }
 
   if (isStopped()) {
-    for (const t of trees) await removeWorktree(t, root);
-    return "⛔ Tournament stopped by the user. No changes were merged.";
+    const waiting = [...pending.keys()].map((tree) => tree.path);
+    return `⛔ Tournament stopped by the user. No changes were merged.${waiting.length ? `\nStopped tools are still finishing; their worktrees will be removed afterwards: ${waiting.join(", ")}` : ""}`;
   }
 
   // Judge one at a time: checks may be heavy and share caches
@@ -235,23 +264,27 @@ export async function tournament(args: TournamentArgs): Promise<string> {
 
   const lines = [`Tournament: ${contestants.length} models on "${task.slice(0, 80)}"${check ? ` · judged by \`${check}\`` : ""}`];
   lines.push(...ranked.map((s, i) => row(s, i, winner)));
+  for (const tree of pending.keys()) lines.push(`\nA stopped tool is still finishing; its worktree will be removed afterwards: ${tree.path}`);
 
   for (let i = 0; i < scores.length; i++) {
     const s = scores[i];
     const wt = trees[i];
     if (s === winner) {
       const m = await mergeWorktree(wt, root);
+      kept.add(wt); // The merge either removed the tree or kept it on conflict.
       lines.push(
         m.applied
           ? `\nMerged the winner (${s.contestant.model}): ${m.files.join(", ")}. /rewind undoes it.`
           : `\n⚠ The winner could not be merged automatically (${m.conflict}). It is kept in ${m.keptAt}.`
       );
+      if (m.warning) lines.push(`\n⚠ ${m.warning}`);
     } else if (!winner && s === best && bestValid) {
+      kept.add(wt);
       lines.push(`\nNo attempt passed every check, so nothing was merged. The closest one (${s.contestant.model}) is kept in ${wt.path}\nSee it with: git -C "${wt.path}" diff ${wt.base}`);
-    } else {
-      await removeWorktree(wt, root);
     }
   }
   if (!bestValid) lines.push("\nNo contestant produced a change. Try a more specific task, or a stronger model.");
   return lines.join("\n");
+  }, warnings);
+  return warnings.length ? `${result}\n⚠ ${warnings.join("; ")}` : result;
 }

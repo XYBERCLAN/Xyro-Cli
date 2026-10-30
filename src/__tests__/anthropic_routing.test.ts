@@ -2,6 +2,7 @@ import { afterEach, describe, it, mock } from "node:test";
 import assert from "node:assert/strict";
 import { Messages } from "@anthropic-ai/sdk/resources/messages";
 import { callLLM, callLLMStream, createClient, setRetryReporter } from "../providers/llm.js";
+import { runWithSignal } from "../agent/cancel.js";
 
 describe("direct Anthropic routing and retries", () => {
   afterEach(() => {
@@ -9,6 +10,26 @@ describe("direct Anthropic routing and retries", () => {
     delete process.env.ANTHROPIC_API_KEY;
     delete process.env.OPENAI_BASE_URL;
     delete process.env.XYRO_PRIVACY;
+  });
+
+  it("passes the task abort signal to the direct stream", async () => {
+    process.env.ANTHROPIC_API_KEY = "test";
+    process.env.XYRO_PRIVACY = "off";
+    const controller = new AbortController();
+    let received: AbortSignal | null | undefined;
+    mock.method(Messages.prototype, "stream", ((_params, options) => {
+      received = options?.signal;
+      return {
+        on() {},
+        finalMessage() {
+          return new Promise((_resolve, reject) => received!.addEventListener("abort", () => reject(new Error("aborted")), { once: true }));
+        },
+      };
+    }) as typeof Messages.prototype.stream);
+    const call = runWithSignal(controller.signal, () => callLLMStream(createClient(undefined, "test"), "claude-test", [{ role: "user", content: "hi" }], () => {}));
+    assert.equal(received, controller.signal);
+    controller.abort();
+    await assert.rejects(call, /stopped/i);
   });
 
   it("recreates the stream after a transient failure", async () => {

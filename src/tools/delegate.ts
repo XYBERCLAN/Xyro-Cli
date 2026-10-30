@@ -47,7 +47,7 @@ function header(r: ExpertReport, title: string, why: string): string {
   return `[${parts.join(" · ")}] ${r.ok ? "✓ done" : r.timedOut ? "⏱ ran out of steps/time" : "✗ incomplete"}`;
 }
 
-async function runOne(job: DelegateArgs, depth = 0, history: string[] = []): Promise<string> {
+async function runOne(job: DelegateArgs, depth = 0, history: string[] = [], onPending?: () => void): Promise<string> {
   const task = (job.task || "").trim();
   if (!task) return "❌ delegate: `task` is required.";
   let why = "";
@@ -67,6 +67,11 @@ async function runOne(job: DelegateArgs, depth = 0, history: string[] = []): Pro
   const lines = [`${header(report, expert.title, why)}\n${report.output}`];
   let ok = report.ok;
 
+  if (report.pending) {
+    onPending?.();
+    return `${lines.join("\n\n")}\n\n⚠ A tool may still be running and may continue to change files.`;
+  }
+
   if (isStopped()) return `${lines.join("\n\n")}\n\n⛔ Stopped by the user.`;
 
   // Immune check: an independent verifier confirms work that actually changed files
@@ -76,6 +81,10 @@ async function runOne(job: DelegateArgs, depth = 0, history: string[] = []): Pro
       const v = await runExpert(verifier, `Verify this work.\n\nOriginal task: ${task}`, {
         context: `Report from the ${expert.title}:\n${report.output.slice(0, 4000)}`,
       });
+      if (v.pending) {
+        onPending?.();
+        return `${lines.join("\n\n")}\n\n⚠ A verification tool may still be running and may continue to change files.`;
+      }
       const verdict = /^\s*VERIFIED\b/i.test(v.output) && !/^\s*NOT VERIFIED/i.test(v.output);
       ok = v.ok && verdict;
       // The verifier's ruling is evidence for (or against) the skills that were used
@@ -88,7 +97,7 @@ async function runOne(job: DelegateArgs, depth = 0, history: string[] = []): Pro
   const next = ESCALATE_TO[expert.name];
   if (!ok && job.escalate !== false && next && depth < MAX_ESCALATIONS) {
     const carried = [...history, `Previous attempt by the ${expert.title} did not succeed:\n${lines.join("\n\n").slice(0, 6000)}`];
-    const escalated = await runOne({ ...job, expert: next }, depth + 1, carried);
+    const escalated = await runOne({ ...job, expert: next }, depth + 1, carried, onPending);
     lines.push(escalated);
   }
   return lines.join("\n\n");
@@ -130,6 +139,7 @@ export async function delegateTeam(args: { tasks: DelegateArgs[]; isolate?: bool
     }
   }
 
+  const pending = new Set<number>();
   let next = 0;
   const worker = async () => {
     while (next < jobs.length) {
@@ -137,7 +147,8 @@ export async function delegateTeam(args: { tasks: DelegateArgs[]; isolate?: bool
       if (results[i] !== undefined) continue;
       try {
         const tree = trees[i];
-        results[i] = tree ? await runInWorkspace(tree.path, () => runOne(jobs[i])) : await runOne(jobs[i]);
+        const run = () => runOne(jobs[i], 0, [], () => pending.add(i));
+        results[i] = tree ? await runInWorkspace(tree.path, run) : await run();
       } catch (err) {
         results[i] = `❌ ${err instanceof Error ? err.message : String(err)}`;
       }
@@ -149,12 +160,17 @@ export async function delegateTeam(args: { tasks: DelegateArgs[]; isolate?: bool
   for (let i = 0; i < jobs.length; i++) {
     const tree = trees[i];
     if (!tree) continue;
+    if (pending.has(i)) {
+      results[i] += `\n[Worktree kept at ${tree.path}; a tool may still be running. Confirm it has stopped before reviewing or removing the worktree.]`;
+      continue;
+    }
     const m = await mergeWorktree(tree);
     results[i] += m.applied
       ? m.files.length
         ? `\n[merged ${m.files.length} file${m.files.length === 1 ? "" : "s"} from its worktree: ${m.files.slice(0, 8).join(", ")}]`
         : "\n[no file changes]"
       : `\n[⚠ could not merge automatically: ${m.conflict}. The work is kept in ${m.keptAt} — merge it by hand.]`;
+    if (m.warning) results[i] += `\n[⚠ ${m.warning}]`;
   }
 
   const note = isolate ? " — writers worked in separate git worktrees" : "";
@@ -180,6 +196,7 @@ export async function heal(args: { command?: string; max_rounds?: number }): Pro
       context: `Test run (round ${round}):\n${result.slice(0, 6000)}`,
     });
     log.push(`${header(report, healer.title, `round ${round}`)}\n${report.output.slice(0, 1500)}`);
+    if (report.pending) return `⚠ Healing stopped: a tool may still be running and may continue to change files.\n\n${log.join("\n\n")}`;
     result = await runTests({ command: args.command });
   }
   const passed = result.startsWith("✅");
@@ -208,14 +225,15 @@ export async function runWorkflow(args: { name: string; goal?: string }): Promis
   for (let i = 0; i < w.stages.length; i++) {
     const stage = w.stages[i];
     const context = previous.length ? `Reports from earlier stages:\n${previous.join("\n\n").slice(-8000)}` : undefined;
+    let outstanding = false;
     const results = await Promise.all(
-      stage.map((step) => runOne({ task: step.task.replace(/\{\{\s*goal\s*\}\}/g, goal), expert: step.expert, context }))
+      stage.map((step) => runOne({ task: step.task.replace(/\{\{\s*goal\s*\}\}/g, goal), expert: step.expert, context }, 0, [], () => { outstanding = true; }))
     );
     const failedAll = results.every((r) => /✗ incomplete|⏱ ran out|❌/.test(r.split("\n")[0]) && !/✓ done/.test(r));
     sections.push(`── Stage ${i + 1}: ${stage.map((s) => s.expert).join(" + ")}\n${results.join("\n\n")}`);
     previous.push(...results.map((r, k) => `[${stage[k].expert}] ${r.slice(0, 3000)}`));
-    if (failedAll) {
-      sections.push(`Workflow stopped at stage ${i + 1}: every step failed.`);
+    if (failedAll || outstanding) {
+      sections.push(`Workflow stopped at stage ${i + 1}: ${outstanding ? "a tool is still running" : "every step failed"}.`);
       break;
     }
   }

@@ -6,7 +6,14 @@
 // it; each part winds down at its next safe point and the conversation stays
 // valid (unfinished tool calls are recorded as not run).
 
+import { AsyncLocalStorage } from "node:async_hooks";
+
 let controller = new AbortController();
+interface TaskScope {
+  signal: AbortSignal;
+}
+
+const scopedSignal = new AsyncLocalStorage<TaskScope>();
 
 export class StoppedByUser extends Error {
   constructor() {
@@ -23,7 +30,12 @@ export function beginTurn(): AbortSignal {
 
 /** The current turn's signal (experts and tools read this). */
 export function turnSignal(): AbortSignal {
-  return controller.signal;
+  return scopedSignal.getStore()?.signal ?? controller.signal;
+}
+
+/** Limit a child task without cancelling its siblings or the user's turn. */
+export function runWithSignal<T>(signal: AbortSignal, fn: () => Promise<T>): Promise<T> {
+  return scopedSignal.run({ signal }, fn);
 }
 
 /** Stop the current turn. Returns false when nothing was running / already stopping. */
@@ -34,10 +46,10 @@ export function cancelTurn(): boolean {
 }
 
 export function isStopped(): boolean {
-  return controller.signal.aborted;
+  return turnSignal().aborted;
 }
 
 /** Throw if the user stopped the turn (use at safe points in loops). */
 export function throwIfStopped(): void {
-  if (controller.signal.aborted) throw new StoppedByUser();
+  if (turnSignal().aborted) throw turnSignal().reason ?? new StoppedByUser();
 }
