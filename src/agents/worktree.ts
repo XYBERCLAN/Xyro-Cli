@@ -94,6 +94,18 @@ export async function linkDependencies(root: string, wtPath: string): Promise<st
   return linked;
 }
 
+/**
+ * Apply the user's uncommitted diff inside a fresh worktree. Returns null on
+ * success, or the reason git rejected it (binary files, mode-only changes,
+ * CRLF or submodule diffs can all fail to apply).
+ */
+export async function applyWorkingTreePatch(worktreePath: string, patch: string): Promise<string | null> {
+  const apply = await git(worktreePath, ["apply", "--whitespace=nowarn"], patch + "\n");
+  if (apply.exitCode === 0) return null;
+  const reason = String(apply.stderr || apply.stdout || "").trim();
+  return reason || `git apply exited with ${apply.exitCode}`;
+}
+
 export async function createWorktree(label: string, root = process.cwd()): Promise<Worktree | null> {
   const id = `${label.replace(/[^a-z0-9-]/gi, "-").toLowerCase()}-${Date.now().toString(36)}`;
   const path = join(root, ".xyro", "worktrees", id);
@@ -106,7 +118,16 @@ export async function createWorktree(label: string, root = process.cwd()): Promi
 
   // Bring the user's uncommitted work along so the expert sees the real state
   const diff = await git(root, ["diff", "HEAD", "--binary"]);
-  if (String(diff.stdout).trim()) await git(path, ["apply", "--whitespace=nowarn"], String(diff.stdout) + "\n");
+  const patch = String(diff.stdout);
+  if (patch.trim()) {
+    const applyError = await applyWorkingTreePatch(path, patch);
+    if (applyError) {
+      await removeWorktree({ path, branch, base: "HEAD" }, root);
+      throw new Error(
+        `createWorktree: git could not apply the uncommitted changes (${applyError}); a worktree without them would judge the wrong state. Commit or stash the changes and retry.`,
+      );
+    }
+  }
   const untracked = String((await git(root, ["ls-files", "--others", "--exclude-standard", "-z"])).stdout).split("\0").filter((f) => f && !f.startsWith(".xyro/worktrees/"));
   for (const f of untracked) {
     try {
