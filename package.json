@@ -10,6 +10,7 @@
     "llm",
     "tui"
   ],
+  "license": "MIT",
   "type": "module",
   "bin": {
     "xyro": "dist/index.js"
@@ -44,7 +45,8 @@
     "prepublishOnly": "npm run build",
     "release": "gh workflow run release.yml -f bump=patch",
     "release:minor": "gh workflow run release.yml -f bump=minor",
-    "release:major": "gh workflow run release.yml -f bump=major"
+    "release:major": "gh workflow run release.yml -f bump=major",
+    "demo": "npm run build && node docs/demo/banner.mjs && vhs docs/demo/demo.tape && vhs docs/demo/screenshots.tape && rm -f docs/demo/.screenshots.gif"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.123.0",

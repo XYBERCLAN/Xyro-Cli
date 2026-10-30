@@ -786,7 +786,7 @@ export async function runTuiMode(opts: {
   // and move off a model that no longer exists
   void refreshConnectedProviders().then(healActiveModel, () => undefined);
 
-  // Quietly look for a newer release (cached 12h, 3s timeout, never blocks).
+  // Quietly look for a newer release (cached 10 min, 3s timeout, never blocks).
   // A new version gets a pop-up once (again after a few days if dismissed).
   void checkForUpdate().then(async (info) => {
     if (!info?.updateAvailable) return;

@@ -62,6 +62,13 @@ export function summarizeToolArgs(args: Record<string, unknown>): string {
     if (typeof v === "string" && v.trim()) return v.replace(/\s+/g, " ").trim().slice(0, 120);
   }
   if (Array.isArray(args?.files)) return (args.files as unknown[]).join(" ").slice(0, 120);
+  // A task list (write_todos): its progress, not the raw JSON
+  if (Array.isArray(args?.items)) {
+    const items = args.items as { status?: unknown }[];
+    const done = items.filter((i) => i?.status === "done").length;
+    return `${items.length} task${items.length === 1 ? "" : "s"} · ${done} done`;
+  }
+  if (typeof args?.summary === "string" && args.summary.trim()) return args.summary.replace(/\s+/g, " ").trim().slice(0, 120);
   const json = JSON.stringify(args ?? {});
   return json === "{}" ? "" : json.slice(0, 80);
 }

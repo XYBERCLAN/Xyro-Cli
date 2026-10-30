@@ -1,317 +1,318 @@
 <div align="center">
 
-```
-      ___           ___           ___           ___     
-     |\__\         |\__\         /\  \         /\  \    
-     |:|  |        |:|  |       /::\  \       /::\  \   
-     |:|  |        |:|  |      /:/\:\  \     /:/\:\  \  
-     |:|__|__      |:|__|__   /::\~\:\  \   /:/  \:\  \ 
- ____/::::\__\     /::::\__\ /:/\:\ \:\__\ /:/__/ \:\__\
- \::::/~~/~       /:/~~/~    \/_|::\/:/  / \:\  \ /:/  /
-  ~~|:|~~|       /:/  /         |:|::/  /   \:\  /:/  / 
-    |:|  |       \/__/          |:|\/__/     \:\/:/  /  
-    |:|  |                      |:|  |        \::/  /   
- \|__|                       \|__|         \/__/
-```
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/XYBERCLAN/Xyro-Cli/main/docs/assets/banner-dark.svg">
+  <img alt="XYRO" src="https://raw.githubusercontent.com/XYBERCLAN/Xyro-Cli/main/docs/assets/banner-light.svg" width="420">
+</picture>
+
+### The AI coding agent that lives in your terminal and runs on free models.
+
+Plan, edit, test and ship with a team of 25 expert agents, using the free tiers of Google AI Studio, Groq, OpenRouter, Ollama and 21 other providers. When one runs out, XYRO moves to the next.
+
+[![npm](https://img.shields.io/npm/v/xyro-cli?style=flat-square&color=38BDF8&labelColor=0B1018&label=npm)](https://www.npmjs.com/package/xyro-cli)
+[![CI](https://img.shields.io/github/actions/workflow/status/XYBERCLAN/Xyro-Cli/ci.yml?branch=main&style=flat-square&labelColor=0B1018&label=CI)](https://github.com/XYBERCLAN/Xyro-Cli/actions/workflows/ci.yml)
+[![node](https://img.shields.io/node/v/xyro-cli?style=flat-square&color=3B82F6&labelColor=0B1018)](https://nodejs.org)
+[![license](https://img.shields.io/github/license/XYBERCLAN/Xyro-Cli?style=flat-square&color=C6F135&labelColor=0B1018)](LICENSE)
+
+[Quickstart](#quickstart) · [Features](#features) · [Usage](#usage) · [Configuration](#configuration) · [How it works](#how-it-works) · [Contributing](#contributing)
 
 <br>
 
-<p>terminal-native ai coding agent  ◆  built from scratch  ◆  no dependencies beyond what you see</p>
+<img alt="XYRO adds input validation to a signup handler: it plans the work, reads the file, edits it and runs the tests" src="https://raw.githubusercontent.com/XYBERCLAN/Xyro-Cli/main/docs/assets/demo.gif" width="100%">
 
-<br>
+<sub>A real XYRO session. The model's replies are scripted so the recording can be reproduced (<a href="docs/demo">docs/demo</a>); everything else on screen is XYRO itself.</sub>
 
-<a href="#features">Features</a> ◆ <a href="#quickstart">Quickstart</a> ◆ <a href="#usage">Usage</a> ◆ <a href="#architecture">Architecture</a> ◆ <a href="#roadmap">Roadmap</a> ◆ <a href="#gaps">Known Gaps</a>
-
-<br>
-
-<p>Automated commit by XYRO.</p>
-<p>XYRO — the terminal-native AI coding assistant that built this project.</p>
-<p>Built with XYRO — terminal-native AI coding agent (xyberclan.dev)</p>
 </div>
 
----
+<br>
 
-## ◆ Built with XYRO
-
-Built with XYRO — terminal-native AI coding agent (xyberclan.dev)
-
-## ◆ What is XYRO?
-
-**XYRO** is a terminal-native AI coding agent written in TypeScript from scratch. It operates as an interactive CLI that connects to OpenAI-compatible LLM providers (OpenAI, Groq, OpenRouter, DeepSeek, and others) and helps you navigate, analyze, understand, and modify codebases — all without leaving your terminal.
-
-Unlike most AI coding tools that require a VS Code extension, a web dashboard, or proprietary infrastructure, XYRO is a single binary that runs wherever Node.js runs. It uses the **model context protocol (MCP)** pattern: the LLM drives the session, calls tools (file read, file write, shell commands, code search), and XYRO executes them locally.
-
----
-
-## ✦ Features
-
-| Icon | Area | Description |
-|------|------|-------------|
-| ◆ | **Provider-Agnostic** | Works with OpenAI, Groq, OpenRouter, DeepSeek, or any OpenAI-compatible API |
-| ▸ | **Persistent Sessions** | Auto-saves conversation history; resume with `--resume` |
-| ● | **Tool System** | Filesystem read/write, shell execution, code search, glob matching |
-| ⚡ | **Interactive Prompts** | Rich terminal UI via clack prompts, gradient banners, colored output |
-| ★ | **Config Persistence** | Remembers your provider, model, and API key across sessions |
-| ❖ | **No-Banner Mode** | Headless/JSON output for CI pipelines and scripting |
-| ◈ | **Free-Tier Friendly** | Built-in provider presets for Groq, OpenRouter, DeepSeek free tiers |
-| ▣ | **Error Handling** | Granular API error formatting per provider (auth, rate-limit, model-not-found) |
-| ◆ | **Free-Quota Pool** | When a model is rate-limited or out of free quota, XYRO moves to another free model, then to another provider you have a key for. Limited providers rest until they recover. See `/quota` |
-| ▸ | **Intent Guard** | Lasting requirements you state ("login must reject empty passwords") are saved as checks in `.xyro/intents.json` and re-run after every change. Anything that broke is fixed before the turn ends. See `/intents` |
-| ● | **Privacy Shield** | API keys, tokens, passwords, private keys, card numbers and emails are replaced with placeholders before a request leaves your machine, then restored locally in replies and tool calls. Counts are logged to `privacy-audit.jsonl`, never values. See `/privacy`, or turn it off with `XYRO_PRIVACY=off` |
-| ★ | **Tournament Mode** | For a hard change, 2–4 free models from different providers each solve it in their own git worktree. Your tests, saved intents and the type checker score the results, and only a winner that passes is merged. XYRO remembers which models win. Free quota makes this affordable, which paid tools can't match |
-| ⚡ | **Hedged Requests** | XYRO learns how quickly each provider usually responds. If a request hasn't started streaming well past that time, a backup goes to another provider, and whichever answers first wins. Turn it off with `XYRO_HEDGE=off` |
-| ▸ | **Instant Commands** | "run the tests", "what changed", "show the diff", "typecheck" and "repo map" run locally with no model call and no quota used, and the result stays in the conversation. Turn it off with `XYRO_INSTANT=off` |
-| ◈ | **Bring Your Setup** | XYRO reads what you already set up for other agents: rules (`AGENTS.md`, `CLAUDE.md`, `GEMINI.md`, Cursor, Windsurf, Cline, Copilot), skills (`~/.claude/skills` and Claude Code plugins, found with `skill_search`), and MCP servers (Claude Code, Cursor, VS Code, Gemini). MCP servers defined inside a project need `/mcp trust`. Turn it off with `XYRO_IMPORT=off` |
-| ❖ | **Evidence-Backed Skills** | Each skill keeps a record of how often its runs pass verification. Skills that keep failing are no longer loaded automatically. `skill_forge` saves a solved procedure as a project skill, but only if its check passes at that moment |
-| ◆ | **XYRO as an MCP Server** | `xyro mcp` gives Claude Code, Cursor and other agents XYRO's tools: tournament, experts, repo map, intents, web search and quota. The work runs on your free quota instead of the host's paid model: `claude mcp add xyro -- xyro mcp` |
-| ★ | **Learns How You Work** | XYRO keeps a local journal of evidence: what you ask for, your corrections ("no, use pnpm"), your praise, your rewinds, and errors it recovered from. Every so often it reflects on that journal (or right away with `/learn`), and code checks every claim against the evidence. A habit of yours is kept only after it has been seen twice. Project lessons go into `XYRO.md`. A skill is written only for a procedure seen working in two separate sessions. `/profile` shows what XYRO knows about you and `/forget` erases it. Turn it off with `XYRO_LEARN=off` |
-| ❖ | **Expert Council** | For decisions that are costly to get wrong, experts each investigate and propose an approach, read each other's proposals, debate and vote. When a ballot includes multiple `VOTE:` markers, the last one counts. The author of the winning proposal writes the final decision, and the team can then carry it out (`council`) |
-| ▸ | **Leads and Workers** | Any expert can lead: `assign_workers` hands out up to 3 sub-tasks in parallel. Workers follow the lead's rules, use only the lead's tools, and report back to the lead |
-| ◈ | **Skills Anywhere** | Every expert can search and load any installed skill or plugin tool whenever its task needs one. When nothing installed fits, `skill_find_online` searches the web and `skill_install` installs a skill from GitHub, after your approval |
-| ● | **The Team, Animated** | A strip beside the input box (always visible, even next to a long plan) shows each working expert as a small robot. When an expert gets a task, its robot wakes up: dozing, then eyes popping open with a "!", then a happy hop. Then it works in the style of its role: builders throw sparks, inspectors sweep a lens and follow it with their eyes, testers chase a bug until it's caught, writers draw lines, architects turn "?" into "!", and shippers move things along a conveyor. It smiles when done and shows crossed eyes on failure. Workers stand beside their lead, and when nobody is working the team dozes. XYRO itself wakes up when you send a message, then glances around and hops now and then while it works |
-| ■ | **Esc to Stop** | Press Esc while XYRO works to stop the whole turn: the model request, running commands and tests, and every expert, worker, council or tournament. What was already said is kept, nothing half-finished is merged, and you can carry on with your next message |
-| ◆ | **Experts Ready on Arrival** | The moment you send a message, XYRO recognises what kind of request it is, and the experts for it wake up in the side panel, ready to work. Multi-step requests are planned in the open: XYRO writes the steps, names the expert who owns each one, and hands the specialised steps to those experts. If the model starts without a plan, it is reminded once |
-| ● | **Experts Know Their Trade** | No trigger words needed: when XYRO reads or searches files, the scout wakes up and works; when it edits, the builder does; tests wake the tester, git the git expert, web searches the researcher |
-| ▸ | **Scrolling** | The mouse wheel scrolls the chat, and your view stays put while new messages arrive (End jumps back to the newest). Long menus, including the main command menu, fit any screen: your selection stays in view, and "↑ N more" / "↓ N more" show what's hidden |
-| ◈ | **Easy on Free Quotas** | Each request is about 58% smaller: the main agent gets a core set of tools and loads extra groups (git, team, files, background, intents, skills) only when needed. On providers with a small daily allowance (OpenRouter's free tier is 50 requests a day), XYRO works in fewer, fuller steps and keeps experts short. When a daily allowance runs out, XYRO says so clearly: when it resets, and what you can do in the meantime |
-| ■ | **Stays in Your Project** | XYRO reads and writes inside the folder it was started in. Reading anywhere else asks you first, once per folder per session, and writes outside the project are always refused. It warns you if it was started in your home folder |
-| ★ | **A Real Welcome** | First launch happens inside XYRO, not as a plain text prompt: the mascot intro, then a choice of language (XYRO then speaks it with you), a look, and connecting a free AI provider, with links to get a free key. `/language` changes the language later |
-| ◈ | **Skills, Plugins, MCP in One Place** | `/skills` lists every skill XYRO and its experts can use, grouped by source and with each one's track record. Enter puts a skill to work for the session (Enter again stops it), → reads it in full. `/skills search`, `/skills install <github url>` and `/skills remove <name>` manage them. `/plugins` shows loaded plugins, their tools and load errors; `/plugins reload` picks up changes |
-| ★ | **Claude Code Plugins** | Plugins are added the way Claude Code adds them: `/plugin marketplace add owner/repo`, `/plugin browse`, `/plugin install name@marketplace`, `/plugin list`, `/plugin uninstall name`. A plugin's skills join `/skills`, its agents join the expert team (with Claude tool names translated), its commands become slash commands (`/name args`), and its MCP servers connect. Plugin hooks are not run. The same commands work from the shell: `xyro plugin …` |
-| ◆ | **MCP, Claude Code Syntax** | `/mcp add name -- npx -y some-server`, `/mcp add --transport http name https://…` (options `--scope project`, `-e KEY=value`, `-H "Header: value"`), `/mcp remove name`, `/mcp list`. Also from the shell: `xyro mcp add …` |
-| ▸ | **Sessions per Project** | Each project keeps its conversations in `.xyro/sessions/` (private files, kept out of git). `/sessions` reopens any of them, `/new` (or `/clear`) starts a fresh one, `--resume` reopens this project's latest. ↑/↓ in the input walks back through the prompts of the session |
-| ◆ | **XYRO Link** | Open XYRO on the same project in another terminal and the sessions link automatically. `/chat` talks to the other users, and each side's experts see the other's notes, proposals and decisions on a shared team board. Teammates on the same network join with a code (`/link lan` on one machine, `/link join <code>` on the other). Join codes are 16 characters and the key is derived with scrypt, and every message is signed, so others on the network can't read or inject anything. Chat from teammates on the network reaches XYRO only after you type `/chat use`. Linked sessions only exchange text, never commands. Turn it off with `XYRO_LINK=off` |
-
----
-
-## ⚡ Quickstart
+## Quickstart
 
 ```bash
-# Install globally
 npm install -g xyro-cli
-
-# Or run directly
-npx xyro-cli
-
-# First run walks you through setup
 xyro
 ```
 
-### Environment
+That's it. The first launch happens inside XYRO: pick your language and a look, then connect a provider. XYRO links to the free key page of each one. [Google AI Studio](https://aistudio.google.com/apikey) and [Groq](https://console.groq.com/keys) take about a minute, and [Ollama](https://ollama.com) needs no key at all.
 
-```
-OPENAI_API_KEY=sk-...           # default for any provider
-XYRO_NO_BANNER=1                # suppress the ASCII banner
-```
+Then ask for what you want, in your own words:
 
-### Provider presets
-
-```bash
-# Use a specific provider
-xyro --provider groq
-xyro --provider openrouter --model openai/gpt-4o
-xyro --provider deepseek
-
-# Full manual config
-xyro --api-key sk-... --base-url https://api.example.com/v1 --model gpt-4o
+```text
+❯ Add input validation to the signup handler, then run the tests
 ```
 
----
+XYRO plans the steps, reads the code, makes the change, runs your tests and tells you what it did. Press <kbd>Esc</kbd> at any time to stop.
 
-## ◆ Usage
+> XYRO needs **Node.js 20 or newer**. To try it without installing, run `npx xyro-cli`.
 
-```
+<br>
+
+## Features
+
+### Free models, without the limits getting in your way
+
+XYRO ships with **25 provider presets**, from Google AI Studio, Groq and OpenRouter to Mistral, DeepSeek, GitHub Models and a local Ollama. Connect as many as you like; XYRO treats them as one pool.
+
+- **Free-quota pool.** When a model is rate-limited or out of free quota, XYRO switches to another free model, then to another provider you have a key for. Limited providers rest until they recover. `/quota` shows the live capacity of each one.
+- **Hedged requests.** XYRO learns how fast each provider usually answers. If a request is slow to start, a backup goes to another provider and the first answer wins.
+- **Light requests.** The agent starts with a core set of tools and loads extra groups (git, team, files, background jobs, intents, skills) only when a task needs them. On providers with a small daily allowance, it works in fewer, fuller steps.
+- **Instant commands.** "run the tests", "what changed", "show the diff", "typecheck" and "repo map" run locally, with no model call and no quota used.
+
+### A team of experts, not a single chat
+
+<p align="center"><img alt="The /experts panel listing XYRO's built-in experts with their roles and tools" src="https://raw.githubusercontent.com/XYBERCLAN/Xyro-Cli/main/docs/assets/experts.png" width="100%"></p>
+
+XYRO hands work to **25 built-in experts**: scout, architect, builder, debugger, tester, reviewer, security, docs writer, git operator and more. Each has its own tools, rules and track record. A strip beside the input shows each one at work as a small animated robot.
+
+- **Plans in the open.** Multi-step requests become a visible task list, each step owned by an expert.
+- **Leads and workers.** Any expert can split its task into up to 3 parallel sub-tasks.
+- **Expert council.** For decisions that are costly to get wrong, experts each propose an approach, read each other's proposals, debate and vote.
+- **Tournament.** For a hard change, 2 to 4 models from different providers each solve it in their own git worktree. Your tests, saved requirements and the type checker score the results, and only a winner that passes is merged.
+- **Workflows.** `/workflow feature`, `bugfix`, `review`, `release-check`, `refactor` and `onboard` run a whole team play.
+- **Your own experts.** Add experts as Markdown files in `.xyro/agents/` (project) or `~/.config/xyro/agents/` (user).
+
+### Safe by default
+
+<p align="center"><img alt="XYRO asks 'Allow this action?' before editing src/signup.js, with allow, always allow and deny" src="https://raw.githubusercontent.com/XYBERCLAN/Xyro-Cli/main/docs/assets/approval.png" width="100%"></p>
+
+- **Four permission modes.** <kbd>Shift</kbd>+<kbd>Tab</kbd> cycles them: **ask** (asks before changing anything), **accept-edits** (file edits run, commands still ask), **plan** (read-only) and **yolo** (nothing asks). "Always allow" answers become rules you can edit.
+- **Stays in your project.** XYRO reads and writes inside the folder it started in. Reading elsewhere asks first, and writing elsewhere is refused.
+- **Privacy shield.** API keys, tokens, passwords, private keys, card numbers and emails are replaced with placeholders before a request leaves your machine, then restored locally. `/privacy` shows what was withheld.
+- **Undo anything.** `/rewind` (or <kbd>Esc</kbd> <kbd>Esc</kbd>) takes files and the conversation back to an earlier message.
+- **Requirements that stick.** Say "login must reject empty passwords" once, and it becomes a check that runs again after every change. `/intents` lists them.
+
+### Works with the setup you already have
+
+- **Your rules.** XYRO reads `AGENTS.md`, `CLAUDE.md`, `GEMINI.md` and the rule files of Cursor, Windsurf, Cline and Copilot.
+- **Skills and Claude Code plugins.** `/skills` lists every skill XYRO can use, including `~/.claude/skills`. `/plugin install name@marketplace` adds Claude Code plugins: their skills, agents, commands and MCP servers.
+- **MCP, both ways.** Connect MCP servers with Claude Code's syntax (`/mcp add name -- npx -y some-server`), or run `xyro mcp` to give Claude Code, Cursor and other agents XYRO's tournament, experts, repo map and web search: `claude mcp add xyro -- xyro mcp`.
+
+### Learns how you work
+
+XYRO keeps a local journal of what you ask for, your corrections ("no, use pnpm") and what worked. It keeps a habit only after seeing it twice, writes project lessons to `XYRO.md`, and turns a procedure into a skill only once it has worked in two separate sessions. `/profile` shows what it knows about you and `/forget` erases it.
+
+### A terminal interface built for long sessions
+
+<p align="center"><img alt="The command palette, opened with / or Ctrl+P" src="https://raw.githubusercontent.com/XYBERCLAN/Xyro-Cli/main/docs/assets/commands.png" width="100%"></p>
+
+- <kbd>/</kbd> or <kbd>Ctrl</kbd>+<kbd>P</kbd> opens the command palette; <kbd>@</kbd> picks a project file to mention.
+- Sessions are saved per project: `/sessions` reopens any of them and `xyro --resume` continues the latest.
+- 13 themes (`/theme`), 14 languages (`/language`), mouse-wheel scrolling, multi-line input with <kbd>Shift</kbd>+<kbd>Enter</kbd>, and a terminal notification when a long turn ends.
+- **XYRO Link.** Open XYRO on the same project in another terminal, or on a teammate's machine with `/link lan`, and the sessions share notes, proposals and decisions. Messages are signed, and linked sessions never exchange commands.
+
+<br>
+
+## Usage
+
+```text
 Usage: xyro [options]
 
 Options:
-  --api-key <key>          API key
-  -m, --model <model>      LLM model
-  --base-url <url>         OpenAI-compatible base URL
-  --provider <id>          Provider ID (groq, openrouter, deepseek)
-  --max-tool-calls <n>     Max tool calls per turn (default: 25)
-  --resume                 Resume previous conversation
-  --no-banner              Skip interactive setup and banner
-  --json                   JSON output mode (skips banner)
-  -V, --version            output the version number
-  -h, --help               display help for command
+  -V, --version         output the version number
+  -v                    output the version number (shorthand for --version)
+  --api-key <key>       API key
+  -m, --model <model>   LLM model
+  --base-url <url>      OpenAI-compatible base URL
+  --provider <id>       Provider ID (e.g. groq, openrouter, deepseek)
+  --max-tool-calls <n>  Max tool calls per turn (default: "25")
+  --resume              Resume previous conversation (default: false)
+  --no-banner           Skip interactive setup and banner
+  --json                JSON output mode (skips banner) (default: false)
+  --tui                 Full-screen XYRO interactive terminal interface
+  -h, --help            display help for command
+
+Commands:
+  xyro mcp              Serve XYRO's team (tournament, experts, repo map…) to other agents over MCP
+  xyro mcp add|add-json|get|remove|list …
+                        Manage MCP servers (Claude Code syntax: xyro mcp add <name> -- <command>)
+  xyro plugin …         Claude Code plugins: marketplace add <repo>, install <name>, browse, list
 ```
 
-### Interactive Commands
+In a terminal, `xyro` opens the full-screen interface. With `--json`, `--no-banner`, or when input is piped, it runs a plain line-by-line mode instead, which supports fewer commands.
 
-| Command | Action |
-|---------|--------|
-| `exit` / `quit` | Save and exit |
-| `clear` | Reset conversation history |
-| `resume` | Reload last session |
-| `/quota` | Free-quota pool: requests, limits and resting providers |
-| `/intents` | Re-run saved requirement checks (`/intents trust`, `/intents remove <id>`) |
-| `/privacy` | What the privacy shield withheld this session (`/privacy on` / `off`) |
-| `/learn` | Reflect now: learn how you work, project lessons and proven skills |
-| `/profile` · `/forget` | See, or erase, what XYRO learned about you |
-| `/chat <message>` · `/peers` | Talk to linked XYRO sessions, and see who is linked |
-| `/link lan` · `/link join <code>` · `/link off` | Link with teammates on your network |
-| `/experts trust` | Load this project's experts from `.xyro/agents` after reviewing them (built-in experts can't be replaced) |
-| `xyro mcp` | Run XYRO as an MCP server for other agents |
+<details>
+<summary><b>Keyboard</b></summary>
+<br>
 
----
+| Key | Action |
+|---|---|
+| <kbd>Enter</kbd> · <kbd>Shift</kbd>+<kbd>Enter</kbd> | Send · new line |
+| <kbd>Esc</kbd> | Stop the current turn (your draft is kept), or close a panel |
+| <kbd>Esc</kbd> <kbd>Esc</kbd> | Rewind to an earlier message (on an empty prompt) |
+| <kbd>Shift</kbd>+<kbd>Tab</kbd> | Cycle permission mode: ask → accept-edits → plan → yolo |
+| <kbd>Tab</kbd> | Switch persona: Build, Plan, Review, Explore |
+| <kbd>/</kbd> · <kbd>Ctrl</kbd>+<kbd>P</kbd> | Command palette |
+| <kbd>@</kbd> | Mention a project file |
+| <kbd>↑</kbd> <kbd>↓</kbd> | Earlier prompts of this session |
+| <kbd>PgUp</kbd> <kbd>PgDn</kbd> · mouse wheel | Scroll the conversation; <kbd>End</kbd> jumps to the newest message |
+| <kbd>Ctrl</kbd>+<kbd>C</kbd> | Copy the selection, or quit when idle |
 
-## ▸ Architecture
+</details>
 
-```
-┌─────────────────────────────────────────────────────┐
-│                     XYRO CLI                        │
-│  ┌──────────┐  ┌──────────┐  ┌──────────────────┐  │
-│  │ commander │  │  clack   │  │  gradient-string │  │
-│  │ (args)    │  │(prompts) │  │  (banners)       │  │
-│  └────┬─────┘  └────┬─────┘  └────────┬─────────┘  │
-│       │             │                  │            │
-│  ┌────▼─────────────▼──────────────────▼─────────┐  │
-│  │              Agent Loop                        │  │
-│  │  ┌──────────┐  ┌──────────┐  ┌─────────────┐  │  │
-│  │  │   LLM    │  │  Tools   │  │  History     │  │  │
-│  │  │ Provider │──│ Registry │──│  Persistance │  │  │
-│  │  └──────────┘  └──────────┘  └─────────────┘  │  │
-│  └────────────────────────────────────────────────┘  │
-│                                                       │
-│  ┌─────────────────────────────────────────────────┐  │
-│  │  Tools                                          │  │
-│  │  read ├── write ├── shell ├── search ├── glob   │  │
-│  └─────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────┘
-```
+<details>
+<summary><b>Commands</b></summary>
+<br>
 
-### Core Loop
+| Command | What it does |
+|---|---|
+| **Conversation** | |
+| `/sessions` · `/new` · `/clear` | Reopen a conversation of this project, or start a new one (the old one is kept) |
+| `/rewind` | Undo files and conversation back to an earlier message |
+| `/compact` | Summarize the conversation to free up context |
+| `/export [file]` | Save the conversation to a file |
+| **Models and providers** | |
+| `/model` · `/provider` | Switch model, connect or reconfigure a provider |
+| `/quota` | Live capacity of every free provider XYRO can fall back to |
+| `/cost` · `/status` | Token use and estimated cost · model, context and active tools |
+| **Team** | |
+| `/experts` | Browse the experts, their tools, skills and record (`/experts trust` loads `.xyro/agents`) |
+| `/workflow <name> <goal>` | Run a team play: feature, bugfix, review, release-check, refactor, onboard |
+| **Extend** | |
+| `/skills` | Browse, search, install and remove skills |
+| `/plugin` · `/plugins` | Install Claude Code plugins · see loaded plugins and load errors |
+| `/mcp` | Connected MCP servers; `/mcp add`, `/mcp remove` |
+| `/hooks` | See active hooks and trust this project's hooks |
+| **Safety and memory** | |
+| `/intents` | Re-check your saved requirements; trust or remove them |
+| `/privacy` | What the privacy shield kept off the network; `on` / `off` |
+| `/learn` · `/profile` · `/forget` | Reflect now · see · erase what XYRO learned about you |
+| `/init` | Create an `AGENTS.md` with this project's context |
+| **Interface** | |
+| `/theme` · `/language` · `/agent` | Look · language · persona |
+| `/peers` · `/link` · `/chat` | Linked sessions on this project and your network |
+| `/update` · `/help` · `/exit` | Install the latest XYRO · all commands · save and quit |
 
-1. **CLI** parses arguments and reads persisted config (provider, model, key)
-2. **Agent Loop** creates an OpenAI-compatible client and enters the interaction loop
-3. **User input** is sent to the LLM alongside tool definitions
-4. **LLM responds** with text or tool call requests
-5. **Tool Registry** dispatches calls to filesystem/shell/search operations
-6. **Results** are fed back to the LLM for the next turn
-7. **History** is saved on exit for `--resume`
+</details>
 
-### Tool System
+<br>
 
-| Tool | Capability |
-|------|-----------|
-| `read` | Read file contents with line numbers |
-| `write` | Write or overwrite files |
-| `shell` | Execute shell commands with timeout |
-| `search` | Regex/grep file contents |
-| `glob` | Pattern-based file discovery |
+## Configuration
 
----
+### Providers
 
-## ● Stack
-
-```
-Runtime     ◆  Node.js / TypeScript / ES2022
-CLI         ◆  commander
-Prompts     ◆  @clack/prompts
-Terminal    ◆  picocolors + gradient-string
-AI API      ◆  openai SDK (OpenAI-compatible)
-Build       ◆  TypeScript compiler (tsc)
-Dev runner  ◆  tsx
-```
-
----
-
-## ❖ Known Gaps & Roadmap
-
-XYRO is in early development. Here is what it does not yet have, in rough priority order:
-
-| Area | Gap | Status |
-|------|-----|--------|
-| ◈ | **Multi-file edits** — single-file writes only, no diff/patch | Planned |
-| ▣ | **Diff preview** — no staged review of changes before apply | Planned |
-| ⚡ | **Cost tracking** — no per-session token/cost meter | Planned |
-| ▸ | **Git integration** — no automatic commits or branch management | Planned |
-| ◆ | **Context window management** — no summarization or sliding window | Planned |
-| ● | **Plugin system** — tools are hard-coded, not extensible at runtime | Future |
-| ❖ | **File watching** — no `--watch` mode for continuous feedback | Future |
-| ★ | **Config profiles** — single saved config only | Future |
-| ▣ | **Streaming output** — blocks until full LLM response | Future |
-| ◈ | **Test runner** — no built-in test execution harness | Future |
-| ▣ | **Self-hosted docs** — no `xyro --help` beyond commander output | Future |
-| ⚡ | **Multi-turn planning** — no explicit plan/approve step before execution | Future |
-
----
-
-## ✦ Development
+Pick a provider in the app with `/provider`, or on the command line:
 
 ```bash
-# Clone
-git clone git@github.com:CYBERCLAN237/Xyro-Cli.git
-cd xyro
+xyro --provider groq
+xyro --provider openrouter --model cohere/north-mini-code:free
+xyro --base-url https://api.example.com/v1 --api-key sk-… --model my-model   # any OpenAI-compatible API
+```
 
-# Install
+<details>
+<summary><b>All 25 presets</b></summary>
+<br>
+
+`google` Google AI Studio · `groq` Groq · `openrouter` OpenRouter · `tokenrouter` TokenRouter · `github` GitHub Models · `nvidia` NVIDIA NIM · `cerebras` Cerebras · `cloudflare` Cloudflare Workers AI · `huggingface` Hugging Face · `sambanova` SambaNova · `together` Together AI · `fireworks` Fireworks AI · `mistral` Mistral AI · `ovhcloud` OVHcloud · `cohere` Cohere · `nebius` Nebius · `deepseek` DeepSeek · `zhipu` Zhipu AI · `siliconflow` SiliconFlow · `qwen` Alibaba Qwen · `baidu` Baidu Qianfan · `hunyuan` Tencent Hunyuan · `volcengine` Volcengine Doubao · `ai21` AI21 Labs · `local` Ollama
+
+Free tiers and limits change often; `/model` shows the current ones for each provider.
+
+</details>
+
+### Where XYRO keeps things
+
+| Path | Contents |
+|---|---|
+| `~/.config/xyro/` (`%APPDATA%\xyro` on Windows) | Settings, saved keys (file readable only by you), MCP servers, user experts and skills, quota history |
+| `.xyro/` in your project | Sessions, permission rules, saved requirements, project experts, skills and MCP servers. Sessions are kept out of git |
+| `XYRO.md` in your project | Project lessons and conventions, read at the start of every session |
+
+### Permissions
+
+Rules live in `.xyro/settings.json` (or `~/.config/xyro/settings.json` for every project). Deny rules always win.
+
+```json
+{
+  "mode": "ask",
+  "allow": ["run_command(npm test)", "run_command(npm run lint)"],
+  "deny": ["run_command(git push*)"]
+}
+```
+
+### Environment variables
+
+<details>
+<summary><b>Turn features off, or change how they work</b></summary>
+<br>
+
+| Variable | Effect |
+|---|---|
+| `OPENAI_API_KEY` | API key used when none is saved or passed with `--api-key` |
+| `ANTHROPIC_API_KEY` | Claude models go straight to Anthropic when no other base URL is configured |
+| `XYRO_PRIVACY=off` | Turn off the privacy shield |
+| `XYRO_HEDGE=off` | Turn off hedged requests |
+| `XYRO_NO_POOL=1` | Never fall back to another provider |
+| `XYRO_INSTANT=off` | Turn off instant (no-model) commands |
+| `XYRO_LEARN=off` | Turn off learning |
+| `XYRO_IMPORT=off` | Don't import Claude Code skills, plugins or other agents' MCP servers |
+| `XYRO_LINK=off` | Turn off XYRO Link |
+| `XYRO_NO_UPDATE_CHECK=1` | Don't check npm for a newer version (also off when `CI` is set) |
+| `XYRO_NO_NOTIFY=1` | No terminal notification when a turn ends |
+| `XYRO_REDUCED_MOTION=1` | Reduce animation and skip the intro |
+| `TAVILY_API_KEY` · `BRAVE_SEARCH_API_KEY` · `SEARXNG_URL` | Web search engines, tried in that order before DuckDuckGo |
+
+</details>
+
+### Updating
+
+XYRO checks npm when it starts (at most once every 10 minutes, without slowing start-up) and tells you when a new version is out. Type `/update` to install it, or run `npm install -g xyro-cli@latest`.
+
+<br>
+
+## How it works
+
+XYRO is a TypeScript program with no server and no account. It talks to any OpenAI-compatible API (and to Anthropic directly), and runs every tool on your machine.
+
+```text
+ you ─▶ terminal UI ─▶ agent loop ─▶ model (from the free-quota pool)
+                          │  ▲
+                tool call │  │ result
+                          ▼  │
+           tools: files · shell · tests · git · web · MCP · experts
+                          │
+             permissions · privacy shield · checkpoints for /rewind
+```
+
+| Part | Where |
+|---|---|
+| Terminal interface | [`src/tui/`](src/tui) |
+| Agent loop, sessions, learning, hooks | [`src/agent/`](src/agent) |
+| Experts, council, tournament, worktrees | [`src/agents/`](src/agents) |
+| Providers, free-quota pool, privacy shield | [`src/providers/`](src/providers) |
+| Tools and permissions | [`src/tools/`](src/tools) |
+| MCP client and server | [`src/mcp/`](src/mcp) |
+
+<br>
+
+## Roadmap
+
+XYRO is young and moves fast. What's planned, known bugs and good first issues are all on the [issue tracker](https://github.com/XYBERCLAN/Xyro-Cli/issues). A few larger gaps:
+
+- **Headless one-shot mode**: `xyro -p "…"` that runs one task and exits, for CI and scripts
+- **Patch-based multi-file edits** with a diff preview before approval
+- **Windows parity**: the test suite does not fully pass on Windows yet
+
+<br>
+
+## Contributing
+
+Contributions are welcome. [CONTRIBUTING.md](CONTRIBUTING.md) covers the workflow and commit conventions.
+
+```bash
+git clone https://github.com/XYBERCLAN/Xyro-Cli.git
+cd Xyro-Cli
 npm install
-
-# Dev (runs via tsx)
-npm run dev
-
-# Build
-npm run build
-
-# Run built version
-npm start
+npm run dev        # run from source
+npm test           # tests never touch your real XYRO config
 ```
 
-### ▸ Releasing to npm
+Releases are automatic: see [docs/RELEASING.md](docs/RELEASING.md).
 
-Releases are automated via GitHub Actions (`.github/workflows/publish.yml`). Pushing a `v*` tag triggers `npm publish`:
+## License
 
-```bash
-# 1. Bump version in package.json first, commit
-npm version patch   # or minor / major — this commits and tags for you
+[MIT](LICENSE)
 
-# 2. Push the tag
-git push --follow-tags
-# GitHub Actions now: installs → builds → verifies tag == package.json version → publishes
-```
-
-The workflow requires an `NPM_TOKEN` secret in the repo (Settings → Secrets → Actions). Use a **granular access token** with "Read and write" packages permission, and 2FA bypass enabled for automation.
-
----
-
-## ✦ Updating
-
-XYRO checks npm for a newer release in the background (at most every 12 hours, never blocking start-up). When one exists, the home screen and the status rail say so — type `/update` to install it without leaving XYRO, then restart.
-
-```bash
-/update                         # inside XYRO
-npm install -g xyro-cli@latest  # or from your shell
-XYRO_NO_UPDATE_CHECK=1 xyro     # opt out of the background check
-```
-
-## ✦ Releasing
-
-Releases are cut by CI — no local publishing needed.
-
-**Automatic (default):** every push to `main` that users would notice is published by `auto-release.yml`. The commit messages decide the version: `feat:` → minor, `fix:`/`perf:`/`revert:` → patch, `type!:` or `BREAKING CHANGE` → major (minor while on 0.x). Pushes that only change docs, chores, tests or CI publish nothing. Add `[release]` to a commit message to force a patch release, or `[skip release]` to skip one. Users see a "New version" pop-up with what's new the next time they start XYRO.
-
-**Manual:**
-
-1. **Actions → Release → Run workflow**, pick `patch`, `minor`, `major` or `prerelease` (or run `npm run release`, `npm run release:minor`, `npm run release:major` with the GitHub CLI).
-2. The workflow typechecks, builds, runs the tests, bumps `package.json`, tags `vX.Y.Z`, publishes to npm **with provenance**, and creates a GitHub Release with generated notes.
-3. Pre-releases publish to the `next` dist-tag, so `npm install -g xyro-cli` stays on stable.
-
-Pushing a `v*` tag manually (`npm version patch && git push --follow-tags`) runs the same gate through `publish.yml`, and skips versions already on npm.
-
-**One-time setup:** add an npm automation token as the `NPM_TOKEN` repository secret, and allow GitHub Actions to push to `main` (or exempt `github-actions[bot]` from branch protection).
-
-## ▸ License
-
-MIT — see [LICENSE](LICENSE)
-
----
+<br>
 
 <div align="center">
-<br>
-<p>
-  <sub>
-  built from scratch with TypeScript  ◆  by CYBERCLAN237  ◆  icon set: unicode geometric shapes
-  </sub>
-</p>
-<br>
+<sub>Built in the open by <a href="https://github.com/XYBERCLAN">XYBERCLAN</a> and <a href="https://github.com/XYBERCLAN/Xyro-Cli/graphs/contributors">contributors</a>.</sub>
 </div>

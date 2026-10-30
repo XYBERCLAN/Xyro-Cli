@@ -6,3 +6,6 @@ dist/
 __test_security__/
 __test_tmp__/
 .claude/settings.local.json
+
+# vhs output of the screenshot tape (only the PNGs are kept)
+docs/demo/.screenshots.gif
