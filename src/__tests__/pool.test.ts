@@ -98,6 +98,13 @@ const ask = (onSwitch?: (s: ModelSwitch) => void) => {
 };
 
 describe("Free-quota pool", () => {
+  it("does not retry or cool down a provider for a context error containing 429", async () => {
+    behaviourA = () => ({ status: 400, error: "maximum context length is 14291 tokens" });
+    await assert.rejects(ask(), /14291/);
+    assert.equal(hits.a.length, 1);
+    assert.equal(hits.b.length, 0);
+    assert.equal(isCoolingDown("google"), false);
+  });
   it("moves to another provider when the free quota is used up", async () => {
     behaviourA = () => ({ status: 429, error: "Resource has been exhausted (check quota)." });
     behaviourB = () => ({ text: "answered by B" });

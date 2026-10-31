@@ -10,7 +10,7 @@ import {
   getMaxHistoryTokens,
   buildLocalContextSummary,
 } from "../agent/loop.js";
-import { isRateLimitError, extractRetryDelay, isTransientNetworkError } from "../providers/llm.js";
+import { isRateLimitError, extractRetryDelay, isTransientNetworkError, withRetry } from "../providers/llm.js";
 
 describe("Rate Limit & Network Detection", () => {
   it("detects 429 status and rate limit strings", () => {
@@ -31,6 +31,27 @@ describe("Rate Limit & Network Detection", () => {
     assert.strictEqual(isTransientNetworkError({ status: 503, message: "Service Unavailable" }), true);
     assert.strictEqual(isTransientNetworkError(new Error("Model is overloaded, please try again")), true);
     assert.strictEqual(isTransientNetworkError(new Error("Syntax error")), false);
+  });
+
+  it("prioritizes HTTP status and matches standalone fallback signals", () => {
+    for (const message of ["maximum context length is 14291 tokens", "request 15034 timed out", "parameter timeout_value"]) {
+      const err = Object.assign(new Error(message), { status: 400 });
+      assert.equal(isRateLimitError(err), false);
+      assert.equal(isTransientNetworkError(err), false);
+    }
+    assert.equal(isRateLimitError(new Error("request 14291 has a stormprovider error")), false);
+    assert.equal(isTransientNetworkError(new Error("request 15034 has timeout_value")), false);
+    assert.equal(isRateLimitError({ response: { status: 429 } }), true);
+    assert.equal(isTransientNetworkError({ response: { status: 503 } }), true);
+    assert.equal(isRateLimitError(new Error("429 Too Many Requests")), true);
+    assert.equal(isTransientNetworkError(new Error("HTTP 503")), true);
+  });
+
+  it("does not retry a non-retryable HTTP error containing a rate-limit number", async () => {
+    const failure = Object.assign(new Error("maximum context length is 14291 tokens"), { status: 400 });
+    let calls = 0;
+    await assert.rejects(withRetry(async () => { calls++; throw failure; }, 1), (err) => err === failure);
+    assert.equal(calls, 1);
   });
 
   it("extracts retry delay from headers", () => {

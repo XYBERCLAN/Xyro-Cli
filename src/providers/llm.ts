@@ -97,50 +97,41 @@ function sleep(ms: number): Promise<void> {
 /** Check if an error represents a rate limit or transient quota exhaustion */
 export function isRateLimitError(err: unknown): boolean {
   if (!err) return false;
+  const status = (err as { status?: unknown; response?: { status?: unknown } })?.status
+    ?? (err as { response?: { status?: unknown } })?.response?.status;
+  if (typeof status === "number") return status === 429;
   if (err instanceof OpenAI.APIError) {
-    if (err.status === 429) return true;
     if (err.code === "rate_limit_exceeded" || err.code === "insufficient_quota") return true;
-  }
-  if (typeof err === "object" && "status" in err && (err as any).status === 429) {
-    return true;
   }
 
   const msg = err instanceof Error ? err.message : String(err);
   const lower = msg.toLowerCase();
   return (
-    lower.includes("429") ||
-    lower.includes("rate limit") ||
-    lower.includes("rate_limit") ||
-    lower.includes("resource has been exhausted") ||
-    lower.includes("resource_exhausted") ||
-    lower.includes("too many requests") ||
-    lower.includes("quota exceeded") ||
-    lower.includes("tpm") ||
-    lower.includes("rpm")
+    /\b429\b/.test(lower) ||
+    /\b(?:rate limit|rate_limit|resource has been exhausted|resource_exhausted|too many requests|quota exceeded)\b/.test(lower) ||
+    /\btpm\b/.test(lower) ||
+    /\brpm\b/.test(lower)
   );
 }
 
 /** Check if an error represents a transient network issue that warrants a retry */
 export function isTransientNetworkError(err: unknown): boolean {
   if (!err) return false;
+  const status = (err as { status?: unknown; response?: { status?: unknown } })?.status
+    ?? (err as { response?: { status?: unknown } })?.response?.status;
+  if (typeof status === "number") return [500, 502, 503, 504, 529].includes(status);
   if ((err as any)?.name === "APIConnectionTimeoutError") return true;
-  const status = (err as any)?.status || (err as any)?.response?.status;
-  if (status === 500 || status === 502 || status === 503 || status === 504 || status === 529) {
-    return true;
-  }
   const msg = err instanceof Error ? err.message : String(err);
   const cause = (err as any)?.cause?.message || (err as any)?.cause?.code || "";
   const combined = `${msg} ${cause}`.toLowerCase();
   return (
-    combined.includes("503") ||
-    combined.includes("502") ||
-    combined.includes("504") ||
-    combined.includes("overloaded") ||
+    /\b(?:502|503|504)\b/.test(combined) ||
+    /\boverloaded\b/.test(combined) ||
     combined.includes("service unavailable") ||
     combined.includes("timed out") ||
-    combined.includes("timeout") ||
-    combined.includes("etimedout") ||
-    combined.includes("econnreset") ||
+    /\btimeout\b/.test(combined) ||
+    /\betimedout\b/.test(combined) ||
+    /\beconnreset\b/.test(combined) ||
     combined.includes("connection error") ||
     combined.includes("fetch failed") ||
     combined.includes("network error")
