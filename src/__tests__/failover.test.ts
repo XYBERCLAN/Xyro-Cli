@@ -78,4 +78,15 @@ describe("Failover & Fallback Mechanism", () => {
     assert.ok(attemptedModels.includes("gemini-flash-latest"));
     assert.ok(attemptedModels.includes("gemini-3.5-flash"));
   });
+
+  it("treats 5xx and network errors as fallbackable", () => {
+    for (const status of [500, 502, 503, 504]) {
+      assert.equal(isFallbackableError({ status }), true, `status ${status}`);
+    }
+    for (const msg of ["500 Internal Server Error", "502 Bad Gateway", "504 Gateway Timeout", "ECONNRESET", "fetch failed", "socket hang up", "network error"]) {
+      assert.equal(isFallbackableError(new Error(msg)), true, msg);
+    }
+    assert.equal(isFallbackableError({ status: 400 }), false);
+    assert.equal(isFallbackableError(new Error("Generic code error")), false);
+  });
 });

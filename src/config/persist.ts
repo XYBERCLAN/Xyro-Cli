@@ -33,15 +33,50 @@ export function tightenPrivateFiles(extra: string[] = []): void {
   for (const p of [configPath(), join(getConfigDir(), "mcp.json"), ...extra]) tightenFile(p);
 }
 
-export function loadPersistedConfig(): PersistedConfig {
+function backupPath(): string {
+  return configPath() + ".bak";
+}
+
+function corruptBackupPath(): string {
+  return configPath() + ".corrupt-" + Date.now();
+}
+
+/** Read + parse a config file; returns null when missing or unreadable/corrupt. */
+function readConfigFile(p: string): PersistedConfig | null {
   try {
-    const p = configPath();
-    if (!fs.existsSync(p)) return {};
+    if (!fs.existsSync(p)) return null;
     const data = fs.readFileSync(p, "utf-8");
-    return JSON.parse(data) as PersistedConfig;
+    const parsed = JSON.parse(data);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed as PersistedConfig;
+    return null;
   } catch {
-    return {};
+    return null;
   }
+}
+
+export function loadPersistedConfig(): PersistedConfig {
+  const p = configPath();
+  const primary = readConfigFile(p);
+  if (primary) return primary;
+  // Corrupt or unreadable primary: try the last known-good backup before giving up.
+  const backup = readConfigFile(backupPath());
+  if (backup) {
+    // Restore the good copy so subsequent reads/saves see a valid file.
+    try {
+      fs.copyFileSync(backupPath(), p);
+      tightenFile(p);
+    } catch {
+      // best effort
+    }
+    return backup;
+  }
+  // Nothing recoverable: preserve the corrupt bytes for forensics, then treat as empty.
+  try {
+    if (fs.existsSync(p)) fs.copyFileSync(p, corruptBackupPath());
+  } catch {
+    // best effort
+  }
+  return {};
 }
 
 export function savePersistedConfig(config: PersistedConfig): void {
@@ -60,9 +95,28 @@ export function savePersistedConfig(config: PersistedConfig): void {
     ...(config.providerKeys !== undefined
       ? { providerKeys: { ...existing.providerKeys, ...config.providerKeys } } : {}),
   };
-  // Holds API keys: readable by you only
-  fs.writeFileSync(configPath(), JSON.stringify(merged, null, 2), { encoding: "utf-8", mode: 0o600 });
-  tightenFile(configPath());
+  const target = configPath();
+  // Keep a last known-good copy before overwriting, but only if the current file parses.
+  try {
+    if (fs.existsSync(target) && readConfigFile(target)) {
+      fs.copyFileSync(target, backupPath());
+      tightenFile(backupPath());
+    }
+  } catch {
+    // best effort
+  }
+  // Atomic write: temp file in the same dir, then rename (POSIX rename is atomic).
+  const tmp = target + ".tmp-" + process.pid + "-" + Date.now();
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(merged, null, 2), { encoding: "utf-8", mode: 0o600 });
+    try { fs.fsyncSync(fs.openSync(tmp, "r")); } catch { /* best effort */ }
+    tightenFile(tmp);
+    fs.renameSync(tmp, target);
+    tightenFile(target);
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch { /* ignore */ }
+    throw e;
+  }
 }
 
 // ── Per-provider key store ──────────────────────────────────────────────────
