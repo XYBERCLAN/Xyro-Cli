@@ -176,11 +176,14 @@ export function isFallbackableError(err: unknown): boolean {
   const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
   const status = (err as { status?: number; response?: { status?: number } })?.status ?? (err as { response?: { status?: number } })?.response?.status;
   return (
+    status === 500 ||
+    status === 502 ||
     status === 503 ||
+    status === 504 ||
     status === 404 ||
     status === 429 ||
     status === 402 ||
-    /\b503\b|overloaded|high demand|not_found|no longer available|rate limit|quota exceeded|resource has been exhausted|insufficient credits|too many requests/.test(msg)
+    /\b500\b|\b502\b|\b503\b|\b504\b|overloaded|high demand|not_found|no longer available|rate limit|quota exceeded|resource has been exhausted|insufficient credits|too many requests|econnreset|econnrefused|etimedout|fetch failed|network (error|request failed)|socket hang up|connection (reset|refused|timeout)/.test(msg)
   );
 }
 
