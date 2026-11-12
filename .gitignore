@@ -9,3 +9,10 @@ __test_tmp__/
 
 # vhs output of the screenshot tape (only the PNGs are kept)
 docs/demo/.screenshots.gif
+
+# Local tooling state and machine-specific leftovers
+.git_commit_msg_tmp
+.agents/
+.claude/skills/
+skills-lock.json
+.xyro/
