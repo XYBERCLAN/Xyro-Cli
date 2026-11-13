@@ -65,9 +65,11 @@ export class GitIgnoreMatcher {
         .replace(/__Q__/g, "[^/]") +
       "/?)";
 
-    // An unanchored pattern applies at any depth; a dir-only pattern must match
-    // a path component boundary.
-    const suffix = dirOnly ? "(?:/|$)" : "";
+    // Every pattern must end at a path-component boundary — a '/' or the end
+    // of the path — so `build` matches the file/dir named "build" (and
+    // everything under that dir) but never `src/builder.ts`, and `*.log`
+    // never matches `a.logic.ts`. An unanchored pattern applies at any depth.
+    const suffix = "(?:/|$)";
     const source = anchored ? `^${regexSrc}${suffix}` : `(^|/)${regexSrc}${suffix}`;
     return { negated, regex: new RegExp(source) };
   }

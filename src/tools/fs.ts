@@ -5,7 +5,7 @@ import { isIgnoredDir } from "../config/platform.js";
 import { resolveProjectPath } from "./safety.js";
 import { GitIgnoreMatcher } from "./gitignore.js";
 
-function walk(dir: string, depth = 0, maxDepth = 3, matcher?: GitIgnoreMatcher): string[] {
+function walk(dir: string, root: string, depth = 0, maxDepth = 3, matcher?: GitIgnoreMatcher): string[] {
   if (depth > maxDepth) return [];
   const results: string[] = [];
   try {
@@ -13,12 +13,15 @@ function walk(dir: string, depth = 0, maxDepth = 3, matcher?: GitIgnoreMatcher):
     for (const entry of entries) {
       if (isIgnoredDir(entry, IGNORED_DIRS) || entry.startsWith(".")) continue;
       const full = join(dir, entry);
-      if (matcher && matcher.isIgnored(relative(dir, full).replace(/\\/g, "/"))) continue;
+      // Test the path relative to the project root, not to the directory
+      // currently being walked — otherwise patterns containing a path
+      // (e.g. `src/generated/`) can never match below the top level.
+      if (matcher && matcher.isIgnored(relative(root, full).replace(/\\/g, "/"))) continue;
       const isDir = statSync(full).isDirectory();
       const indent = "  ".repeat(depth);
       results.push(`${indent}${isDir ? "📁" : "📄"} ${entry}${isDir ? "/" : ""}`);
       if (isDir) {
-        results.push(...walk(full, depth + 1, maxDepth, matcher));
+        results.push(...walk(full, root, depth + 1, maxDepth, matcher));
       }
     }
   } catch {
@@ -32,7 +35,7 @@ export async function listFiles(args: { path?: string }): Promise<string> {
   if (!resolveResult.ok) return resolveResult.message;
   const dir = resolveResult.path;
   const matcher = new GitIgnoreMatcher(dir);
-  const entries = walk(dir, 0, 3, matcher);
+  const entries = walk(dir, dir, 0, 3, matcher);
   if (entries.length === 0) return "(Empty directory)";
   return entries.slice(0, 200).join("\n");
 }
