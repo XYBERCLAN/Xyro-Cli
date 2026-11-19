@@ -39,6 +39,29 @@ describe("input UX — multiline and paste", () => {
     assert.equal(anyApp.input, "line one\nline two\n");
   });
 
+  it("arrows, Backspace and Delete step over a whole emoji", () => {
+    const app = new TuiApp();
+    const anyApp = app as unknown as {
+      handleKey(k: string): void;
+      input: string;
+      cursorPos: number;
+      promptRows(home?: boolean): { spans: { text: string }[] }[];
+    };
+    anyApp.handleKey("é👍x");
+    anyApp.handleKey("\u001b[D");
+    anyApp.handleKey("\u001b[D");
+    assert.equal(anyApp.cursorPos, 1);
+    assert.ok(anyApp.promptRows(false).some((r) => r.spans.some((s) => s.text === "👍")), "cursor cell holds the whole emoji");
+    anyApp.handleKey("\u001b[C");
+    assert.equal(anyApp.cursorPos, 3);
+    anyApp.handleKey("\u007f");
+    assert.equal(anyApp.input, "éx");
+    anyApp.handleKey("ab👍");
+    anyApp.handleKey("\u001b[D");
+    anyApp.handleKey("\u001b[3~");
+    assert.equal(anyApp.input, "éabx");
+  });
+
   it("@ at a word boundary opens the file picker", () => {
     const app = new TuiApp();
     const anyApp = app as unknown as { handleKey(k: string): void; filePicker: FilePicker; input: string };
