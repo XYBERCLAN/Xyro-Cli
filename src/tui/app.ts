@@ -1627,8 +1627,9 @@ export class TuiApp {
         let contentSpans: StyledSpan[];
         if (isCursor) {
           const before = visibleInput.slice(0, Math.max(0, relCursor));
-          const at = visibleInput[relCursor] || " ";
-          const after = visibleInput.slice(Math.max(0, relCursor) + 1);
+          const atCp = visibleInput.codePointAt(relCursor);
+          const at = atCp === undefined ? " " : String.fromCodePoint(atCp);
+          const after = visibleInput.slice(Math.max(0, relCursor) + at.length);
           contentSpans = [
             span(li === 0 ? "❯ " : "  ", { fg: color, bold: true, bg: t.backgroundElement }),
             span(before, { fg: t.text, bold: true, bg: t.backgroundElement }),
@@ -2070,13 +2071,13 @@ export class TuiApp {
 
     // Left Arrow
     if (key === "\u001b[D") {
-      this.cursorPos = Math.max(0, this.cursorPos - 1);
+      this.cursorPos = Math.max(0, this.cursorPos - this.charLenBefore(this.cursorPos));
       return;
     }
 
     // Right Arrow
     if (key === "\u001b[C") {
-      this.cursorPos = Math.min(this.input.length, this.cursorPos + 1);
+      this.cursorPos = Math.min(this.input.length, this.cursorPos + this.charLenAt(this.cursorPos));
       return;
     }
 
@@ -2236,8 +2237,9 @@ export class TuiApp {
     // Backspace
     if (cp === 127 || cp === 8) {
       if (this.cursorPos > 0) {
-        this.input = this.input.slice(0, this.cursorPos - 1) + this.input.slice(this.cursorPos);
-        this.cursorPos--;
+        const n = this.charLenBefore(this.cursorPos);
+        this.input = this.input.slice(0, this.cursorPos - n) + this.input.slice(this.cursorPos);
+        this.cursorPos -= n;
       }
       return;
     }
@@ -2245,7 +2247,7 @@ export class TuiApp {
     // Delete
     if (key === "\u001b[3~") {
       if (this.cursorPos < this.input.length) {
-        this.input = this.input.slice(0, this.cursorPos) + this.input.slice(this.cursorPos + 1);
+        this.input = this.input.slice(0, this.cursorPos) + this.input.slice(this.cursorPos + this.charLenAt(this.cursorPos));
       }
       return;
     }
@@ -2288,6 +2290,16 @@ export class TuiApp {
     if (!text) return;
     this.input = this.input.slice(0, this.cursorPos) + text + this.input.slice(this.cursorPos);
     this.cursorPos += text.length;
+  }
+
+  /** UTF-16 length of the code point that ends at `pos` (2 for an emoji or other astral character). */
+  private charLenBefore(pos: number): number {
+    return (this.input.codePointAt(pos - 2) ?? 0) > 0xffff ? 2 : 1;
+  }
+
+  /** UTF-16 length of the code point that starts at `pos`. */
+  private charLenAt(pos: number): number {
+    return (this.input.codePointAt(pos) ?? 0) > 0xffff ? 2 : 1;
   }
 }
 
