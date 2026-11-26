@@ -1584,13 +1584,13 @@ export class TuiApp {
 
     // Row 3+: input text / placeholder with cyber cursor, after a ❯ glyph.
     // Multi-line drafts (Shift+Enter or a paste) grow the card up to 6 rows.
-    const maxVisibleChars = Math.max(10, innerW - 6);
+    const maxVisibleCols = Math.max(10, innerW - 6);
     const inputLines: RenderLine[] = [];
     if (!this.input) {
       const phFull = `sk anything ... "${PLACEHOLDERS[this.phIdx]}"`;
       const phText =
-        phFull.length > maxVisibleChars - 1
-          ? phFull.slice(0, maxVisibleChars - 4) + '..."'
+        phFull.length > maxVisibleCols - 1
+          ? phFull.slice(0, maxVisibleCols - 4) + '..."'
           : phFull;
       const contentSpans = [
         span("❯ ", { fg: color, bold: true, bg: t.backgroundElement }),
@@ -1620,15 +1620,16 @@ export class TuiApp {
       for (let li = first; li < last; li++) {
         const full = lines[li];
         const isCursor = li === cursorLine;
-        let visibleStart = 0;
-        if (isCursor && cursorCol > maxVisibleChars - 5) visibleStart = cursorCol - (maxVisibleChars - 5);
-        const visibleInput = full.slice(visibleStart, visibleStart + maxVisibleChars);
-        const relCursor = isCursor ? cursorCol - visibleStart : -1;
+        // The window is measured in terminal columns (CJK and emoji take two) and cut on
+        // character boundaries, so wide text stays inside the box and nothing is split.
+        const { start: visibleStart, end: visibleEnd } = promptWindow(full, maxVisibleCols, isCursor ? cursorCol : undefined);
+        const visibleInput = full.slice(visibleStart, visibleEnd);
         let contentSpans: StyledSpan[];
         if (isCursor) {
-          const before = visibleInput.slice(0, Math.max(0, relCursor));
-          const at = visibleInput[relCursor] || " ";
-          const after = visibleInput.slice(Math.max(0, relCursor) + 1);
+          const before = full.slice(visibleStart, cursorCol);
+          const cell = graphemeAt(full, cursorCol);
+          const at = cell || " ";
+          const after = full.slice(cursorCol + cell.length, Math.max(visibleEnd, cursorCol + cell.length));
           contentSpans = [
             span(li === 0 ? "❯ " : "  ", { fg: color, bold: true, bg: t.backgroundElement }),
             span(before, { fg: t.text, bold: true, bg: t.backgroundElement }),
@@ -2070,13 +2071,13 @@ export class TuiApp {
 
     // Left Arrow
     if (key === "\u001b[D") {
-      this.cursorPos = Math.max(0, this.cursorPos - 1);
+      this.cursorPos = Math.max(0, this.cursorPos - this.charLenBefore(this.cursorPos));
       return;
     }
 
     // Right Arrow
     if (key === "\u001b[C") {
-      this.cursorPos = Math.min(this.input.length, this.cursorPos + 1);
+      this.cursorPos = Math.min(this.input.length, this.cursorPos + this.charLenAt(this.cursorPos));
       return;
     }
 
@@ -2236,8 +2237,9 @@ export class TuiApp {
     // Backspace
     if (cp === 127 || cp === 8) {
       if (this.cursorPos > 0) {
-        this.input = this.input.slice(0, this.cursorPos - 1) + this.input.slice(this.cursorPos);
-        this.cursorPos--;
+        const n = this.charLenBefore(this.cursorPos);
+        this.input = this.input.slice(0, this.cursorPos - n) + this.input.slice(this.cursorPos);
+        this.cursorPos -= n;
       }
       return;
     }
@@ -2245,7 +2247,7 @@ export class TuiApp {
     // Delete
     if (key === "\u001b[3~") {
       if (this.cursorPos < this.input.length) {
-        this.input = this.input.slice(0, this.cursorPos) + this.input.slice(this.cursorPos + 1);
+        this.input = this.input.slice(0, this.cursorPos) + this.input.slice(this.cursorPos + this.charLenAt(this.cursorPos));
       }
       return;
     }
@@ -2281,14 +2283,75 @@ export class TuiApp {
   /** Insert text at the caret (multi-line aware, control characters stripped). */
   private insertText(raw: string): void {
     if (this.busy) return;
-    const text = raw
+    let text = raw
       .replace(/\r\n?/g, "\n")
       .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
       .slice(0, 200_000);
+    // Don't leave half an emoji behind when the cap cuts a surrogate pair.
+    if (/[\uD800-\uDBFF]$/.test(text)) text = text.slice(0, -1);
     if (!text) return;
     this.input = this.input.slice(0, this.cursorPos) + text + this.input.slice(this.cursorPos);
     this.cursorPos += text.length;
   }
+
+  /** UTF-16 length of the character (grapheme cluster) that ends at `pos`, e.g. 2 for 👍, 4 for 👍🏽 or 🇫🇷. */
+  private charLenBefore(pos: number): number {
+    return pos - graphemeStart(this.input, pos);
+  }
+
+  /** UTF-16 length of the character (grapheme cluster) that starts at `pos`. */
+  private charLenAt(pos: number): number {
+    return graphemeAt(this.input, pos).length;
+  }
+}
+
+const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+/** The grapheme cluster that starts at (or contains) `pos`, or "" at the end of `s`. */
+function graphemeAt(s: string, pos: number): string {
+  if (pos < 0 || pos >= s.length) return "";
+  const seg = graphemeSegmenter.segment(s).containing(pos);
+  return seg ? s.slice(pos, seg.index + seg.segment.length) : "";
+}
+
+/** Start index of the grapheme cluster that ends at `pos` (the previous character boundary). */
+function graphemeStart(s: string, pos: number): number {
+  if (pos <= 0) return 0;
+  return graphemeSegmenter.segment(s).containing(pos - 1)?.index ?? pos - 1;
+}
+
+/**
+ * The part of `line` that fits in `maxCols` terminal columns, cut on character boundaries.
+ * With a `cursor` offset, the window scrolls so the cursor cell stays in view with a few
+ * columns of lookahead after it. Returns UTF-16 offsets [start, end).
+ */
+function promptWindow(line: string, maxCols: number, cursor?: number): { start: number; end: number } {
+  const segs = graphemeSegmenter.segment(line);
+  let start = 0;
+  if (cursor !== undefined) {
+    const cursorW = cursor < line.length ? visualWidth(graphemeAt(line, cursor)) : 1;
+    let room = maxCols - Math.max(5, cursorW);
+    start = cursor;
+    while (start > 0) {
+      const g = segs.containing(start - 1);
+      if (!g) break;
+      const w = visualWidth(g.segment);
+      if (w > room) break;
+      room -= w;
+      start = g.index;
+    }
+  }
+  let end = start;
+  let used = 0;
+  while (end < line.length) {
+    const g = segs.containing(end);
+    if (!g) break;
+    const w = visualWidth(g.segment);
+    if (used + w > maxCols) break;
+    used += w;
+    end = g.index + g.segment.length;
+  }
+  return { start, end };
 }
 
 
