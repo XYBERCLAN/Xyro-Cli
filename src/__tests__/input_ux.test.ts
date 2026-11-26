@@ -62,6 +62,51 @@ describe("input UX — multiline and paste", () => {
     assert.equal(anyApp.input, "éabx");
   });
 
+  it("Backspace, Delete and arrows treat multi-code-point emoji as one character", () => {
+    const app = new TuiApp();
+    const anyApp = app as unknown as {
+      handleKey(k: string): void;
+      input: string;
+      cursorPos: number;
+      promptRows(home?: boolean): { spans: { text: string }[] }[];
+    };
+    for (const ch of ["❤️", "👍🏽", "🇫🇷", "👨‍👩‍👧", "é"]) {
+      anyApp.input = "";
+      anyApp.cursorPos = 0;
+      anyApp.handleKey(`a${ch}b`);
+      anyApp.handleKey("\u001b[D");
+      anyApp.handleKey("\u001b[D");
+      assert.equal(anyApp.cursorPos, 1, `left arrow steps over ${ch}`);
+      assert.ok(anyApp.promptRows(false).some((r) => r.spans.some((s) => s.text === ch)), `cursor cell holds all of ${ch}`);
+      anyApp.handleKey("\u001b[C");
+      assert.equal(anyApp.cursorPos, 1 + ch.length, `right arrow steps over ${ch}`);
+      anyApp.handleKey("\u007f");
+      assert.equal(anyApp.input, "ab", `Backspace removes all of ${ch}`);
+      anyApp.handleKey(ch);
+      anyApp.handleKey("\u001b[D");
+      anyApp.handleKey("\u001b[3~");
+      assert.equal(anyApp.input, "ab", `Delete removes all of ${ch}`);
+    }
+  });
+
+  it("a scrolled prompt line never cuts an emoji at its edges", () => {
+    const app = new TuiApp();
+    const anyApp = app as unknown as {
+      handleKey(k: string): void;
+      promptRows(home?: boolean): { spans: { text: string }[] }[];
+    };
+    anyApp.handleKey("a" + "👍".repeat(200));
+    const text = anyApp.promptRows(false).flatMap((r) => r.spans.map((s) => s.text)).join("");
+    assert.ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(text), "no lone surrogates");
+  });
+
+  it("a paste cut at the size cap does not end in half an emoji", () => {
+    const app = new TuiApp();
+    const anyApp = app as unknown as { handleKey(k: string): void; input: string };
+    anyApp.handleKey("a".repeat(199_999) + "👍");
+    assert.equal(anyApp.input.length, 199_999);
+  });
+
   it("@ at a word boundary opens the file picker", () => {
     const app = new TuiApp();
     const anyApp = app as unknown as { handleKey(k: string): void; filePicker: FilePicker; input: string };

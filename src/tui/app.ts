@@ -1620,16 +1620,21 @@ export class TuiApp {
       for (let li = first; li < last; li++) {
         const full = lines[li];
         const isCursor = li === cursorLine;
+        // Cut the scroll window on character boundaries so an emoji at either edge is never split.
         let visibleStart = 0;
-        if (isCursor && cursorCol > maxVisibleChars - 5) visibleStart = cursorCol - (maxVisibleChars - 5);
-        const visibleInput = full.slice(visibleStart, visibleStart + maxVisibleChars);
-        const relCursor = isCursor ? cursorCol - visibleStart : -1;
+        if (isCursor && cursorCol > maxVisibleChars - 5) {
+          const raw = cursorCol - (maxVisibleChars - 5);
+          const snapped = snapToGrapheme(full, raw);
+          visibleStart = snapped < raw ? snapped + graphemeAt(full, snapped).length : snapped;
+        }
+        const visibleEnd = snapToGrapheme(full, visibleStart + maxVisibleChars);
+        const visibleInput = full.slice(visibleStart, visibleEnd);
         let contentSpans: StyledSpan[];
         if (isCursor) {
-          const before = visibleInput.slice(0, Math.max(0, relCursor));
-          const atCp = visibleInput.codePointAt(relCursor);
-          const at = atCp === undefined ? " " : String.fromCodePoint(atCp);
-          const after = visibleInput.slice(Math.max(0, relCursor) + at.length);
+          const before = full.slice(visibleStart, cursorCol);
+          const cell = graphemeAt(full, cursorCol);
+          const at = cell || " ";
+          const after = full.slice(cursorCol + cell.length, Math.max(visibleEnd, cursorCol + cell.length));
           contentSpans = [
             span(li === 0 ? "❯ " : "  ", { fg: color, bold: true, bg: t.backgroundElement }),
             span(before, { fg: t.text, bold: true, bg: t.backgroundElement }),
@@ -2283,24 +2288,48 @@ export class TuiApp {
   /** Insert text at the caret (multi-line aware, control characters stripped). */
   private insertText(raw: string): void {
     if (this.busy) return;
-    const text = raw
+    let text = raw
       .replace(/\r\n?/g, "\n")
       .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
       .slice(0, 200_000);
+    // Don't leave half an emoji behind when the cap cuts a surrogate pair.
+    if (/[\uD800-\uDBFF]$/.test(text)) text = text.slice(0, -1);
     if (!text) return;
     this.input = this.input.slice(0, this.cursorPos) + text + this.input.slice(this.cursorPos);
     this.cursorPos += text.length;
   }
 
-  /** UTF-16 length of the code point that ends at `pos` (2 for an emoji or other astral character). */
+  /** UTF-16 length of the character (grapheme cluster) that ends at `pos`, e.g. 2 for 👍, 4 for 👍🏽 or 🇫🇷. */
   private charLenBefore(pos: number): number {
-    return (this.input.codePointAt(pos - 2) ?? 0) > 0xffff ? 2 : 1;
+    return pos - graphemeStart(this.input, pos);
   }
 
-  /** UTF-16 length of the code point that starts at `pos`. */
+  /** UTF-16 length of the character (grapheme cluster) that starts at `pos`. */
   private charLenAt(pos: number): number {
-    return (this.input.codePointAt(pos) ?? 0) > 0xffff ? 2 : 1;
+    return graphemeAt(this.input, pos).length;
   }
+}
+
+const graphemeSegmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+/** The grapheme cluster that starts at (or contains) `pos`, or "" at the end of `s`. */
+function graphemeAt(s: string, pos: number): string {
+  if (pos < 0 || pos >= s.length) return "";
+  const seg = graphemeSegmenter.segment(s).containing(pos);
+  return seg ? s.slice(pos, seg.index + seg.segment.length) : "";
+}
+
+/** Start index of the grapheme cluster that ends at `pos` (the previous character boundary). */
+function graphemeStart(s: string, pos: number): number {
+  if (pos <= 0) return 0;
+  return graphemeSegmenter.segment(s).containing(pos - 1)?.index ?? pos - 1;
+}
+
+/** Move `pos` back to the nearest character boundary at or before it. */
+function snapToGrapheme(s: string, pos: number): number {
+  if (pos <= 0) return 0;
+  if (pos >= s.length) return s.length;
+  return graphemeSegmenter.segment(s).containing(pos)?.index ?? pos;
 }
 
 
