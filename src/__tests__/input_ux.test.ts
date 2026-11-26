@@ -8,6 +8,7 @@ import { previewToolDiff } from "../tools/preview.js";
 import { fuzzyScore, FilePicker } from "../tui/file-picker.js";
 import { PermissionModal } from "../tui/overlays.js";
 import { TuiApp } from "../tui/app.js";
+import { visualWidth } from "../tui/core.js";
 
 let dir: string;
 
@@ -98,6 +99,25 @@ describe("input UX — multiline and paste", () => {
     anyApp.handleKey("a" + "👍".repeat(200));
     const text = anyApp.promptRows(false).flatMap((r) => r.spans.map((s) => s.text)).join("");
     assert.ok(!/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(text), "no lone surrogates");
+  });
+
+  it("wide characters (CJK, emoji) never push a prompt row past the box border", () => {
+    const rowWidths = (text: string, cursorFromEnd = 0) => {
+      const app = new TuiApp();
+      const anyApp = app as unknown as {
+        handleKey(k: string): void;
+        promptRows(home?: boolean): { spans: { text: string }[] }[];
+      };
+      anyApp.handleKey(text);
+      for (let i = 0; i < cursorFromEnd; i++) anyApp.handleKey("\u001b[D");
+      return anyApp.promptRows(false).map((r) => r.spans.reduce((w, s) => w + visualWidth(s.text), 0));
+    };
+    for (const text of ["中".repeat(120), "日本語のテキスト".repeat(15), "한국어".repeat(40), "a中👍b".repeat(40)]) {
+      for (const back of [0, 7, 60]) {
+        const widths = rowWidths(text, back);
+        assert.equal(new Set(widths).size, 1, `rows line up for ${text.slice(0, 4)}… (cursor ${back} back): ${widths}`);
+      }
+    }
   });
 
   it("a paste cut at the size cap does not end in half an emoji", () => {

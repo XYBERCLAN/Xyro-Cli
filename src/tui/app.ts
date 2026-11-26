@@ -1584,13 +1584,13 @@ export class TuiApp {
 
     // Row 3+: input text / placeholder with cyber cursor, after a ❯ glyph.
     // Multi-line drafts (Shift+Enter or a paste) grow the card up to 6 rows.
-    const maxVisibleChars = Math.max(10, innerW - 6);
+    const maxVisibleCols = Math.max(10, innerW - 6);
     const inputLines: RenderLine[] = [];
     if (!this.input) {
       const phFull = `sk anything ... "${PLACEHOLDERS[this.phIdx]}"`;
       const phText =
-        phFull.length > maxVisibleChars - 1
-          ? phFull.slice(0, maxVisibleChars - 4) + '..."'
+        phFull.length > maxVisibleCols - 1
+          ? phFull.slice(0, maxVisibleCols - 4) + '..."'
           : phFull;
       const contentSpans = [
         span("❯ ", { fg: color, bold: true, bg: t.backgroundElement }),
@@ -1620,14 +1620,9 @@ export class TuiApp {
       for (let li = first; li < last; li++) {
         const full = lines[li];
         const isCursor = li === cursorLine;
-        // Cut the scroll window on character boundaries so an emoji at either edge is never split.
-        let visibleStart = 0;
-        if (isCursor && cursorCol > maxVisibleChars - 5) {
-          const raw = cursorCol - (maxVisibleChars - 5);
-          const snapped = snapToGrapheme(full, raw);
-          visibleStart = snapped < raw ? snapped + graphemeAt(full, snapped).length : snapped;
-        }
-        const visibleEnd = snapToGrapheme(full, visibleStart + maxVisibleChars);
+        // The window is measured in terminal columns (CJK and emoji take two) and cut on
+        // character boundaries, so wide text stays inside the box and nothing is split.
+        const { start: visibleStart, end: visibleEnd } = promptWindow(full, maxVisibleCols, isCursor ? cursorCol : undefined);
         const visibleInput = full.slice(visibleStart, visibleEnd);
         let contentSpans: StyledSpan[];
         if (isCursor) {
@@ -2325,11 +2320,38 @@ function graphemeStart(s: string, pos: number): number {
   return graphemeSegmenter.segment(s).containing(pos - 1)?.index ?? pos - 1;
 }
 
-/** Move `pos` back to the nearest character boundary at or before it. */
-function snapToGrapheme(s: string, pos: number): number {
-  if (pos <= 0) return 0;
-  if (pos >= s.length) return s.length;
-  return graphemeSegmenter.segment(s).containing(pos)?.index ?? pos;
+/**
+ * The part of `line` that fits in `maxCols` terminal columns, cut on character boundaries.
+ * With a `cursor` offset, the window scrolls so the cursor cell stays in view with a few
+ * columns of lookahead after it. Returns UTF-16 offsets [start, end).
+ */
+function promptWindow(line: string, maxCols: number, cursor?: number): { start: number; end: number } {
+  const segs = graphemeSegmenter.segment(line);
+  let start = 0;
+  if (cursor !== undefined) {
+    const cursorW = cursor < line.length ? visualWidth(graphemeAt(line, cursor)) : 1;
+    let room = maxCols - Math.max(5, cursorW);
+    start = cursor;
+    while (start > 0) {
+      const g = segs.containing(start - 1);
+      if (!g) break;
+      const w = visualWidth(g.segment);
+      if (w > room) break;
+      room -= w;
+      start = g.index;
+    }
+  }
+  let end = start;
+  let used = 0;
+  while (end < line.length) {
+    const g = segs.containing(end);
+    if (!g) break;
+    const w = visualWidth(g.segment);
+    if (used + w > maxCols) break;
+    used += w;
+    end = g.index + g.segment.length;
+  }
+  return { start, end };
 }
 
 
